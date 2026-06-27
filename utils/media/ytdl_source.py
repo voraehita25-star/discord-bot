@@ -418,11 +418,20 @@ class YTDLSource(discord.PCMVolumeTransformer):
         except BaseException:
             # On the download path, reclaim the orphaned file instead of relying
             # solely on the periodic janitor. Only attempt this for a plausible
-            # local path (str, not the path-traversal/'-' cases handled above);
-            # unlink is best-effort and must never mask the original error.
-            if not stream and isinstance(filename, str) and filename:
+            # local path (str, not the path-traversal/'-' cases): the unlink must
+            # stay confined to temp/ exactly like the read-side check above, so a
+            # forged out-of-temp filename is never deleted here. unlink is
+            # best-effort and must never mask the original error.
+            if (
+                not stream
+                and isinstance(filename, str)
+                and filename
+                and not filename.startswith("-")
+            ):
                 try:
-                    Path(filename).unlink(missing_ok=True)
+                    cleanup_path = Path(filename).resolve()
+                    if cleanup_path.is_relative_to(Path("temp").resolve()):
+                        cleanup_path.unlink(missing_ok=True)
                 except OSError as cleanup_exc:
                     logger.warning(
                         "Failed to clean up orphaned download %r: %s", filename, cleanup_exc

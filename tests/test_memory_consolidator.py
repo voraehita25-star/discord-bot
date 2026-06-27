@@ -677,7 +677,10 @@ class TestConsolidateChannelFull:
 
     @pytest.mark.asyncio
     async def test_mark_failure_logged_not_raised(self, monkeypatch):
-        """If marking raises after save, error is swallowed (logged), no delete."""
+        """If marking raises after save, the error is logged (not raised), no delete
+        runs, and consolidate_channel returns None to signal no progress — the source
+        rows are still summarized_at IS NULL, so returning None makes the per-channel
+        pass loop stop instead of re-summarising them into duplicate summary rows."""
         from cogs.ai_core.memory.memory_consolidator import SummaryArchiver
 
         rows = self._rows(4)
@@ -695,7 +698,8 @@ class TestConsolidateChannelFull:
 
         result = await archiver.consolidate_channel(888, force=True)
 
-        assert result is not None
+        # mark-summarized failed -> no real progress -> None (so the pass loop stops)
+        assert result is None
         # Mark failed -> delete must NOT run (else block skipped)
         delete_mock.assert_not_called()
 

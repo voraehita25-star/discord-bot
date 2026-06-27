@@ -698,7 +698,10 @@ class MemorySystem:
             # valid but its token sets gone — _keyword_search would then fall
             # back to a live re.findall per row until the TTL expired. Lazily
             # repopulating here keeps the optimization tied to snapshot life.
-            self._ensure_token_sets(cached[1])
+            # Offloaded to a worker thread: _ensure_token_sets regex-tokenizes
+            # every row, so running it on the event loop would block the gateway
+            # heartbeat (same reason _keyword_search uses to_thread below).
+            await asyncio.to_thread(self._ensure_token_sets, cached[1])
             # Return a SHALLOW COPY of the cached list so callers
             # that mutate the result (filter/sort in place) don't
             # corrupt the cache for the next reader. The previous
@@ -732,7 +735,10 @@ class MemorySystem:
         # look it up instead of re-running re.findall on every row of every
         # search. Rows are immutable after insert, so a cached entry stays
         # valid; add_memory drops this alongside the snapshot.
-        self._ensure_token_sets(rows)
+        # Offloaded to a worker thread: the cross-channel (None) snapshot is the
+        # entire memory table, so this per-row re.findall must not run on the
+        # event loop (same offload _keyword_search uses below).
+        await asyncio.to_thread(self._ensure_token_sets, rows)
         self._evict_all_memories_cache_if_needed(now)
         # Same defensive copy on cache-miss return so callers can mutate
         # freely without aliasing into the cache.

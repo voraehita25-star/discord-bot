@@ -528,6 +528,8 @@ def _ctx_r1(channel_id=987654321, guild_id=111222333):
     ctx.message.attachments = []
     ctx.message.reference = None
     ctx.message.id = 555
+    # โมเดลการเรียกแบบ prefix (!chat) → ไม่มี interaction จึงไม่ defer
+    ctx.interaction = None
     return ctx
 
 
@@ -997,6 +999,46 @@ class TestChatCommandRegion:
         cog.chat_manager.process_chat.assert_awaited_once()
         _, kwargs = cog.chat_manager.process_chat.call_args
         assert kwargs.get("output_channel") is out_channel
+
+    @pytest.mark.asyncio
+    async def test_chat_command_defers_slash_interaction(self):
+        # /chat (slash) ต้อง defer เพื่อ ack ภายใน 3 วินาที — finding #9
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(channel_id=100, guild_id=900)
+        ctx.interaction = MagicMock()  # มี interaction = ถูกเรียกแบบ slash
+        ctx.defer = AsyncMock()
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 100
+        out_channel = MagicMock(spec=discord.TextChannel)
+        cog.bot.get_channel = MagicMock(return_value=out_channel)
+
+        with (
+            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 900),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 100),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 200),
+        ):
+            await cog.chat_command.callback(cog, ctx, message="hi")
+
+        ctx.defer.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_command_prefix_does_not_defer(self):
+        # prefix (!chat) ไม่มี interaction → ต้องไม่เรียก defer
+        cog = _make_cog_r1()
+        ctx = _ctx_r1(channel_id=100, guild_id=900)  # interaction = None
+        ctx.defer = AsyncMock()
+        ctx.channel = MagicMock(spec=discord.TextChannel)
+        ctx.channel.id = 100
+        cog.bot.get_channel = MagicMock(return_value=MagicMock(spec=discord.TextChannel))
+
+        with (
+            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 900),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 100),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_OUTPUT", 200),
+        ):
+            await cog.chat_command.callback(cog, ctx, message="hi")
+
+        ctx.defer.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rp_command_channel_unsupported_chat_channel(self):

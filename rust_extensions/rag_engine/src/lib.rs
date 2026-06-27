@@ -193,6 +193,12 @@ impl RagEngine {
                 "embedding contains non-finite values (NaN/Inf)",
             ));
         }
+        // Timestamp must be finite too — a non-finite value serializes to JSON
+        // null in save() and is silently dropped on the next load(), so guard it
+        // here to keep the stored-data invariant consistent with importance/embedding.
+        if !entry.timestamp.is_finite() {
+            return Err(PyValueError::new_err("timestamp must be a finite number"));
+        }
 
         let mut entries = self.entries.write();
         entries.insert(entry.id.clone(), entry);
@@ -215,6 +221,7 @@ impl RagEngine {
                 && entry.importance.is_finite()
                 && entry.importance >= 0.0
                 && entry.embedding.iter().all(|v| v.is_finite())
+                && entry.timestamp.is_finite()
             {
                 // Count only newly inserted ids — HashMap::insert returns
                 // Some(old) when the id already existed (de-dupe replace), so a

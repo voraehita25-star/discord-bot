@@ -349,12 +349,19 @@ class SummaryArchiver:
             except Exception:
                 self.logger.error(
                     "❌ Summary %d saved but mark-summarized of %d rows failed for "
-                    "channel %d — next pass may re-summarise. Investigate DB write path.",
+                    "channel %d — returning None so the per-channel pass loop stops "
+                    "instead of re-summarising the same unmarked rows. "
+                    "Investigate DB write path.",
                     summary_id,
                     len(message_ids),
                     channel_id,
                     exc_info=True,
                 )
+                # The source rows still have summarized_at IS NULL, so the next
+                # pass would re-pull and re-summarise them, INSERTing duplicate
+                # conversation_summaries rows (no UNIQUE constraint). Signal "no
+                # progress" so consolidate_all_channels breaks this channel's loop.
+                return None
             else:
                 if delete_originals:
                     try:

@@ -1952,6 +1952,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                             )
                             if len(trimmed) < original_len:
                                 chat_data["history"] = trimmed
+                                # The length-keyed compress cache would otherwise
+                                # serve a stale compression once history regrows
+                                # to the pre-trim length. Drop it so the next
+                                # turn recomputes — mirrors the edit/patch/delete/
+                                # insert paths.
+                                chat_data.pop("_compress_cache", None)
                                 logger.info(
                                     "📦 Auto-trimmed history for channel %s: %d -> %d",
                                     channel_id,

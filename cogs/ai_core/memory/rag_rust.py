@@ -321,6 +321,13 @@ class RagEngineWrapper:
             except (json.JSONDecodeError, OSError):
                 logger.exception("Failed to load RAG data from %s", path)
                 return 0
+            # A valid-JSON top-level scalar (null/42/true) parses but is not
+            # iterable; iterating it would raise an uncaught TypeError. Degrade
+            # a non-list file to a no-op so a corrupt-but-parseable file keeps
+            # existing data instead of crashing the caller.
+            if not isinstance(entries, list):
+                logger.error("RAG file %s is not a JSON list; keeping existing data", path)
+                return 0
             # Validate into a fresh dict FIRST. Clearing before validation
             # meant a parseable-but-wrong-shaped file (JSON object, list of
             # non-dicts) silently destroyed all in-memory entries; the Rust

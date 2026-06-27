@@ -854,10 +854,20 @@ async def process_attachments(
                         logger.info("Converted animated GIF to video from %s", user_name)
                         continue
 
-                # Regular static image
-                with Image.open(io.BytesIO(image_data)) as image:
-                    # Copy the image so we can close the original
-                    image_copy = image.copy()
+                # Regular static image. ``image.copy()`` forces PIL to fully
+                # decode all pixels synchronously; inside this ``async def`` the
+                # calling thread is the event loop, so offload the decode to a
+                # worker thread to keep the loop responsive (mirrors the GIF
+                # branch above). The DecompressionBomb/OSError handling around
+                # the awaited call is preserved by the surrounding ``except``.
+                loop = asyncio.get_running_loop()
+
+                def _decode(data):
+                    with Image.open(io.BytesIO(data)) as image:
+                        # Copy the image so we can close the original
+                        return image.copy()
+
+                image_copy = await loop.run_in_executor(None, _decode, image_data)
                 image_parts.append(image_copy)
                 logger.info("Processed image from %s", user_name)
             except (

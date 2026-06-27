@@ -142,6 +142,28 @@ def _cleanup_expired_cache() -> int:
         for k in expired_metadata:
             _metadata_cache.pop(k, None)
 
+        # Reclaim the companion per-channel maps for channels no longer live in
+        # either cache. invalidate_cache() pops a channel out of _history_cache
+        # on every save while bumping its generation, so a save-heavy workload
+        # can keep the live cache under MAX_CACHE_SIZE indefinitely and never
+        # trigger _enforce_cache_size_limit's eviction loop (the only other place
+        # these maps shrink). Drop the orphans here too, applying the same safety
+        # rules as that loop: a held _history_lock is in active use by a save/edit
+        # and must survive; _cache_generations re-reads start fresh at 0 and
+        # _post_replace_min_id / _db_loaded_channels are rebuilt on the next
+        # force-replace / DB load.
+        live = _history_cache.keys() | _metadata_cache.keys()
+        for k in [c for c in _cache_generations if c not in live]:
+            _cache_generations.pop(k, None)
+        for k in [c for c in _post_replace_min_id if c not in live]:
+            _post_replace_min_id.pop(k, None)
+        for k in [c for c in _db_loaded_channels if c not in live]:
+            _db_loaded_channels.discard(k)
+        for k in [c for c in _history_locks if c not in live]:
+            _lk = _history_locks.get(k)
+            if _lk is not None and not _lk.locked():
+                _history_locks.pop(k, None)
+
     return len(expired_history) + len(expired_metadata)
 
 

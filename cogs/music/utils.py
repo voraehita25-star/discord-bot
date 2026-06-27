@@ -103,6 +103,11 @@ def create_progress_bar(
     # and raise TypeError, since ``None == 0`` is False.
     if not total:
         return "▱" * length
+    # NaN slips past ``not total`` (float('nan') is truthy) and crashes the
+    # int() below — int(nan) raises ValueError. Treat non-finite total as
+    # "unknown duration" like format_duration does.
+    if isinstance(total, float) and not math.isfinite(total):
+        return "▱" * length
     progress = max(0, min(length, int((current / total) * length)))
     filled = "▰" * progress
     empty = "▱" * (length - progress)

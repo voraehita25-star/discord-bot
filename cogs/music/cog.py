@@ -900,6 +900,12 @@ class Music(commands.Cog):
                     # a zombie voice client (still connected to Discord) but
                     # no guild state to track it.
                     await voice_client.disconnect()
+                    # Detach THIS task from the state before cleanup. We ARE
+                    # gs.auto_disconnect_task, and cleanup_guild_data
+                    # unconditionally cancels that field — a self-cancel that
+                    # would abort the change_presence reset below at the next
+                    # await. Clearing it first makes cleanup skip the cancel.
+                    self._gs(guild_id).auto_disconnect_task = None
                     await self.cleanup_guild_data(guild_id)
 
                     # ``change_presence`` is global — only reset to the idle
@@ -2597,6 +2603,10 @@ class Music(commands.Cog):
 
             if not filename or not await asyncio.to_thread(_P(filename).exists):
                 self._gs(guild_id).fixing = False
+                # Honor any cleanup deferred while we held fixing (mirrors fix):
+                # a concurrent leave/kick during the exists() await above arms
+                # cleanup_pending, which nothing else would drain.
+                await self._drain_pending_cleanup(guild_id, ctx)
                 embed = discord.Embed(
                     title="Cannot Seek",
                     description=(
@@ -2677,6 +2687,10 @@ class Music(commands.Cog):
                 # otherwise the next pause/resume would add a bogus paused
                 # interval (mark_pause is idempotent) and corrupt elapsed math.
                 self._gs(guild_id).pause_start = None
+                # Drain any cleanup deferred during the fixing window. On this
+                # success path the VC is connected, so _drain only clears the
+                # transient flag; a real concurrent leave runs the cleanup.
+                await self._drain_pending_cleanup(guild_id, ctx)
             except Exception as e:
                 # Reset fixing flag if play() fails
                 self._gs(guild_id).fixing = False
@@ -2689,6 +2703,8 @@ class Music(commands.Cog):
                 raise
         except Exception as e:
             self._gs(guild_id).fixing = False
+            # Honor cleanup deferred during the fixing window before returning.
+            await self._drain_pending_cleanup(guild_id, ctx)
             logger.error("Seek failed: %s", e)
             embed = discord.Embed(
                 description=f"{Emojis.CROSS} Seek failed — กรุณาลองใหม่อีกครั้ง",

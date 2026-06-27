@@ -51,7 +51,7 @@ def clean_history_files() -> None:
                             if isinstance(part, str):
                                 text = part
                             elif isinstance(part, dict) and "text" in part:
-                                text = part["text"]
+                                text = part["text"] if isinstance(part["text"], str) else ""
 
                             # If we find any text that isn't whitespace, it's not empty
                             if text and text.strip():

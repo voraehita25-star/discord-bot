@@ -226,6 +226,15 @@ class TestWriteGuardDeniedSubtrees:
         res = run_guard(write_payload(home / ".ssh" / "authorized_keys"), [home])
         assert res.returncode == DENY
 
+    def test_denies_dot_claude_json_inside_allowed_root(self):
+        # ~/.claude.json is Claude Code's global MCP-server config; writing a
+        # malicious mcpServers entry is an RCE/persistence vector. The denylist
+        # must cover the FILE (sibling of ~/.claude/) even when a write root is
+        # at/above home — see audit finding #4.
+        home = Path.home()
+        res = run_guard(write_payload(home / ".claude.json"), [home])
+        assert res.returncode == DENY
+
 
 class TestWriteGuardUnits:
     def test_is_within_self_and_child(self, tmp_path):

@@ -222,21 +222,28 @@ _SECRET_PATTERNS_CI = re.compile(
     # ``y`` AND not-alphanumeric — a contradiction that made every branch
     # match nothing, leaking opaque ``password=…`` / ``token=…`` /
     # ``authorization:…`` secrets unredacted. Fold the keyword into one
-    # fixed-width negative lookbehind instead: ``(?<![A-Za-z0-9_]key)``
-    # rejects ``<wordchar>key`` while ``(?<=key)`` confirms the keyword is
-    # present. The leading ``['\"]?`` then consumes an optional close-quote
-    # so JSON ``"key":"…"`` and bare ``key=…`` forms both redact the value
-    # while keeping the keyword visible.
+    # fixed-width negative lookbehind instead: ``(?<![A-Za-z0-9]key)``
+    # rejects ``<alnum>key`` (so ``monkey`` is skipped) while ``(?<=key)``
+    # confirms the keyword is present. Crucially the negative class is
+    # ``[A-Za-z0-9]`` WITHOUT ``_``: a leading ``_``/``-`` separator must be
+    # allowed so compound OAuth parameter names (``client_secret``,
+    # ``access_token``, ``refresh_token``, ``x_api_key``) still redact —
+    # their value-shape (e.g. 32-hex Spotify client secret) is too generic
+    # for the prefix patterns above, so this keyword fallback is their only
+    # cover. The value class includes base64 chars (``+/=``) so opaque
+    # base64 credentials are not cut short. The leading ``['\"]?`` then
+    # consumes an optional close-quote so JSON ``"key":"…"`` and bare
+    # ``key=…`` forms both redact the value while keeping the keyword visible.
     r"(?:"
-    r"(?<![A-Za-z0-9_]key)(?<=key)|"
-    r"(?<![A-Za-z0-9_]token)(?<=token)|"
-    r"(?<![A-Za-z0-9_]secret)(?<=secret)|"
-    r"(?<![A-Za-z0-9_]password)(?<=password)|"
-    r"(?<![A-Za-z0-9_]apikey)(?<=apikey)|"
-    r"(?<![A-Za-z0-9_]api_key)(?<=api_key)|"
-    r"(?<![A-Za-z0-9_]authorization)(?<=authorization)|"
-    r"(?<![A-Za-z0-9_]bearer)(?<=bearer)"
-    r")['\"]?[\s=:]+['\"]?[A-Za-z0-9_\-]{32,128}(?:\.[A-Za-z0-9_\-]{4,4096}){0,2}['\"]?"
+    r"(?<![A-Za-z0-9]key)(?<=key)|"
+    r"(?<![A-Za-z0-9]token)(?<=token)|"
+    r"(?<![A-Za-z0-9]secret)(?<=secret)|"
+    r"(?<![A-Za-z0-9]password)(?<=password)|"
+    r"(?<![A-Za-z0-9]apikey)(?<=apikey)|"
+    r"(?<![A-Za-z0-9]api_key)(?<=api_key)|"
+    r"(?<![A-Za-z0-9]authorization)(?<=authorization)|"
+    r"(?<![A-Za-z0-9]bearer)(?<=bearer)"
+    r")['\"]?[\s=:]+['\"]?[A-Za-z0-9+/=_\-]{32,128}(?:\.[A-Za-z0-9_\-]{4,4096}){0,2}['\"]?"
     r"|"
     # Anthropic API keys (sk-ant-api03-..., sk-ant-...) — kept BEFORE the
     # generic sk- pattern so the longer match wins.
@@ -258,6 +265,17 @@ _SECRET_PATTERNS_CI = re.compile(
     # of leaking the payload/signature after the first '.'. This branch still
     # catches a BARE JWT with no keyword prefix. Bounds keep matching linear-time.
     r"eyJ[A-Za-z0-9_\-]{10,2048}\.[A-Za-z0-9_\-]{4,4096}\.[A-Za-z0-9_\-]{4,2048}"
+    r"|"
+    # HTTP auth-scheme credentials (``Authorization: Basic <base64>`` /
+    # ``Bearer <token>``). The keyword fallback above CANNOT reach these: the
+    # scheme word (``Basic``/``Bearer``) sits between the ``authorization``
+    # keyword and the credential, so its contiguous value run breaks at the
+    # space after the scheme; and base64 ``user:pass`` credentials contain
+    # ``+``/``/``/``=`` which fall outside the keyword value class. Match the
+    # scheme word + credential directly (base64 charset incl. ``+/=``) so the
+    # whole header redacts regardless of the scheme word. Upper bound keeps it
+    # linear-time on pathological no-whitespace input.
+    r"\b(?:Basic|Bearer)\s+[A-Za-z0-9+/=_\-\.]{16,1024}"
     r")",
     re.IGNORECASE,
 )

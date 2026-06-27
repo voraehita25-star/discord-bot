@@ -354,8 +354,16 @@ class LongTermMemory:
         # forever (a slow leak on a long-running bot). When it grows large,
         # drop locks that aren't currently held — they're idle and a fresh one
         # is created on demand. A held lock is in active use, so it's kept.
+        # Also keep locks with queued waiters: Lock.release() clears _locked
+        # before the next waiter resumes, so during that handoff window
+        # locked() is False while a coroutine is still about to acquire it —
+        # evicting it there would orphan the lock and lose mutual exclusion.
         if len(self._explicit_fact_locks) >= 10_000:
-            for uid in [u for u, lk in self._explicit_fact_locks.items() if not lk.locked()]:
+            for uid in [
+                u
+                for u, lk in self._explicit_fact_locks.items()
+                if not lk.locked() and not getattr(lk, "_waiters", None)
+            ]:
                 del self._explicit_fact_locks[uid]
         new_lock = asyncio.Lock()
         existing = self._explicit_fact_locks.setdefault(user_id, new_lock)

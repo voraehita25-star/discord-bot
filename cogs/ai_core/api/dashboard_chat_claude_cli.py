@@ -1368,6 +1368,10 @@ def _build_history_block(history: list[dict[str, Any]], limit: int) -> str:
     recent = history[-limit:]
     lines: list[str] = []
     for msg in recent:
+        # Skip non-dict rows so a malformed history list degrades to an empty
+        # block instead of raising AttributeError on .get().
+        if not isinstance(msg, dict):
+            continue
         role = msg.get("role", "user")
         # Sanitize each row: history contains assistant replies that can quote
         # poisoned document/web content, and a raw "User:"/"# Context" line in
@@ -2035,6 +2039,11 @@ async def _run_claude_subprocess(
         async def _pump() -> None:
             if p.stderr is None:
                 return
+            # Mirror the stdout reader: lift the 64 KiB per-line cap so a single
+            # oversized stderr line can't raise ValueError out of the pump and
+            # abort an otherwise-successful, already-streamed turn.
+            if hasattr(p.stderr, "_limit"):
+                p.stderr._limit = MAX_STDOUT_LINE_BYTES  # type: ignore[attr-defined]
             async for chunk in p.stderr:
                 stderr_chunks.append(chunk)
 
@@ -2322,8 +2331,10 @@ async def _run_claude_subprocess(
         finally:
             # Always wait for the stderr drain to finish so we don't leak
             # the task. If consume_stdout raised, give stderr a brief
-            # window to drain naturally before cancelling.
-            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            # window to drain naturally before cancelling. Suppress Exception
+            # too (like ``_stop_stderr_pump``): a pump failure must never abort
+            # an otherwise-successful, already-streamed turn.
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError, Exception):
                 await asyncio.wait_for(stderr_task, timeout=2.0)
             if not stderr_task.done():
                 stderr_task.cancel()
@@ -2472,7 +2483,12 @@ async def handle_chat_message_claude_cli(
     # the safe default so the lookup falls back to "general" instead of crashing.
     if not isinstance(role_preset, str):
         role_preset = "general"
-    history = data.get("history") or []
+    # Guard the shape like every sibling field: a non-list history (int/string
+    # from a malformed client) would otherwise reach _build_history_block and
+    # raise TypeError/AttributeError outside the handler's try/finally, leaking
+    # this turn's temp files and leaving the client with no terminal frame.
+    raw_history = data.get("history")
+    history = raw_history if isinstance(raw_history, list) else []
     user_name = data.get("user_name", "User")
     # Honor DASHBOARD_ALLOW_UNRESTRICTED so the CLI backend matches the SDK +
     # Gemini paths. Without this gate the operator's safety control was

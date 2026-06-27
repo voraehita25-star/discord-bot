@@ -76,7 +76,11 @@ def main() -> int:
                 if sid in tracked:
                     print(f"  KEEP   {entry.name}  (tracked)")
                     continue
-                size = entry.stat().st_size
+                try:
+                    size = entry.stat().st_size
+                except OSError:
+                    # Bot may have unlinked this session jsonl since iterdir().
+                    continue
                 print(f"  DELETE {entry.name}  ({size / 1024:.1f} KB)")
                 deleted_bytes += size
                 if apply:
@@ -150,7 +154,11 @@ def main() -> int:
     if WORKDIR.exists():
         for entry in WORKDIR.iterdir():
             if entry.is_file() and entry.suffix.lower() in _STRAY_ALLOWED_SUFFIXES:
-                stray_size = entry.stat().st_size
+                try:
+                    stray_size = entry.stat().st_size
+                except OSError:
+                    # File vanished between iterdir() and stat(); skip it.
+                    continue
                 print(f"  DELETE stray {WORKDIR / entry.name}  ({stray_size / 1024:.1f} KB)")
                 deleted_bytes += stray_size
                 if apply:

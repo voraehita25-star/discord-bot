@@ -469,6 +469,11 @@ class AI(commands.Cog):
     @commands.cooldown(1, 3, commands.BucketType.user)
     async def chat_command(self, ctx: Context, *, message: str | None = None) -> None:
         """Talk to AI."""
+        # Slash (/chat) ต้อง ack ภายใน 3 วินาทีของ Discord แต่ AI ใช้เวลานานกว่านั้น
+        # จึง defer ไว้ก่อน ไม่งั้นจะขึ้น "The application did not respond"
+        # (prefix !chat ไม่มี interaction จึงไม่ได้รับผลกระทบ)
+        if ctx.interaction is not None:
+            await ctx.defer()
         # Restriction for Roleplay Server
         if ctx.guild and ctx.guild.id == GUILD_ID_RP:
             if ctx.channel.id == CHANNEL_ID_RP_COMMAND:

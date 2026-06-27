@@ -90,7 +90,12 @@ def _denied_subtrees() -> list[Path]:
     # cogs/ai_core/api/cli_write_guard.py → parents[3] is the repo root.
     repo_root = Path(__file__).resolve().parents[3]
     home = Path.home()
-    return [repo_root, (home / ".ssh").resolve(), (home / ".claude").resolve()]
+    return [
+        repo_root,
+        (home / ".ssh").resolve(),
+        (home / ".claude").resolve(),
+        (home / ".claude.json").resolve(),
+    ]
 
 
 def main() -> None:

@@ -15,6 +15,7 @@ import time
 from typing import Any, TypedDict
 
 import anthropic
+import discord
 from anthropic.types.message_param import MessageParam
 
 from ..claude_payloads import (
@@ -832,7 +833,10 @@ async def call_claude_api_streaming(
                             progress = f"✍️ ({current_chunks_received} chunks)"
                             display_text += f" {progress}"
                             try:
-                                await placeholder_msg.edit(content=display_text)
+                                await placeholder_msg.edit(
+                                    content=display_text,
+                                    allowed_mentions=discord.AllowedMentions.none(),
+                                )
                             except Exception as edit_error:
                                 logger.debug("Failed to update streaming message: %s", edit_error)
 

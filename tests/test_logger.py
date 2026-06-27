@@ -445,3 +445,42 @@ class TestRedactSensitive:
             _redact_sensitive("a" * n)
             elapsed = time.perf_counter() - start
             assert elapsed < 0.5, f"_redact_sensitive('a'*{n}) took {elapsed * 1000:.0f}ms (ReDoS?)"
+
+    def test_redact_http_basic_auth_header(self):
+        """``Authorization: Basic <base64>`` must redact the credential (finding #21)."""
+        from utils.monitoring.logger import _redact_sensitive
+
+        cred = "dXNlcjpwYXNzd29yZHN0dWZmZmZmZg=="
+        out = _redact_sensitive(f"Authorization: Basic {cred}")
+        assert cred not in out, f"basic-auth credential leaked: {out!r}"
+        assert "[REDACTED]" in out
+
+    def test_redact_bearer_token_header(self):
+        """``Bearer <token>`` must redact the token (finding #21)."""
+        from utils.monitoring.logger import _redact_sensitive
+
+        tok = "abcdefghijklmnopqrstuvwxyz0123456789"
+        out = _redact_sensitive(f"Bearer {tok}")
+        assert tok not in out, f"bearer token leaked: {out!r}"
+        assert "[REDACTED]" in out
+
+    def test_redact_underscore_joined_keys(self):
+        """Compound OAuth param names (client_secret/access_token/x_api_key/
+        refresh_token) must redact their value while keeping the keyword
+        visible — the ``_``/``-`` separator before the keyword used to defeat
+        the keyword-fallback redaction (finding #22)."""
+        from utils.monitoring.logger import _redact_sensitive
+
+        secret = "0123456789abcdef0123456789abcdef"  # 32 chars (>= value floor)
+        for key in ("client_secret", "access_token", "x_api_key", "refresh_token"):
+            out = _redact_sensitive(f"{key}={secret}")
+            assert secret not in out, f"{key} value leaked: {out!r}"
+            assert "[REDACTED]" in out
+
+    def test_redact_does_not_overmatch_word_containing_keyword(self):
+        """A word merely CONTAINING a keyword (e.g. 'monkey' contains 'key')
+        must NOT trigger keyword redaction (finding #22 negative case)."""
+        from utils.monitoring.logger import _redact_sensitive
+
+        plain = "the monkey ate a banana today"
+        assert _redact_sensitive(plain) == plain
