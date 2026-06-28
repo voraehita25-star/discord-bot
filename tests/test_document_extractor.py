@@ -285,6 +285,26 @@ class TestExtractText:
         assert result.char_count < de.MAX_EXTRACTED_CHARS + 100
         assert "truncated" in result.text
 
+    def test_pre_sliced_truncation_respects_cap(self):
+        # Regression: the pre_sliced branch (input > MAX*4 that _normalise then
+        # shrinks back under the cap) appended the 17-char marker WITHOUT a budget
+        # slice, so a normalised length just under MAX overflowed the
+        # ``len(text) <= MAX_EXTRACTED_CHARS`` invariant by up to 17 chars.
+        # Construct exactly that: ~MAX non-whitespace chars followed by a huge
+        # collapsible whitespace tail pushing the raw input over MAX*4. After the
+        # 2M pre-slice + _normalise (which .strip()s the trailing run) the body is
+        # ~MAX-5 chars (in the danger window > MAX-17), so the marker is appended.
+        body_len = de.MAX_EXTRACTED_CHARS - 5
+        whitespace_tail = " " * (de.MAX_EXTRACTED_CHARS * 4 + 10 - body_len)
+        payload = ("x" * body_len) + whitespace_tail
+        assert len(payload) > de.MAX_EXTRACTED_CHARS * 4  # ensures pre_sliced=True
+        result = de._extract_text("huge.txt", payload)
+        assert result is not None
+        # The invariant must hold strictly (old code produced MAX + 17 here).
+        assert result.char_count <= de.MAX_EXTRACTED_CHARS
+        assert result.char_count == len(result.text)
+        assert "truncated" in result.text
+
 
 class TestRejoinPdfLines:
     def test_empty_input(self):

@@ -648,6 +648,100 @@ class TestChannelCoercionHelpers:
         assert AI._as_text_channel(MagicMock(spec=discord.Thread)) is None
 
 
+class TestCheckCustomChannelLimit:
+    """Fix D: _check_custom_channel_limit forwards ``send_message`` onward.
+
+    The owner-set per-channel limit enforcement gained a keyword-only
+    ``send_message`` param so the webhook proxy path (Tupperbox/PluralKit) can
+    drop an exceeded request SILENTLY (``send_message=False``), matching its
+    sibling rate-limit checks, while the @mention/reply and DM callers keep the
+    visible default (``True``). The flag must reach ``check_rate_limit``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_check_custom_channel_limit_forwards_send_message_false(self):
+        """send_message=False is forwarded verbatim to check_rate_limit."""
+        from cogs.ai_core.ai_cog import AI
+
+        message = MagicMock()
+        message.channel.id = 999
+
+        with (
+            patch(
+                "cogs.ai_core.ai_cog.check_rate_limit",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as crl,
+            patch(
+                "cogs.ai_core.ai_cog.rate_limiter.get_custom_channel_limit",
+                return_value=5,
+            ),
+            patch(
+                "cogs.ai_core.ai_cog.rate_limiter.channel_config_name",
+                return_value="custom_channel_999",
+            ),
+        ):
+            result = await AI._check_custom_channel_limit(message, send_message=False)
+
+        assert result is True
+        crl.assert_awaited_once()
+        # Pre-fix the param did not exist (TypeError); the fix must pass it on.
+        assert crl.await_args.kwargs.get("send_message") is False
+
+    @pytest.mark.asyncio
+    async def test_check_custom_channel_limit_defaults_send_message_true(self):
+        """Omitting send_message defaults to True (the visible-message path)."""
+        from cogs.ai_core.ai_cog import AI
+
+        message = MagicMock()
+        message.channel.id = 999
+
+        with (
+            patch(
+                "cogs.ai_core.ai_cog.check_rate_limit",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as crl,
+            patch(
+                "cogs.ai_core.ai_cog.rate_limiter.get_custom_channel_limit",
+                return_value=5,
+            ),
+            patch(
+                "cogs.ai_core.ai_cog.rate_limiter.channel_config_name",
+                return_value="custom_channel_999",
+            ),
+        ):
+            result = await AI._check_custom_channel_limit(message)
+
+        assert result is True
+        crl.assert_awaited_once()
+        assert crl.await_args.kwargs.get("send_message") is True
+
+    @pytest.mark.asyncio
+    async def test_check_custom_channel_limit_no_custom_limit_returns_true(self):
+        """No custom limit configured -> True without consulting check_rate_limit."""
+        from cogs.ai_core.ai_cog import AI
+
+        message = MagicMock()
+        message.channel.id = 999
+
+        with (
+            patch(
+                "cogs.ai_core.ai_cog.check_rate_limit",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as crl,
+            patch(
+                "cogs.ai_core.ai_cog.rate_limiter.get_custom_channel_limit",
+                return_value=None,
+            ),
+        ):
+            result = await AI._check_custom_channel_limit(message)
+
+        assert result is True
+        crl.assert_not_awaited()
+
+
 # ----------------------------------------------------------------------
 # cog_load (164-166, 184-191, 205-206, 229-230)
 # ----------------------------------------------------------------------

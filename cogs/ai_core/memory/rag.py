@@ -611,6 +611,16 @@ class MemorySystem:
         # after insert, so the tokenization is stable. Dropped on the
         # same invalidation as the snapshot above.
         self._memory_token_cache: dict[int, frozenset[str]] = {}
+        # Guards size-changing access to _memory_token_cache, which is WRITTEN
+        # from a to_thread worker (_ensure_token_sets) while the event loop may
+        # iterate/clear it (_evict_all_memories_cache_if_needed,
+        # invalidate_all_memories_cache, add_memory). Without this, a worker-thread
+        # insert during the loop-side eviction iteration raised "dictionary
+        # changed size during iteration". A threading.Lock (not asyncio.Lock) is
+        # required because the writer runs off-loop; it is held ONLY around the
+        # cheap dict mutation — the expensive re.findall tokenization stays
+        # outside the lock so the event loop is never blocked on it.
+        self._memory_token_cache_lock = threading.Lock()
 
         # Debounced save state
         self._save_task: asyncio.Task | None = None
@@ -758,12 +768,20 @@ class MemorySystem:
         token_cache = getattr(self, "_memory_token_cache", None)
         if token_cache is None:
             token_cache = self._memory_token_cache = {}
+        # Tokenize OUTSIDE the lock — re.findall over every row is the slow part
+        # this method is offloaded to a worker thread for. Only the dict merge
+        # below is synchronized, so the event loop never blocks on tokenization.
+        new_entries: dict[int, frozenset[str]] = {}
         for mem in rows:
             mem_id = mem.get("id")
-            if mem_id is None or mem_id in token_cache:
+            if mem_id is None or mem_id in token_cache or mem_id in new_entries:
                 continue
             content = (mem.get("content") or "").lower()
-            token_cache[mem_id] = frozenset(re.findall(r"\w+", content))
+            new_entries[mem_id] = frozenset(re.findall(r"\w+", content))
+        if new_entries:
+            lock = getattr(self, "_memory_token_cache_lock", None)
+            with lock or contextlib.nullcontext():
+                token_cache.update(new_entries)
 
     def invalidate_all_memories_cache(self, channel_id: int | None = None) -> None:
         """Drop the cached `get_all_rag_memories` snapshot.
@@ -780,7 +798,9 @@ class MemorySystem:
         # the no-op-__init__ test construction path.
         token_cache = getattr(self, "_memory_token_cache", None)
         if token_cache is not None:
-            token_cache.clear()
+            lock = getattr(self, "_memory_token_cache_lock", None)
+            with lock or contextlib.nullcontext():
+                token_cache.clear()
 
     def _evict_all_memories_cache_if_needed(self, now: float) -> None:
         """Bound the per-channel snapshot cache.
@@ -806,8 +826,14 @@ class MemorySystem:
         token_cache = getattr(self, "_memory_token_cache", None)
         if token_cache:
             live_ids = {mem.get("id") for _exp, rows in cache.values() for mem in rows}
-            for mem_id in [m for m in token_cache if m not in live_ids]:
-                token_cache.pop(mem_id, None)
+            # Hold the lock around the iteration + pops: a concurrent worker-thread
+            # insert (_ensure_token_sets) during this prune would otherwise raise
+            # "dictionary changed size during iteration". Snapshotting the keys
+            # under the lock keeps the prune correct without blocking on tokenization.
+            lock = getattr(self, "_memory_token_cache_lock", None)
+            with lock or contextlib.nullcontext():
+                for mem_id in [m for m in token_cache if m not in live_ids]:
+                    token_cache.pop(mem_id, None)
 
     async def generate_embedding(self, text: str) -> np.ndarray | None:
         """Generate vector embedding for text using Gemini API."""
@@ -1318,7 +1344,9 @@ class MemorySystem:
         # ``getattr`` tolerates the no-op-__init__ test construction path.
         _token_cache = getattr(self, "_memory_token_cache", None)
         if _token_cache is not None:
-            _token_cache.clear()
+            _lock = getattr(self, "_memory_token_cache_lock", None)
+            with _lock or contextlib.nullcontext():
+                _token_cache.clear()
 
         logger.info("🧠 Saved RAG memory: %s...", content[:30])
         return True

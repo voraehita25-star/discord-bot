@@ -255,6 +255,24 @@ class TestSendAsWebhook:
         assert mock_webhook.send.call_count == 2
 
 
+class TestSafeSplitMessage:
+    def test_no_orphaned_thai_mark_on_hard_cut(self):
+        # Regression: 8 ASCII + a Thai syllable (base + 2 combining marks) +
+        # filler with NO spaces/newlines forces a hard cut that pre-fix landed
+        # between the combining marks, orphaning one at the next chunk's start
+        # (renders as a stray ◌-form glyph). The hard-cut branch now rewinds past
+        # the marks AND their base char, mirroring _split_for_discord.
+        from cogs.ai_core.tools.tool_executor import _THAI_COMBINING, _safe_split_message
+
+        text = "a" * 8 + "ก่่" + "b" * 10
+        chunks = _safe_split_message(text, limit=10)
+        assert len(chunks) > 1
+        for c in chunks:
+            assert c  # never an empty chunk
+            assert ord(c[0]) not in _THAI_COMBINING  # no orphaned combining mark
+        assert "".join(chunks) == text  # the hard cut loses no content
+
+
 class TestModuleExports:
     """Tests for module exports."""
 

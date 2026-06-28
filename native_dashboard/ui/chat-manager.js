@@ -788,6 +788,14 @@ export class ChatManager {
                     this.renderMessages();
                     this.listConversations();
                     showToast('Message deleted', { type: 'success' });
+                    // Producer contract (dashboard_handlers.py message_deleted):
+                    // when the Claude CLI --resume session couldn't be reset, the
+                    // next turn may replay the deleted message. Surface the
+                    // documented reload hint instead of leaving the divergence
+                    // silent (the field was emitted but never consumed before).
+                    if (data.cli_session_diverged === true) {
+                        showToast('Deleted — but the AI session may replay this next turn. Reload the conversation to force a fresh session.', { type: 'warning', duration: 8000 });
+                    }
                 }
                 break;
             case 'message_pinned':

@@ -1082,6 +1082,44 @@ class TestSearchSourceExtraction:
         fb.extract_info.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_search_source_fallback_nondownloaderror_returns_none(self):
+        """Fix A: a NON-DownloadError from the fallback extractor returns None.
+
+        HQ raises DownloadError to trigger the fallback; the fallback then
+        raises a bare ValueError (the kind a hostile/third-party extractor can
+        emit — NOT a DownloadError). Pre-fix the inner handler only caught
+        ``(TimeoutError, yt_dlp.DownloadError)``, so a ValueError raised inside
+        that handler's suite escaped the whole try statement (the sibling broad
+        ``except Exception`` only guards the try BODY, not another handler) and
+        propagated out of search_source — violating its documented
+        ``dict | None`` contract and freezing the music-cog caller's queue.
+        The broadened ``except Exception`` must normalize it to None.
+
+        A plain search term never enters the SSRF branch (that only fires for
+        raw URLs), so no _is_private_url patch is needed here.
+        """
+        from unittest.mock import MagicMock, patch
+
+        import yt_dlp
+
+        from utils.media.ytdl_source import YTDLSource
+
+        hq = MagicMock()
+        hq.extract_info.side_effect = yt_dlp.DownloadError("hq boom")
+        fb = MagicMock()
+        fb.extract_info.side_effect = ValueError("hostile extractor")
+
+        with (
+            patch("utils.media.ytdl_source.get_ytdl_hq", return_value=hq),
+            patch("utils.media.ytdl_source.get_ytdl_fallback", return_value=fb),
+        ):
+            # Must RETURN None, not raise.
+            result = await YTDLSource.search_source("never gonna give you up")
+
+        assert result is None
+        fb.extract_info.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_search_rejects_non_http_url_scheme(self):
         """A real non-http(s) URL scheme (with '://') is rejected, returns None."""
         from utils.media.ytdl_source import YTDLSource

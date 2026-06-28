@@ -507,7 +507,17 @@ class YTDLSource(discord.PCMVolumeTransformer):
                     ),
                     timeout=cls.YTDL_TIMEOUT,
                 )
-            except (TimeoutError, yt_dlp.DownloadError) as exc:
+            except Exception as exc:
+                # Broadened from (TimeoutError, yt_dlp.DownloadError): the
+                # fallback extract_info can also raise non-DownloadError
+                # YoutubeDLError subclasses (ExtractorError/GeoRestrictedError)
+                # or a bare ValueError/KeyError from a hostile extractor. Raised
+                # inside THIS handler's suite, such an exception escapes the whole
+                # try statement — the sibling broad `except Exception` below only
+                # guards the try BODY, not another handler's suite — and the music
+                # cog caller only handles DownloadError/ValueError, so an escapee
+                # would freeze the queue. Normalize every fallback failure to None
+                # like the outer catch, honoring the documented dict|None contract.
                 logger.warning("Search fallback extraction failed: %s", exc)
                 return None
         except Exception as exc:

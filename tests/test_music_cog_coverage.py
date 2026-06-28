@@ -719,6 +719,39 @@ class TestFixCommand:
         ctx.send.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_fix_user_not_in_voice_does_not_disconnect(self):
+        """Fix B: !fix by a user NOT in voice bails BEFORE tearing down.
+
+        The early author-voice guard added right after the playing-guard must
+        return an error embed WITHOUT stopping playback or disconnecting the
+        live session. Pre-fix the command tore down (stop + disconnect) first
+        and only THEN bailed at the reconnect else-branch, dropping live
+        playback (and, via deferred cleanup, the queue).
+        """
+        cog = make_cog()
+        vc = make_voice_client(playing=True, paused=False)
+        ctx = make_ctx(voice_client=vc, in_voice=False)
+        # current_track is populated to prove the guard returns BEFORE the
+        # teardown is reached; if the guard regresses, stop/disconnect fire
+        # and the assertions below catch it.
+        cog._gs(ctx.guild.id).current_track = {
+            "filename": "temp/a.mp3",
+            "data": {},
+            "start_time": 100.0,
+            "title": "T",
+        }
+
+        await cog.fix.callback(cog, ctx)
+
+        # The live connection must be left completely untouched.
+        vc.stop.assert_not_called()
+        vc.disconnect.assert_not_called()
+        # An error embed was sent to the user.
+        ctx.send.assert_awaited()
+        # The teardown flag was never raised (guard returned first).
+        assert cog._gs(ctx.guild.id).fixing is False
+
+    @pytest.mark.asyncio
     async def test_fix_file_missing(self):
         """File deleted before reconnect -> error embed (1427-1434)."""
         cog = make_cog()

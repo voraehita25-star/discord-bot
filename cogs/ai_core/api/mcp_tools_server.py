@@ -99,7 +99,14 @@ def _handle_tools_list(mid) -> None:
     _send({"jsonrpc": "2.0", "id": mid, "result": {"tools": tools}})
 
 
-def _handle_tools_call(mid, params: dict) -> None:
+def _handle_tools_call(mid, params: Any) -> None:
+    # A valid JSON-RPC 2.0 frame may carry array (or other non-object) params;
+    # `req.get("params") or {}` at the call site does NOT substitute a truthy
+    # non-dict (e.g. ["x"]), so without this guard params.get(...) below raises
+    # AttributeError, which escapes the stdin loop and kills the server for the
+    # whole session — the same class already guarded for `req` in main().
+    if not isinstance(params, dict):
+        params = {}
     name = params.get("name", "")
     arguments = params.get("arguments") or {}
     try:

@@ -20,6 +20,32 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.resolve()))
 
 
+class TestEnvFloat:
+    """_env_float: lenient float env parse — never crashes the bot at import."""
+
+    def test_valid_value(self, monkeypatch):
+        from utils.database.database import _env_float
+
+        monkeypatch.setenv("X_DB_TEST_FLOAT", "12.5")
+        assert _env_float("X_DB_TEST_FLOAT", 30.0) == 12.5
+
+    def test_malformed_falls_back(self, monkeypatch):
+        # Regression: a bare float(os.getenv(...)) raised ValueError at import on a
+        # non-numeric value, aborting bot startup. The helper must fall back.
+        from utils.database.database import _env_float
+
+        monkeypatch.setenv("X_DB_TEST_FLOAT", "not-a-number")
+        assert _env_float("X_DB_TEST_FLOAT", 30.0) == 30.0
+
+    def test_blank_and_missing_fall_back(self, monkeypatch):
+        from utils.database.database import _env_float
+
+        monkeypatch.setenv("X_DB_TEST_FLOAT", "   ")
+        assert _env_float("X_DB_TEST_FLOAT", 30.0) == 30.0
+        monkeypatch.delenv("X_DB_TEST_FLOAT", raising=False)
+        assert _env_float("X_DB_TEST_FLOAT", 30.0) == 30.0
+
+
 class TestDatabaseSchema:
     """Test database schema initialization."""
 

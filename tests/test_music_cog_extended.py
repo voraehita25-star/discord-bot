@@ -2390,6 +2390,64 @@ class TestPlayNextOnce:
         assert result is True
 
     @pytest.mark.asyncio
+    async def test_play_discord_exception_send_failure_still_retries(self):
+        # Regression: when the error-notification ctx.send ALSO raises a
+        # discord.DiscordException inside the DiscordException except-suite, it
+        # must NOT escape _play_next_once (play_next awaits it with no try/except,
+        # so an escapee freezes the queue). The guard swallows the failed send and
+        # the retry signal is still returned.
+        import collections
+
+        cog, mock_bot = _make_cog()
+        ctx, vc = self._ctx(213)
+        ctx.send = AsyncMock(side_effect=discord.DiscordException("send fail"))
+        cog._gs(213).queue = collections.deque([{"url": "http://song"}])
+
+        player = MagicMock()
+        player.filename = "f.mp3"
+        player.title = "Song"
+        player.data = {
+            "title": "Song",
+            "webpage_url": "u",
+            "thumbnail": None,
+            "duration": 1,
+            "url": "u",
+        }
+        vc.play.side_effect = discord.DiscordException("play fail")
+
+        with patch("asyncio.run_coroutine_threadsafe", new=closing_create_task_mock()):
+            with patch("cogs.music.cog.YTDLSource.from_url", new=AsyncMock(return_value=player)):
+                result = await cog._play_next_once(ctx)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_play_oserror_send_failure_still_retries(self):
+        # Same guard as above for the OSError branch.
+        import collections
+
+        cog, mock_bot = _make_cog()
+        ctx, vc = self._ctx(214)
+        ctx.send = AsyncMock(side_effect=discord.DiscordException("send fail"))
+        cog._gs(214).queue = collections.deque([{"url": "http://song"}])
+
+        player = MagicMock()
+        player.filename = "f.mp3"
+        player.title = "Song"
+        player.data = {
+            "title": "Song",
+            "webpage_url": "u",
+            "thumbnail": None,
+            "duration": 1,
+            "url": "u",
+        }
+        vc.play.side_effect = OSError("audio")
+
+        with patch("asyncio.run_coroutine_threadsafe", new=closing_create_task_mock()):
+            with patch("cogs.music.cog.YTDLSource.from_url", new=AsyncMock(return_value=player)):
+                result = await cog._play_next_once(ctx)
+        assert result is True
+
+    @pytest.mark.asyncio
     async def test_from_url_download_error_retries(self):
         import collections
 

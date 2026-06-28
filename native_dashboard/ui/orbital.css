@@ -1574,6 +1574,151 @@ html[data-theme="light"] .message-avatar {
 }
 
 /* ============================================================================
+   POLISH PASS (2026-06) — on-brand interaction + rest-state refinements.
+   APPEND-ONLY, additive; kept BEFORE the authoritative FOCUS block so that block
+   stays source-order-last. Strategy: deepen the INTERACTION layer (hover / press
+   feedback the static visual baselines never capture, so it adds "feel" at zero
+   regression cost) plus a few small rest-state touches (history header hairline,
+   chart fill). No contrast-bearing token is weakened; no id / class / contract
+   touched; every transform is wrapped in prefers-reduced-motion: no-preference.
+   ============================================================================ */
+
+/* ---- card interaction parity — every bracketed panel lifts + blooms like the
+   stat/control/chart cards already do (settings + api panels previously only
+   brightened their corner ticks). Transitions are rest-state-invisible, so the
+   committed visual baselines are unaffected. -------------------------------- */
+@media (prefers-reduced-motion: no-preference) {
+    .settings-card,
+    .api-failover-card,
+    .charts-section,
+    .quick-actions {
+        transition: transform var(--dur-base) var(--ease-smooth),
+                    box-shadow var(--dur-base) var(--ease-smooth),
+                    border-color var(--dur-base) var(--ease-smooth);
+    }
+    .settings-card:hover,
+    .api-failover-card:hover {
+        transform: translateY(-3px);
+        border-color: var(--border-strong);
+    }
+    /* unify the lift shadow across ALL lifting panels: add the cyan bloom that
+       the stat cards already get on hover. */
+    .control-card:hover,
+    .chart-card:hover,
+    .data-section:hover,
+    .settings-card:hover,
+    .api-failover-card:hover {
+        box-shadow: var(--shadow-lg), var(--shadow-glow), var(--glass-hi);
+    }
+}
+
+/* ---- stat-icon chip reacts to its card's hover: brighter frame + cyan halo -- */
+.stat-icon, .stat-card .stat-icon {
+    transition: border-color var(--dur-base) var(--ease-smooth),
+                box-shadow var(--dur-base) var(--ease-smooth),
+                background var(--dur-base) var(--ease-smooth);
+}
+.stat-card:hover .stat-icon {
+    border-color: var(--border-focus);
+    box-shadow: var(--glass-hi), 0 0 16px var(--cyan-200);
+}
+
+/* ---- nav rail — a tactile micro-slide on hover (active item stays anchored) -- */
+@media (prefers-reduced-motion: no-preference) {
+    .nav-item {
+        transition: background var(--dur-fast) var(--ease-smooth),
+                    border-color var(--dur-fast) var(--ease-smooth),
+                    color var(--dur-fast) var(--ease-smooth),
+                    transform var(--dur-fast) var(--ease-smooth);
+    }
+    .nav-item:hover:not(.active) { transform: translateX(3px); }
+    .nav-item:active { transform: scale(.98); }   /* press still wins over the slide */
+}
+
+/* ---- buttons — a 1px hover lift for affordance; press still sinks 1px -------- */
+@media (prefers-reduced-motion: no-preference) {
+    .btn {
+        transition: background var(--dur-fast) var(--ease-smooth),
+                    border-color var(--dur-fast) var(--ease-smooth),
+                    box-shadow var(--dur-fast) var(--ease-smooth),
+                    transform var(--dur-fast) var(--ease-smooth),
+                    filter var(--dur-fast) var(--ease-smooth);
+    }
+    .btn:hover:not(:disabled) { transform: translateY(-1px); }
+    .btn:active:not(:disabled) { transform: translateY(1px); filter: brightness(.97); }
+    /* icon buttons are tiny — a lift reads as jitter; let them just brighten. */
+    .btn-icon:hover:not(:disabled) { transform: none; }
+}
+
+/* ---- list rows — a soft cyan ring on hover, matching the history channel rows
+   (orbital P6) so all tappable list rows share one hover language. ----------- */
+@media (prefers-reduced-motion: no-preference) {
+    .conversation-item, .data-item {
+        transition: background var(--dur-fast) var(--ease-smooth),
+                    border-color var(--dur-fast) var(--ease-smooth),
+                    box-shadow var(--dur-fast) var(--ease-smooth),
+                    transform var(--dur-fast) var(--ease);
+    }
+    .conversation-item:hover:not(.active),
+    .data-item:hover { box-shadow: var(--glow-hover); }
+}
+
+/* ---- scroll-to-bottom FAB + send button — lift + intensify glow on hover ---- */
+@media (prefers-reduced-motion: no-preference) {
+    .scroll-to-bottom-fab {
+        transition: transform var(--dur-base) var(--ease-bounce),
+                    box-shadow var(--dur-base) var(--ease-smooth),
+                    opacity var(--dur-base) var(--ease);
+    }
+    .scroll-to-bottom-fab:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-lg), var(--shadow-glow), var(--glass-hi);
+    }
+    .btn-send:hover:not(:disabled) {
+        box-shadow: 0 10px 26px rgba(45, 200, 255, 0.46);
+        filter: brightness(1.06);
+    }
+}
+
+/* ---- role cards — a gentle lift on hover (the selected card stays put) ------- */
+@media (prefers-reduced-motion: no-preference) {
+    .role-card {
+        transition: transform var(--dur-base) var(--ease-smooth),
+                    border-color var(--dur-base) var(--ease-smooth),
+                    box-shadow var(--dur-base) var(--ease-smooth);
+    }
+    .role-card:hover:not(.selected) { transform: translateY(-2px); }
+}
+
+/* ---- REST-STATE — the AI History header reads as a HUD command strip: a cyan
+   rule that fades from the left edge, instead of a flat full-width hairline.
+   (Changes the page-history visual baseline — regenerated alongside this pass.) */
+.history-header {
+    border-bottom: none;
+    background-image: linear-gradient(90deg, var(--accent-cyan) 0%, var(--cyan-200) 38%, transparent 92%);
+    background-repeat: no-repeat;
+    background-position: 0 100%;
+    background-size: 100% 2px;
+}
+.history-header h2 { font-family: var(--font-display); letter-spacing: 0.02em; }
+
+/* ---- REST-STATE — chart fill carries a touch more presence and the grid reads
+   a touch more clearly. app.ts reads these at draw time (SHARED CONTRACT #1), so
+   they stay plain custom-property overrides. (Touches the status visual
+   baselines — regenerated alongside this pass.) ------------------------------ */
+:root {
+    --chart-fill-top: rgba(61, 245, 255, .34);
+    --chart-fill-bot: rgba(61, 245, 255, .03);
+    --chart-grid: rgba(72, 196, 232, .12);
+}
+html[data-theme="light"],
+:root[data-theme="light"] {
+    --chart-fill-top: rgba(9, 124, 150, .26);
+    --chart-fill-bot: rgba(9, 124, 150, .03);
+    --chart-grid: rgba(11, 96, 124, .12);
+}
+
+/* ============================================================================
    FOCUS / FORCED-COLORS / CONTRAST — ONE authoritative ruleset, kept LAST so
    it wins source-order over every base + orbital focus style. Satisfies
    interactions.spec.ts (accepts outline OR box-shadow).

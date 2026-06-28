@@ -162,7 +162,9 @@ class AI(commands.Cog):
         return None
 
     @staticmethod
-    async def _check_custom_channel_limit(message: discord.Message) -> bool:
+    async def _check_custom_channel_limit(
+        message: discord.Message, *, send_message: bool = True
+    ) -> bool:
         """Enforce the owner-set per-channel rate limit (!channel_ratelimit).
 
         Returns True when the request may proceed (no custom limit configured,
@@ -171,10 +173,19 @@ class AI(commands.Cog):
         previously this was only wired into the rarely-used webhook command path, so
         the override silently did nothing on the common @mention/reply and DM paths.
         Consulted on every invocation path so the documented contract holds everywhere.
+
+        ``send_message`` forwards to ``check_rate_limit``: the webhook proxy path
+        (Tupperbox/PluralKit) passes ``False`` so an exceeded custom limit drops
+        the request silently, matching the two sibling checks on that path; the
+        @mention/reply and DM callers keep the visible default.
         """
         if rate_limiter.get_custom_channel_limit(message.channel.id) is None:
             return True
-        return await check_rate_limit(rate_limiter.channel_config_name(message.channel.id), message)
+        return await check_rate_limit(
+            rate_limiter.channel_config_name(message.channel.id),
+            message,
+            send_message=send_message,
+        )
 
     async def cog_load(self) -> None:
         """Called when the cog is loaded - safe place for async initialization."""
@@ -966,7 +977,10 @@ class AI(commands.Cog):
             # Owner-set per-channel limit (!channel_ratelimit). This was dead
             # wiring before: set_channel_limit created a bucket that no live
             # path ever consumed, so the command reported success for a no-op.
-            if not await self._check_custom_channel_limit(message):
+            # send_message=False to match the two sibling checks above — the
+            # webhook proxy path (Tupperbox/PluralKit) must stay silent, never
+            # posting a visible rate-limit notice in reply to a proxied message.
+            if not await self._check_custom_channel_limit(message, send_message=False):
                 return
 
             user_msg = parts[1] if len(parts) > 1 else ""

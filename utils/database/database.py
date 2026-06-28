@@ -21,9 +21,25 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env var, falling back to ``default`` on a missing/blank/
+    malformed value instead of raising at import (which would abort bot startup).
+    Mirrors the lenient env helpers in config.py / health_api.py — this was the
+    lone bare ``float(os.getenv(...))`` outlier."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        logger.warning("Invalid %s=%r; falling back to %s", name, raw, default)
+        return default
+
+
 # Database timeout configuration (in seconds)
 # Can be overridden via environment variable
-DB_CONNECTION_TIMEOUT = float(os.getenv("DB_CONNECTION_TIMEOUT", "30.0"))
+DB_CONNECTION_TIMEOUT = _env_float("DB_CONNECTION_TIMEOUT", 30.0)
 
 # Database file path
 DB_DIR = Path("data")
