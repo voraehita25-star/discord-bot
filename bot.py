@@ -616,10 +616,15 @@ class MusicBot(commands.AutoShardedBot):
                     )
                 self._metrics_started = True
 
-        # Start Memory Monitor (tuned for 32GB DDR5: warn 8GB, critical 16GB)
+        # Start Memory Monitor (defaults: warn 1 GiB, critical 1.5 GiB;
+        # override per-host via BOT_MEMORY_WARNING_MB / BOT_MEMORY_CRITICAL_MB)
         if MEMORY_MONITOR_AVAILABLE and memory_monitor is not None:
             memory_monitor.start()
-            logger.info("🧠 Memory monitor activated (warning: 8GB, critical: 16GB)")
+            logger.info(
+                "🧠 Memory monitor activated (warning: %.0fMB, critical: %.0fMB)",
+                memory_monitor.warning_mb,
+                memory_monitor.critical_mb,
+            )
 
     async def on_command_error(  # pylint: disable=arguments-differ
         self,

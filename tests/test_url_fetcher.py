@@ -1541,6 +1541,42 @@ class TestFetchUrlContentStandard:
         assert content is not None
         assert "dy" in content
 
+    @pytest.mark.asyncio
+    async def test_charsetless_text_html_still_decodes(self):
+        """Regression: a ``text/html`` page served without a charset must still
+        decode instead of failing the whole fetch.
+
+        aiohttp 3.14.x ``get_encoding()`` raises ``RuntimeError`` when the body
+        was read via the stream reader (``content.read`` does not populate the
+        response ``_body``) and the Content-Type carries no usable charset. That
+        RuntimeError is not a UnicodeDecodeError/LookupError, so pre-fix it
+        escaped the decode handler, propagated to the outer ``except Exception``
+        and returned ``(url, None)`` for the very common charset-less page.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        from utils.web import url_fetcher as uf
+
+        html = (
+            "<html><head><title>สวัสดี</title></head><body><main>ทดสอบเนื้อหา</main></body></html>"
+        ).encode()
+        session = MagicMock()
+        resp = _make_resp(200, {"Content-Type": "text/html"}, html)
+        # Faithfully reproduce real aiohttp 3.14.x: get_encoding() raises for a
+        # stream-read body with no charset parameter.
+        resp.get_encoding = MagicMock(
+            side_effect=RuntimeError("Cannot compute fallback encoding of a not yet read body")
+        )
+        session.get = AsyncMock(return_value=resp)
+
+        with _patch_fetch(session):
+            title, content = await uf.fetch_url_content("http://nocharset.example/")
+
+        # Pre-fix: RuntimeError escaped -> (url, None). Post-fix: UTF-8 default.
+        assert content is not None
+        assert "ทดสอบเนื้อหา" in content
+        assert title == "สวัสดี"
+
 
 class TestFetchUrlContentRedirects:
     """Tests for manual redirect following + per-hop SSRF re-checks."""

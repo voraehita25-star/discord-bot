@@ -626,8 +626,18 @@ Default Branch: {data.get("default_branch", "main")}
                 or (len(raw_bytes) >= 2 and raw_bytes[:2] == b"MZ")
             ):
                 return url, f"[Binary content despite Content-Type={content_type}]"
+            # ``get_encoding()`` raises RuntimeError when the body was read via
+            # the stream reader above (``content.read`` does not populate the
+            # response ``_body``) and the Content-Type carries no usable charset
+            # — the very common ``text/html`` served without a charset. Guard it
+            # and default to UTF-8 (the modern web default) so such a page still
+            # decodes instead of escaping to the outer handler and failing the
+            # whole fetch despite the bytes already being downloaded.
             try:
                 encoding = final_response.get_encoding()
+            except RuntimeError:
+                encoding = "utf-8"
+            try:
                 html = raw_bytes.decode(encoding or "utf-8")
             except (UnicodeDecodeError, LookupError):
                 # Fallback to latin-1 which accepts all byte values
