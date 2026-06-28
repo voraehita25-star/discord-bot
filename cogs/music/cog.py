@@ -1442,7 +1442,16 @@ class Music(commands.Cog):
                         description="ไม่สามารถเล่นเพลงถัดไปได้ กรุณาลองใหม่",
                         color=Colors.ERROR,
                     )
-                    await ctx.send(embed=embed)
+                    # Guard the error-notification send: a failed ctx.send raises
+                    # discord.DiscordException from INSIDE this except-suite, which
+                    # would escape past the finally blocks and out of
+                    # _play_next_once (play_next calls it with no try/except),
+                    # freezing the queue and never returning _retry_next. Mirror
+                    # the yt_dlp branch's guard below.
+                    try:
+                        await ctx.send(embed=embed)
+                    except discord.DiscordException:
+                        pass
                     logger.error("Play error (Discord): %s\n%s", e, traceback.format_exc())
                     _retry_next = True
                 except OSError as e:
@@ -1451,7 +1460,13 @@ class Music(commands.Cog):
                         description="เกิดข้อผิดพลาดกับไฟล์เสียง กรุณาลองใหม่",
                         color=Colors.ERROR,
                     )
-                    await ctx.send(embed=embed)
+                    # Same guard as the Discord branch above: a failed send here
+                    # raises discord.DiscordException from inside this except-suite
+                    # and would otherwise escape and freeze the queue.
+                    try:
+                        await ctx.send(embed=embed)
+                    except discord.DiscordException:
+                        pass
                     logger.error("Play error (audio/file): %s\n%s", e, traceback.format_exc())
                     _retry_next = True
                 except (yt_dlp.DownloadError, ValueError) as e:
@@ -1642,6 +1657,19 @@ class Music(commands.Cog):
             not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused()
         ):
             embed = discord.Embed(description=f"{Emojis.CROSS} ไม่มีเพลงเล่นอยู่", color=Colors.ERROR)
+            return await ctx.send(embed=embed)
+
+        # Validate the reconnect target BEFORE tearing down the live connection.
+        # Step 2 below stops playback and disconnects the bot; without this guard
+        # a !fix from a user NOT in a voice channel would drop the live session
+        # first and only THEN bail at the reconnect step — losing playback and,
+        # via the deferred-cleanup path, the queue. The sibling join() validates
+        # ctx.author.voice up front for exactly this reason. (The later
+        # else-branch at the reconnect step is kept as a defensive TOCTOU guard.)
+        if not ctx.author.voice:
+            embed = discord.Embed(
+                description=f"{Emojis.CROSS} คุณไม่ได้อยู่ในห้องเสียง", color=Colors.ERROR
+            )
             return await ctx.send(embed=embed)
 
         fix_embed = discord.Embed(

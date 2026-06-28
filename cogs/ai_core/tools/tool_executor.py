@@ -101,6 +101,13 @@ def _mutation_outcome(tee: _TeeChannel, success_msg: str) -> str:
     return failed if failed is not None else success_msg
 
 
+# Thai combining marks (tone/vowel marks) must never start a chunk — splitting
+# just before one renders a stray ◌-form glyph. Mirrors _THAI_COMBINING in
+# cogs/ai_core/logic.py:263 (kept local to avoid a logic<->tools import cycle;
+# keep the two definitions in sync).
+_THAI_COMBINING = set(range(0x0E30, 0x0E3B)) | set(range(0x0E47, 0x0E4F))
+
+
 def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
     """Split a message into chunks without breaking mid-line or mid-Unicode.
 
@@ -133,6 +140,16 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
                 split_at -= 1
             if split_at <= 0:
                 split_at = limit  # Fallback: force forward progress
+            # Rewind past Thai combining marks AND their base char so a hard cut
+            # never orphans a mark at the next chunk's start. Mirrors
+            # _split_for_discord (logic.py:296); the newline/space branches above
+            # can't land on a combining mark, so only the hard cut needs this.
+            rewind = split_at
+            while rewind > 1 and ord(text[rewind - 1]) in _THAI_COMBINING:
+                rewind -= 1
+            if rewind > 1 and rewind < split_at:
+                rewind -= 1
+            split_at = rewind
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
     if text and len(chunks) >= _MAX_CHUNKS:

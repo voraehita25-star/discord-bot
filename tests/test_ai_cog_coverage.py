@@ -1635,6 +1635,30 @@ class TestHandleWebhookMessage:
         assert cog.chat_manager.process_chat.call_args.args[2] == "hi there"
 
     @pytest.mark.asyncio
+    async def test_custom_channel_limit_called_silently_on_webhook_path(self):
+        # Regression (Fix E): the webhook proxy path MUST invoke the owner-set
+        # custom-channel limit check with send_message=False, matching its two
+        # sibling rate-limit checks above, so an exceeded per-channel limit never
+        # posts a visible rate-limit notice in reply to a Tupperbox/PluralKit
+        # proxied message. Pre-fix the call passed no send_message kwarg.
+        cog = _make_cog()
+        cog.chat_manager.process_chat = AsyncMock()
+        cog._check_custom_channel_limit = AsyncMock(return_value=True)
+        msg = _make_message(webhook_id=777, content="!chat hi there")
+        cog._webhook_verify_cache = {777: (True, time.time() + 1000)}
+        registered = MagicMock()
+        registered.cog_name = cog.__class__.__name__
+        registered.name = "chat"
+        cog.bot.get_command = MagicMock(return_value=registered)
+        with (
+            patch("cogs.ai_core.ai_cog.GUILD_ID_MAIN", msg.guild.id),
+            patch("cogs.ai_core.ai_cog.check_rate_limit", AsyncMock(return_value=True)),
+        ):
+            await cog._handle_webhook_message(msg)
+        cog._check_custom_channel_limit.assert_awaited_once_with(msg, send_message=False)
+        cog.chat_manager.process_chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_not_known_proxy_returns(self):
         cog = _make_cog()
         cog.chat_manager.process_chat = AsyncMock()

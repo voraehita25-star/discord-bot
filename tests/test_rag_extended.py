@@ -1627,6 +1627,80 @@ class TestAllMemoriesCache:
         # No eviction happened, so the token cache is left exactly as-is.
         assert system._memory_token_cache == {1: frozenset({"a"}), 2: frozenset({"b"})}
 
+    def test_memory_token_cache_lock_exists(self):
+        """Fix C: a normally-constructed MemorySystem has a usable token lock.
+
+        ``_memory_token_cache_lock`` (a threading.Lock created in __init__)
+        guards size-changing access to ``_memory_token_cache`` between the
+        off-loop tokenizer (_ensure_token_sets) and the event-loop-side
+        eviction/invalidation. A threading.Lock — not asyncio.Lock — is
+        required because the writer runs off-loop. It must exist and be a real,
+        acquirable lock on every normally-built instance.
+        """
+        from cogs.ai_core.memory.rag import MemorySystem
+
+        system = MemorySystem()
+        lock = system._memory_token_cache_lock
+        assert lock.acquire() is True
+        lock.release()
+        # Usable as a context manager too — the exact form the prune/update
+        # paths use (``with lock or contextlib.nullcontext():``).
+        with lock:
+            pass
+
+    def test_evict_prune_runs_under_token_cache_lock(self):
+        """Fix C: the evict-time token-cache prune mutates UNDER the lock.
+
+        The iterate+pop that mirrors evicted snapshots into the token cache is
+        now wrapped in ``self._memory_token_cache_lock`` so a concurrent
+        worker-thread insert (``_ensure_token_sets``) can't trigger
+        "dictionary changed size during iteration". Pre-fix the prune ran with
+        no lock at all, so the tracking context manager below would never be
+        entered (enter_count would stay 0). A real threading.Lock backs the
+        tracker so behaviour is otherwise unchanged.
+        """
+        import threading
+
+        from cogs.ai_core.memory.rag import MemorySystem
+
+        class _TrackingLock:
+            def __init__(self):
+                self._real = threading.Lock()
+                self.enter_count = 0
+
+            def __enter__(self):
+                self.enter_count += 1
+                return self._real.__enter__()
+
+            def __exit__(self, *exc):
+                return self._real.__exit__(*exc)
+
+            def acquire(self, *a, **k):
+                return self._real.acquire(*a, **k)
+
+            def release(self):
+                return self._real.release()
+
+        system = _new_system()
+        cap = MemorySystem._ALL_MEMORIES_MAX_CHANNELS
+        now = 1000.0
+        # (cap + 1) live channels (ascending expiry) -> exactly one is evicted,
+        # forcing the prune path past the early under-cap return.
+        system._all_memories_cache = {
+            i: (now + 100 + i, [{"id": i, "content": f"row {i}"}]) for i in range(cap + 1)
+        }
+        system._memory_token_cache = {i: frozenset({f"row{i}"}) for i in range(cap + 1)}
+        tracker = _TrackingLock()
+        system._memory_token_cache_lock = tracker
+
+        system._evict_all_memories_cache_if_needed(now)
+
+        # The prune mutated the token cache while holding the lock.
+        assert tracker.enter_count >= 1
+        # ...and the prune still did its job: under cap, evicted tokens gone.
+        assert len(system._all_memories_cache) <= cap
+        assert 0 not in system._memory_token_cache
+
 
 class TestGenerateEmbedding:
     """generate_embedding happy path + shape/error guards."""

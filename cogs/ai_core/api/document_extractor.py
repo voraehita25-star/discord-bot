@@ -570,8 +570,10 @@ def _extract_text(filename: str, data_field: str) -> ExtractedDocument | None:
     elif pre_sliced:
         # The early slice dropped tail content but _normalise then shrank the
         # result back under the cap, so the length check above wouldn't fire.
-        # Append the marker anyway so the truncation isn't silent.
-        text = text + _TRUNCATION_MARKER
+        # Append the marker anyway so the truncation isn't silent — slice to the
+        # budget first (mirroring the sibling branch above) so the 17-char marker
+        # can't push the final length past the MAX_EXTRACTED_CHARS invariant.
+        text = text[:_TRUNCATION_BUDGET] + _TRUNCATION_MARKER
     return ExtractedDocument(
         filename=filename,
         kind="text",

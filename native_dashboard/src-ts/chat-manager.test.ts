@@ -468,6 +468,36 @@ describe('handleMessage — message-level mutations', () => {
         cm.handleMessage({ type: 'message_deleted', message_id: 1, pair_message_id: 2 });
         expect(cm.messages.length).toBe(0);
     });
+
+    it('message_deleted with cli_session_diverged surfaces a reload-warning toast', () => {
+        // Regression: dashboard_handlers.py emits cli_session_diverged so the UI
+        // can warn the user that the next CLI turn may replay deleted content.
+        // The consumer previously never read the field, so the warning was silent.
+        const cm = mountDomAndChat();
+        cm.messages = [
+            { id: 1, role: 'user', content: 'hi', created_at: 't' },
+            { id: 2, role: 'assistant', content: 'hello', created_at: 't' },
+        ];
+        cm.handleMessage({
+            type: 'message_deleted',
+            message_id: 1,
+            pair_message_id: 2,
+            cli_session_diverged: true,
+        });
+        // Behavior preserved: messages still removed.
+        expect(cm.messages.length).toBe(0);
+        // AND the documented divergence warning is now surfaced (was silent before).
+        const warn = document.querySelector('#toast-container .toast-warning');
+        expect(warn).not.toBeNull();
+        expect(warn?.textContent ?? '').toMatch(/reload/i);
+    });
+
+    it('message_deleted without cli_session_diverged shows no warning toast', () => {
+        const cm = mountDomAndChat();
+        cm.messages = [{ id: 1, role: 'user', content: 'hi', created_at: 't' }];
+        cm.handleMessage({ type: 'message_deleted', message_id: 1, pair_message_id: null });
+        expect(document.querySelector('#toast-container .toast-warning')).toBeNull();
+    });
 });
 
 describe('updateProviderSelects — provider labels', () => {
