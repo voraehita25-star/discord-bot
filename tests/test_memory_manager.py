@@ -440,6 +440,32 @@ class TestCachedWithTTL:
         assert result2 == "data_test_2"
         assert call_count == 2
 
+    @pytest.mark.asyncio
+    async def test_default_key_content_based_for_unhashable(self):
+        """Unhashable args key on contents, not id() (which CPython recycles)."""
+        from utils.reliability.memory_manager import cached_with_ttl
+
+        call_count = 0
+
+        @cached_with_ttl(ttl=60, max_size=10)
+        async def fetch_data(params: dict) -> str:
+            nonlocal call_count
+            call_count += 1
+            return f"data_{call_count}"
+
+        # Two SEPARATE dict objects with equal contents must share a cache
+        # entry. id()-based keying would give distinct ids -> a false miss.
+        result1 = await fetch_data({"a": 1})
+        result2 = await fetch_data({"a": 1})
+        assert result1 == "data_1"
+        assert result2 == "data_1"
+        assert call_count == 1  # content HIT, function not called again
+
+        # Different contents must never collide onto the same key.
+        result3 = await fetch_data({"b": 2})
+        assert result3 == "data_2"
+        assert call_count == 2
+
 
 class TestGlobalMonitor:
     """Tests for global memory_monitor instance."""

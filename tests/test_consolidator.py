@@ -1174,6 +1174,37 @@ class TestConsolidateLockedFlow:
         assert result == 1
 
     @pytest.mark.asyncio
+    async def test_locked_skips_malformed_entity_keeps_valid(self, monkeypatch):
+        """A schema-violating trailing entity (non-dict facts, then a bare
+        string) is skipped by the REAL updater, so the valid leading entity
+        still persists and the run returns 1 instead of being zeroed by an
+        AttributeError escaping the loop."""
+        from unittest.mock import AsyncMock
+
+        import cogs.ai_core.memory.consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        mc._client = _make_client_returning("ignored")
+        # Alice is well-formed; Bob's facts is a string and "Charlie" is a bare
+        # string element — both must be skipped without raising.
+        mc._parse_extraction = lambda _text: {
+            "entities": [
+                {"name": "Alice", "facts": {"age": 20}},
+                {"name": "Bob", "facts": "student"},
+                "Charlie",
+            ]
+        }
+        em = mod.entity_memory
+        monkeypatch.setattr(em, "get_entity", AsyncMock(return_value=None))
+        monkeypatch.setattr(em, "add_entity", AsyncMock(return_value=42))
+
+        result = await mc._consolidate_locked(20, self._long_history(), None)
+
+        # Only Alice persisted; the malformed entries were skipped, not fatal.
+        assert result == 1
+
+    @pytest.mark.asyncio
     async def test_locked_reconcile_subtracts_not_zeroes(self):
         """Messages arriving during the await survive: subtract the snapshot,
         don't zero the live counter."""
@@ -1332,6 +1363,35 @@ class TestUpdateEntityFromExtraction:
         ok = await mc._update_entity_from_extraction(
             {"name": "Alice", "facts": {"age": 19}}, 5, None
         )
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_update_non_dict_entity_returns_false(self):
+        """A non-dict entity element (a bare string/int/list from a wrapped
+        bare-list extraction) is skipped, not raised on."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        for bad in (None, "Alice", 7, ["Alice"]):
+            assert await mc._update_entity_from_extraction(bad, 1, None) is False
+
+    @pytest.mark.asyncio
+    async def test_update_non_dict_facts_returns_false(self):
+        """A dict entity whose 'facts' is a string is rejected before any
+        facts_data.get(...) can raise AttributeError."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        ok = await mc._update_entity_from_extraction({"name": "Bob", "facts": "student"}, 1, None)
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_update_facts_as_list_returns_false(self):
+        """'facts' as a list is likewise rejected (non-dict)."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        mc = MemoryConsolidator()
+        ok = await mc._update_entity_from_extraction({"name": "Bob", "facts": ["x"]}, 1, None)
         assert ok is False
 
 

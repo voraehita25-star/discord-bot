@@ -227,6 +227,16 @@ class TestHumanReadableFormatter:
         assert "test.logger" in result
         assert "Test message" in result
 
+    def test_use_colors_survives_none_stdout(self, monkeypatch):
+        """use_colors=True must not crash when sys.stdout is None (pythonw.exe / no console)."""
+        import sys
+
+        from utils.monitoring.structured_logger import HumanReadableFormatter
+
+        monkeypatch.setattr(sys, "stdout", None)
+        formatter = HumanReadableFormatter()  # default use_colors=True (must not raise)
+        assert formatter.use_colors is False
+
 
 class TestStructuredLogger:
     """Tests for StructuredLogger class."""

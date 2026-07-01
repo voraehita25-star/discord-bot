@@ -278,11 +278,22 @@ class HistoryManager:
         recent = history[-clamp:] if clamp else []
         older = history[:-clamp] if clamp else list(history)
 
-        # 2. Score all older messages
-        scored_messages = []
-        for i, msg in enumerate(older):
-            importance, patterns = self._calculate_importance(msg)
-            scored_messages.append((i, msg, importance, patterns))
+        # 2. Score all older messages. _calculate_importance does a content-join
+        # + 8 compiled-regex .search() calls per message — real CPU work. On
+        # large histories offload the whole scan to a worker thread (mirroring
+        # smart_trim_by_tokens) so the regex pass doesn't block the event loop /
+        # heartbeat. Small histories compute inline to avoid thread overhead.
+        def _score_older() -> list[tuple[int, dict[str, Any], float, list[str]]]:
+            scored: list[tuple[int, dict[str, Any], float, list[str]]] = []
+            for i, msg in enumerate(older):
+                importance, patterns = self._calculate_importance(msg)
+                scored.append((i, msg, importance, patterns))
+            return scored
+
+        if len(older) > self.TOKEN_ESTIMATE_OFFLOAD_THRESHOLD:
+            scored_messages = await asyncio.to_thread(_score_older)
+        else:
+            scored_messages = _score_older()
 
         # 3. Sort by importance (descending)
         scored_messages.sort(key=lambda x: x[2], reverse=True)

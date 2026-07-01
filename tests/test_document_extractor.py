@@ -516,6 +516,24 @@ class TestExtractDocxMocked:
             assert "First paragraph" in result.text
             assert "Second paragraph" in result.text
 
+    def test_rejects_when_decoded_bytes_exceed_cap(self):
+        if de.DOCX_DISABLED:
+            pytest.skip("python-docx unavailable in this env")
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("[Content_Types].xml", b"<x/>")
+        zip_bytes = buf.getvalue()
+        with (
+            patch.object(de, "_MAX_DECODED_DOC_BYTES", len(zip_bytes) - 1),
+            patch("docx.Document") as mock_document,
+        ):
+            result = de._extract_docx("big.docx", self._make_url(zip_bytes))
+        assert result is None
+        mock_document.assert_not_called()
+
     def test_docx_parser_does_not_expand_xml_entities(self):
         """XXE / billion-laughs guard: the lxml parser python-docx uses must not
         expand XML entities. We rely on python-docx's own ``resolve_entities=

@@ -1,7 +1,7 @@
 # 📋 Code Audit Guide - คู่มือตรวจสอบโค้ด
 
 > เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot
-> **Last Updated:** June 15, 2026 | **Tests:** 5,076 Python ✅ + 298 frontend vitest ✅ + 72 Playwright ✅ | **Skipped:** 2 ✅ | **Python Test Files:** 114 | **Frontend Test Files:** 11 vitest + 8 Playwright e2e
+> **Last Updated:** July 1, 2026 | **Tests:** 5,412 Python ✅ + 448 frontend vitest ✅ + 72 Playwright ✅ | **Skipped:** 2 ✅ | **Python Test Files:** 114 | **Frontend Test Files:** 18 vitest + 8 Playwright e2e
 >
 > Tooling configs live in `pyproject.toml`: `[tool.ruff]`, `[tool.mypy]`, `[tool.pytest.ini_options]`, `[tool.bandit]`, `[tool.coverage]`. There is no separate `requirements-dev.txt` — dev tooling installs are listed in `Makefile`'s `install` target.
 
@@ -342,6 +342,7 @@ python scripts/maintenance/check_db.py
 | 2026-03-25 | ME | Phase 13: `rag_engine/lib.rs` path traversal in save()/load() | ✅ Fixed |
 | 2026-03-25 | ME | Phase 13: `database.py` missing indexes for knowledge_entries, error_logs | ✅ Fixed |
 | 2026-03-25 | ME | Phase 13: `database.py` audit_log index DESC + composite guild index | ✅ Fixed |
+| 2026-07-01 | ME | Loop Engineering Round 1: 53-group bin-packed full-repo review (all 4 stacks, non-test source, ~92k LOC) → adversarial-verify → plan → fix. 90 raw findings, 52 confirmed (0 critical/high, 8 medium, 44 low) across 41 files. Highlights: RAG-engine `load()` accepted over-length embeddings with non-finite surplus (positional data corruption), dashboard raw-image persistence before validation, cross-thread `RuntimeError` risk in music guild-state iteration, `load_metadata()` missing the cache-invalidation race guard `load_history()` already had, entity-type prompt-injection gap, mention-escaping drift between `tool_executor.py` and `sanitization.py`, dead `RagError`/`thiserror` in rag_engine removed. Independent reviewer+opposition final gate: APPROVE. Re-verified green after: pytest 5412/2 skip, ruff/mypy/bandit clean, TS tsc+vitest 448/448, Rust cargo check+test 39/39, Go build+vet+test clean | ✅ Fixed |
 
 ---
 

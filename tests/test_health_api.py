@@ -2278,6 +2278,48 @@ class TestBotHealthDataLatency:
 
         assert health.latency_ms == 100.0
 
+    @pytest.mark.parametrize("bad_latency", [float("nan"), float("inf"), float("-inf")])
+    def test_update_from_bot_non_finite_latency_coerced_to_zero(self, bad_latency):
+        """Non-finite bot.latency (ws=None during reconnect) is coerced to 0.0."""
+        try:
+            from utils.monitoring.health_api import BotHealthData
+        except ImportError:
+            pytest.skip("health_api not available")
+            return
+
+        health = BotHealthData()
+        mock_bot = MagicMock()
+        mock_bot.is_ready.return_value = True
+        mock_bot.latency = bad_latency
+        mock_bot.guilds = []
+        mock_bot.cogs = {}
+
+        health.update_from_bot(mock_bot)
+
+        assert health.latency_ms == 0.0
+
+    def test_non_finite_latency_serializes_as_strict_json(self):
+        """to_dict() output stays strict-JSON valid (no bare NaN) after nan latency."""
+        try:
+            from utils.monitoring.health_api import BotHealthData
+        except ImportError:
+            pytest.skip("health_api not available")
+            return
+
+        health = BotHealthData()
+        mock_bot = MagicMock()
+        mock_bot.is_ready.return_value = True
+        mock_bot.latency = float("nan")
+        mock_bot.guilds = []
+        mock_bot.cogs = {}
+
+        health.update_from_bot(mock_bot)
+        result = health.to_dict()
+
+        # allow_nan=False raises ValueError on any non-finite float, so this
+        # proves the emitted body is valid for strict JSON.parse consumers.
+        json.dumps(result, allow_nan=False)
+
 
 class TestBotHealthDataGuilds:
     """Tests for guild-related attributes."""

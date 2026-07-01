@@ -2118,6 +2118,47 @@ class TestHybridSearch:
         assert 1 in ids
 
     @pytest.mark.asyncio
+    async def test_semantic_only_dedups_doubled_faiss_id(self, monkeypatch):
+        """A memory_id FAISS returns twice is emitted once on the semantic path.
+
+        The FAISS id_map can hold the same memory_id at two positions after the
+        add-after-rebuild race documented in add_memory; both come back with
+        equal cosine. On the semantic-only branch (no keyword hits) hybrid_search
+        must de-dup so the row isn't emitted twice, burning two `limit` slots.
+        """
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._memories_cache = {}
+        system._all_memories_cache = {}
+        system._index_built = True
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        monkeypatch.setattr(rag, "FAISS_AVAILABLE", True)
+
+        rows = [{"id": 1, "content": "alpha beta", "created_at": ""}]
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(return_value=rows)
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        system.generate_embedding = AsyncMock(return_value=_unit_vec(50))
+
+        fake_index = MagicMock()
+        fake_index.is_initialized = True
+        # Same memory_id at two id_map positions, equal cosine.
+        fake_index.search_async = AsyncMock(return_value=[(1, 0.95), (1, 0.95)])
+        system._faiss_index = fake_index
+
+        async def _noop_ensure(_cid=None):
+            return None
+
+        system._ensure_index = _noop_ensure
+
+        # Query shares NO word tokens with "alpha beta", so keyword_results is
+        # empty and the semantic-only branch runs.
+        results = await system.hybrid_search("zzz qqq", channel_id=5, use_time_decay=False)
+        assert len([r for r in results if r.memory_id == 1]) == 1
+
+    @pytest.mark.asyncio
     async def test_search_memory_returns_contents(self, monkeypatch):
         """search_memory unwraps hybrid_search MemoryResults to content strings."""
         import cogs.ai_core.memory.rag as rag
@@ -2228,6 +2269,50 @@ class TestAddMemory:
         ok = await system.add_memory("fact", channel_id=None)
         assert ok is True  # DB row committed
         assert system._index_built is False  # scheduled for rebuild
+
+    @pytest.mark.asyncio
+    async def test_add_single_runs_off_event_loop_thread(self, monkeypatch):
+        """add_single is offloaded to a worker thread, not run on the loop.
+
+        add_single acquires the FAISSIndex threading lock a concurrent
+        save_to_disk worker can hold for its whole write; running it inline on
+        the event loop would stall the discord.py heartbeat. Prove the offload
+        by recording the thread ident add_single executes on and asserting it
+        differs from the test/event-loop thread.
+        """
+        import asyncio as _asyncio
+        import threading
+
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._index_lock = _asyncio.Lock()
+        system._index_built = True
+        system._all_memories_cache = {}
+        system._schedule_index_save = MagicMock()
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        monkeypatch.setattr(rag, "FAISS_AVAILABLE", True)
+
+        mock_db = MagicMock()
+        mock_db.save_rag_memory = AsyncMock(return_value=77)
+        monkeypatch.setattr(rag, "db", mock_db)
+        system.generate_embedding = AsyncMock(return_value=_unit_vec(11))
+
+        add_thread_ids: list[int] = []
+
+        def _record_thread(_vec, _mid):
+            add_thread_ids.append(threading.get_ident())
+
+        fake_index = MagicMock()
+        fake_index.add_single = MagicMock(side_effect=_record_thread)
+        system._faiss_index = fake_index
+
+        ok = await system.add_memory("fact", channel_id=None)
+        assert ok is True
+        fake_index.add_single.assert_called_once()
+        system._schedule_index_save.assert_called_once()
+        # add_single ran, but on a worker thread — not the event-loop thread.
+        assert add_thread_ids and add_thread_ids[0] != threading.get_ident()
 
 
 class TestEnsureIndex:

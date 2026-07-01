@@ -143,6 +143,28 @@ class TestLoadConversation:
             await handle_load_conversation(ws, {"id": "c1"})
         assert ws.last()["type"] == "conversation_loaded"
 
+    @pytest.mark.asyncio
+    async def test_load_budget_truncates_oldest(self, ws, mock_db):
+        """A conversation exceeding MAX_HISTORY_RESPONSE_CHARS is truncated
+        newest-first (oldest dropped) so the wire frame stays under the client's
+        50MB cap; ``truncated`` flags it."""
+        from cogs.ai_core.api.dashboard_handlers import handle_load_conversation
+
+        mock_db.get_dashboard_conversation.return_value = {"id": "c1", "role_preset": "general"}
+        mock_db.get_dashboard_messages.return_value = [
+            {"id": i, "content": "x" * 6, "thinking": ""} for i in range(3)
+        ]
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers.MAX_HISTORY_RESPONSE_CHARS", 10),
+        ):
+            await handle_load_conversation(ws, {"id": "c1"})
+        assert ws.last()["type"] == "conversation_loaded"
+        # Only the newest message fits the 10-char budget; ids 0 and 1 dropped.
+        assert [m["id"] for m in ws.last()["messages"]] == [2]
+        assert ws.last()["truncated"] is True
+
 
 class TestDeleteConversation:
     @pytest.mark.asyncio
@@ -255,6 +277,21 @@ class TestExportConversation:
         ):
             await handle_export_conversation(ws, {"id": "c1", "format": "json"})
         assert ws.last()["type"] == "conversation_exported"
+
+    @pytest.mark.asyncio
+    async def test_export_too_large(self, ws, mock_db):
+        """An export string over MAX_HISTORY_RESPONSE_CHARS is rejected with an
+        explicit error rather than emitting a frame the client silently drops."""
+        from cogs.ai_core.api.dashboard_handlers import handle_export_conversation
+
+        mock_db.export_dashboard_conversation.return_value = "x" * 50
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers.MAX_HISTORY_RESPONSE_CHARS", 10),
+        ):
+            await handle_export_conversation(ws, {"id": "c1", "format": "json"})
+        assert ws.last()["code"] == "EXPORT_TOO_LARGE"
 
 
 # ===================================================================
@@ -734,3 +771,36 @@ class TestSaveProfile:
         kwargs = mock_db.save_dashboard_user_profile.call_args.kwargs
         assert isinstance(kwargs["preferences"], str)
         assert json.loads(kwargs["preferences"]) == {"theme": "dark"}
+
+    @pytest.mark.asyncio
+    async def test_dict_preferences_all_unsupported_rejected(self, ws, mock_db):
+        """A dict whose values are all unsupported (nested dict) sanitizes to an
+        empty ``clean``; rejecting with INVALID_ARG prevents a NULL overwrite of
+        the stored preferences — the DB write must never happen."""
+        from cogs.ai_core.api.dashboard_handlers import handle_save_profile
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_save_profile(
+                ws,
+                {"profile": {"display_name": "U", "preferences": {"settings": {"theme": "dark"}}}},
+            )
+        assert ws.last()["code"] == "INVALID_ARG"
+        mock_db.save_dashboard_user_profile.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_dict_preferences_clears(self, ws, mock_db):
+        """An explicitly empty ``{}`` is a legitimate clear: it must still save
+        with preferences=None, not be rejected as INVALID_ARG."""
+        from cogs.ai_core.api.dashboard_handlers import handle_save_profile
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_save_profile(ws, {"profile": {"display_name": "U", "preferences": {}}})
+        assert ws.last()["type"] == "profile_saved"
+        kwargs = mock_db.save_dashboard_user_profile.call_args.kwargs
+        assert kwargs["preferences"] is None

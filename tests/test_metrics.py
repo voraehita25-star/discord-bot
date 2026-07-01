@@ -779,6 +779,33 @@ class TestBotMetricsObserveCommandLatency:
                 else:
                     metrics.command_latency = original_lat
 
+    def test_db_write_lock_wait_in_command_allowlist(self):
+        """db_write_lock_wait belongs in the command allowlist, not the circuit one."""
+        from utils.monitoring.metrics import BotMetrics
+
+        assert "db_write_lock_wait" in BotMetrics._COMMAND_LABEL_ALLOWLIST
+        assert "db_write_lock_wait" not in BotMetrics._CIRCUIT_NAME_ALLOWLIST
+
+    def test_observe_command_latency_db_write_lock_wait_not_remapped(self):
+        """db_write_lock_wait keeps its own label instead of rolling up under 'other'."""
+        from utils.monitoring.metrics import PROMETHEUS_AVAILABLE, metrics
+
+        original_enabled = metrics.enabled
+        original_lat = getattr(metrics, "command_latency", None)
+        try:
+            _enable_metrics_with_mocks(metrics)
+            metrics.observe_command_latency("db_write_lock_wait", 0.75)
+
+            if not PROMETHEUS_AVAILABLE:
+                metrics.command_latency.labels.assert_called_with(command="db_write_lock_wait")
+        finally:
+            metrics.enabled = original_enabled
+            if not PROMETHEUS_AVAILABLE:
+                if original_lat is None and hasattr(metrics, "command_latency"):
+                    del metrics.command_latency
+                else:
+                    metrics.command_latency = original_lat
+
 
 # ==================== TestBotMetricsObserveAiResponseTime ====================
 

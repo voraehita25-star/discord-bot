@@ -254,7 +254,11 @@ class HumanReadableFormatter(logging.Formatter):
 
     def __init__(self, use_colors: bool = True):
         super().__init__()
-        self.use_colors = use_colors and sys.stdout.isatty()
+        # sys.stdout is None when the process runs without an attached console
+        # (pythonw.exe / detached), so guard isatty() to avoid AttributeError
+        # during logging setup. Mirrors logger.py's None-safe console path.
+        stream = sys.stdout
+        self.use_colors = bool(use_colors and stream is not None and stream.isatty())
 
     def format(self, record: logging.LogRecord) -> str:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -329,7 +333,6 @@ class StructuredLogger:
     def __init__(self, name: str, level: int = logging.INFO):
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level)
-        self._context_stack: list[dict[str, Any]] = []
 
     @contextmanager
     def context(self, **kwargs):

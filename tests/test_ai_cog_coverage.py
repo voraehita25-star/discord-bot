@@ -2048,6 +2048,20 @@ class TestHandleDmMessage:
         cog.chat_manager.process_chat.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_leading_space_command_forwarded_as_chat(self):
+        cog = _make_cog()
+        cog.chat_manager.process_chat = AsyncMock()
+        cog.chat_manager.parse_voice_command = MagicMock(return_value=(None, None))
+        cog.bot.command_prefix = "!"
+        # A leading space means discord.py's dispatcher won't run this as a
+        # command, so the guard must fall through to process_chat rather than
+        # silently drop it.
+        msg = _make_message(is_dm=True, author_id=cog.OWNER_ID, content=" !chat hi")
+        with patch("cogs.ai_core.ai_cog.check_rate_limit", AsyncMock(return_value=True)):
+            await cog._handle_dm_message(msg)
+        cog.chat_manager.process_chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_voice_join_with_channel(self):
         cog = _make_cog()
         cog.chat_manager.parse_voice_command = MagicMock(return_value=("join", 12345))

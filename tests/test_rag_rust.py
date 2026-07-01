@@ -96,6 +96,74 @@ class TestRagEngineWrapperAddBatch:
         assert "b" in engine._entries
         assert "c" in engine._entries
 
+    @patch("cogs.ai_core.memory.rag_rust.RUST_AVAILABLE", False)
+    def test_add_batch_rust_path_skips_malformed_entry(self):
+        """Rust-path add_batch skips a KeyError entry, keeping the valid one."""
+        from cogs.ai_core.memory.rag_rust import RagEngineWrapper
+
+        class _FakeEntry:
+            def __init__(self, id, text, embedding, timestamp, importance):
+                self.id = id
+
+        class _FakeEngine:
+            def __init__(self):
+                self.received = None
+
+            def add_batch(self, entries):
+                self.received = entries
+                return len(entries)
+
+        engine = RagEngineWrapper(dimension=3)
+        engine._use_rust = True
+        fake = _FakeEngine()
+        engine._engine = fake
+        with patch("cogs.ai_core.memory.rag_rust.MemoryEntry", _FakeEntry):
+            added = engine.add_batch(
+                [
+                    {"id": "ok", "text": "good", "embedding": [0.1, 0.2, 0.3]},
+                    {"text": "missing id", "embedding": [0.1, 0.2, 0.3]},  # KeyError on e["id"]
+                ]
+            )
+
+        assert added == 1
+        assert len(fake.received) == 1
+        assert fake.received[0].id == "ok"
+
+    @patch("cogs.ai_core.memory.rag_rust.RUST_AVAILABLE", False)
+    def test_add_batch_rust_path_skips_typeerror_entry(self):
+        """Rust-path add_batch skips a TypeError entry, keeping the valid one."""
+        from cogs.ai_core.memory.rag_rust import RagEngineWrapper
+
+        class _FakeEntry:
+            def __init__(self, id, text, embedding, timestamp, importance):
+                if not isinstance(embedding, list):
+                    raise TypeError("embedding must be a list of floats")
+                self.id = id
+
+        class _FakeEngine:
+            def __init__(self):
+                self.received = None
+
+            def add_batch(self, entries):
+                self.received = entries
+                return len(entries)
+
+        engine = RagEngineWrapper(dimension=3)
+        engine._use_rust = True
+        fake = _FakeEngine()
+        engine._engine = fake
+        with patch("cogs.ai_core.memory.rag_rust.MemoryEntry", _FakeEntry):
+            added = engine.add_batch(
+                [
+                    {"id": "ok", "text": "good", "embedding": [0.1, 0.2, 0.3]},
+                    {"id": "bad", "text": "wrong", "embedding": "not-a-list"},  # TypeError
+                ]
+            )
+
+        assert added == 1
+        assert len(fake.received) == 1
+        assert fake.received[0].id == "ok"
+
 
 class TestRagEngineWrapperRemove:
     """Tests for remove method."""

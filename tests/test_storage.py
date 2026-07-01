@@ -641,6 +641,56 @@ class TestLoadMetadata:
             result = await storage.load_metadata(bot, channel_id)
             assert not result["thinking_enabled"]
 
+    @pytest.mark.asyncio
+    async def test_load_metadata_invalidation_midread_not_poisoned(self):
+        """An invalidation landing DURING the DB read must not re-poison the
+        metadata cache with the pre-edit snapshot. Mirrors load_history's
+        uncached-snapshot contract: load_metadata re-reads (bounded) and never
+        stores the stale value."""
+        from cogs.ai_core import storage
+
+        bot = MagicMock()
+        channel_id = 66_667
+
+        storage._metadata_cache.pop(channel_id, None)
+        storage._cache_generations.pop(channel_id, None)
+
+        calls = {"n": 0}
+        stale = {"thinking_enabled": True}
+        fresh = {"thinking_enabled": False}
+
+        async def fake_get_ai_metadata(cid):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # The "edit" (e.g. a thinking_enabled toggle) lands WHILE this
+                # first read is in flight: it bumps the generation and pops the
+                # cache, marking the snapshot below stale.
+                storage.invalidate_cache(cid)
+                return dict(stale)
+            return dict(fresh)
+
+        try:
+            with (
+                patch.object(storage, "DATABASE_AVAILABLE", True),
+                patch.object(storage, "db") as mock_db,
+            ):
+                mock_db.get_ai_metadata = fake_get_ai_metadata
+
+                result = await storage.load_metadata(bot, channel_id)
+
+            # The bounded re-read returns the POST-edit snapshot, not the stale
+            # pre-edit one.
+            assert result == fresh
+            assert result["thinking_enabled"] is False
+            # And the cache was never poisoned with the stale pre-edit snapshot.
+            with storage._cache_lock:
+                cached = storage._metadata_cache.get(channel_id)
+            if cached is not None:
+                assert cached[1]["thinking_enabled"] is False
+        finally:
+            storage._metadata_cache.pop(channel_id, None)
+            storage._cache_generations.pop(channel_id, None)
+
 
 class TestGetMessageByLocalId:
     """Tests for get_message_by_local_id function."""

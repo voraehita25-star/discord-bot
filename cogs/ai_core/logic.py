@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import AsyncIterator
 from datetime import timedelta, timezone
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -117,11 +118,14 @@ from .imports import (  # noqa: F401 - public re-exports
     CACHE_AVAILABLE,
     CIRCUIT_BREAKER_AVAILABLE,
     FALLBACK_AVAILABLE,
+    FEEDBACK_AVAILABLE,
     GUARDRAILS_AVAILABLE,
     HISTORY_MANAGER_AVAILABLE,
     TOKEN_TRACKER_AVAILABLE,
     URL_FETCHER_AVAILABLE,
+    add_feedback_reactions,
     extract_urls,
+    feedback_collector,
     fetch_all_urls,
     format_url_content_for_context,
     gemini_circuit,
@@ -316,6 +320,35 @@ def _split_for_discord(text: str, limit: int = 2000) -> list[str]:
 
 # NOTE: _load_cached_image_bytes is imported from .media_processor (line 61)
 # DO NOT redefine here - removed duplicate @lru_cache function
+
+
+@contextlib.asynccontextmanager
+async def _typing_or_noop(channel: Any) -> AsyncIterator[None]:
+    """เปิด typing indicator แบบ fail-safe — เปิดไม่ได้ก็ทำงานต่อโดยไม่มี typing.
+
+    ``channel.typing().__aenter__()`` ยิง HTTP ``send_typing`` จริง ถ้า Discord
+    ตอบ Forbidden/5xx/rate-limit ตรงนั้น exception จะข้ามทุก handler ด้านในแล้ว
+    หลุดออกจาก process_chat ทำให้ข้อความผู้ใช้ถูกทิ้งเงียบ ๆ. typing เป็นแค่
+    สัญญาณ cosmetic จึงต้อง degrade เป็น "ไม่มี typing" แทนการล้มทั้ง turn.
+
+    ใช้ ``__aenter__``/``__aexit__`` แบบ manual (ไม่ใช่ ``async with ...: yield``)
+    เพื่อกลืนเฉพาะความล้มเหลวตอน enter แล้วยัง ``yield`` ต่อได้ โดยไม่เกิด
+    double-yield RuntimeError เวลา body ภายในโยน exception.
+    """
+    typing_cm = channel.typing()
+    try:
+        await typing_cm.__aenter__()
+    except discord.HTTPException as e:
+        logger.debug("Typing indicator unavailable, continuing without it: %s", e)
+        yield
+        return
+    try:
+        yield
+    finally:
+        # suppress(Exception) ไม่ใช่ BaseException — ให้ CancelledError จาก body
+        # ยัง propagate ออกไปเพื่อ cancel task ได้ถูกต้อง (ตรงกับ re-raise ด้านล่าง).
+        with contextlib.suppress(Exception):
+            await typing_cm.__aexit__(None, None, None)
 
 
 def _find_history_item_index(
@@ -1206,6 +1239,29 @@ class ChatManager(SessionMixin, ResponseMixin):
             channel_id,
         )
 
+    async def _maybe_track_feedback(
+        self, sent_message: discord.Message | None, channel_id: int, response_text: str
+    ) -> None:
+        """Register an AI reply for feedback + add the reaction palette.
+
+        Gated behind the opt-in FEEDBACK_COLLECTION_ENABLED env flag (default
+        off → today's behavior is byte-for-byte unchanged). The flag is read at
+        call time so it stays runtime-/test-togglable. add_feedback_reactions
+        already self-suppresses discord.HTTPException, so no extra guard is
+        needed here — let any other exception surface to process_chat's handlers.
+        """
+        if sent_message is None or not FEEDBACK_AVAILABLE or feedback_collector is None:
+            return
+        if os.getenv("FEEDBACK_COLLECTION_ENABLED", "").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return
+        feedback_collector.track_message(sent_message.id, channel_id, response_text)
+        await add_feedback_reactions(sent_message)
+
     async def process_chat(
         self,
         channel: discord.TextChannel | discord.Thread | discord.DMChannel,
@@ -1338,7 +1394,7 @@ class ChatManager(SessionMixin, ResponseMixin):
             self._message_queue._lock_times[channel_id] = time.time()
             self._message_queue.reset_cancel(channel_id)
             typing_context = (
-                send_channel.typing() if generate_response else contextlib.nullcontext()
+                _typing_or_noop(send_channel) if generate_response else contextlib.nullcontext()
             )
 
             # Initialize variables BEFORE async with to prevent NameError in finally block
@@ -2164,6 +2220,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 # Save again to persist ID
                                 await update_message_id(context_channel.id, sent_message.id)
 
+                    # Feedback collection (opt-in via FEEDBACK_COLLECTION_ENABLED;
+                    # a no-op otherwise). Only the normal send path is wired here —
+                    # the per-character webhook/RP path above is out of scope.
+                    await self._maybe_track_feedback(sent_message, channel_id, response_text)
+
                 except _NewMessageInterrupt:
                     # Expected when a new message arrives — allow pending message processing
                     logger.info("🔄 Processing interrupted by new message, will handle pending")
@@ -2218,11 +2279,13 @@ class ChatManager(SessionMixin, ResponseMixin):
                 pass  # Lock was not acquired or already released
             # Clear lock time tracking
             self._message_queue._lock_times.pop(channel_id, None)
-            # Idempotent dedup-key cleanup. The inner finally only runs once
-            # we're INSIDE `async with typing_context:` — if typing()'s
-            # __aenter__ raises (Forbidden/HTTPException on send_typing), the
-            # key would otherwise stay stranded and identical retries would be
-            # silently dropped until the TTL cleanup.
+            # Idempotent dedup-key cleanup — now a defensive safety net. The
+            # inner finally clears this key once we're INSIDE the `async with`
+            # body; previously a typing() __aenter__ raise (Forbidden/HTTPException
+            # on send_typing) escaped before that and stranded the key. `_typing_or_noop`
+            # now degrades such a failure to no-typing instead of escaping, so the
+            # key can no longer be stranded here — this release just belt-and-suspenders
+            # covers any other early return that skips the inner finally.
             self._deduplicator.remove_request(request_key)
             # Drain pending messages even on error paths so a single failure
             # doesn't leave queued user messages stranded until the next turn.

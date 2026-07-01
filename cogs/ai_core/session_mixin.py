@@ -144,8 +144,10 @@ class SessionMixin:
 
             if get_cache_generation(channel_id) != generation:
                 # An external edit invalidated this channel mid-load — re-read
-                # once so the session registers post-edit history.
+                # once so the session registers post-edit history AND metadata
+                # (thinking_enabled), consumed below.
                 history = await load_history(self.bot, channel_id)
+                metadata = await load_metadata(self.bot, channel_id)
 
             self.chats[channel_id] = {
                 "history": history,

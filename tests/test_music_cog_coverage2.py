@@ -1027,6 +1027,82 @@ class TestCleanupCache:
 
 
 # ---------------------------------------------------------------------------
+# cleanup_cache concurrency: _guild_states snapshot vs. after-callback _gs()
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupCacheConcurrentSnapshot:
+    """Regression for 'dictionary changed size during iteration'.
+
+    cleanup_cache builds raw_in_use from ``list(self._guild_states.values())``,
+    so a concurrent ``_gs()``/``setdefault`` insert from the AudioPlayer
+    after-callback thread can no longer raise RuntimeError out of the
+    loop-thread comprehension. Pre-fix (iterating the live ``.values()`` view)
+    this test flaked to RuntimeError; post-fix the snapshot makes it safe.
+    """
+
+    @pytest.mark.asyncio
+    async def test_raw_in_use_survives_concurrent_gs_insert(self, tmp_path, monkeypatch):
+        import sys
+        import threading
+        import time as _time
+
+        from cogs.music import cog as cog_module
+
+        cog = make_cog()
+
+        temp_dir = tmp_path / "temp"
+        temp_dir.mkdir()
+
+        # Seed ~50 guilds with a current_track so raw_in_use actually iterates —
+        # each element is a GIL-switch opportunity that widens the race window.
+        for gid in range(50):
+            cog._gs(gid).current_track = {"filename": str(temp_dir / f"g{gid}.mp3")}
+
+        real_path = cog_module.Path
+
+        def fake_path(arg="temp", *a, **k):
+            if arg == "temp":
+                return real_path(str(temp_dir))
+            return real_path(arg, *a, **k)
+
+        monkeypatch.setattr(cog_module, "Path", fake_path)
+
+        stop = threading.Event()
+
+        def hammer():
+            # Mimic the after-callback thread: force setdefault inserts of
+            # ever-new guild ids so _guild_states grows under the loop read.
+            for nid in range(100_000, 120_000):
+                if stop.is_set():
+                    break
+                cog._gs(nid)
+
+        # Shrink the GIL switch interval so the interpreter almost certainly
+        # context-switches to the hammer thread *mid-comprehension* — that is
+        # what turns the latent race into a deterministic pre-fix failure.
+        old_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        t = threading.Thread(target=hammer, daemon=True)
+        t.start()
+        err: RuntimeError | None = None
+        try:
+            deadline = _time.monotonic() + 0.2
+            while _time.monotonic() < deadline:
+                try:
+                    await cog.cleanup_cache()
+                except RuntimeError as e:  # pragma: no cover - the fixed bug
+                    err = e
+                    break
+        finally:
+            stop.set()
+            t.join(timeout=1.0)
+            sys.setswitchinterval(old_interval)
+
+        assert err is None, f"cleanup_cache raced with _gs() insert: {err!r}"
+
+
+# ---------------------------------------------------------------------------
 # join.error / play.error (2607-2635)
 # ---------------------------------------------------------------------------
 
@@ -1213,6 +1289,82 @@ class TestPeriodicTempCleanupResidual:
         # Both survive: weird skipped via resolve OSError, stale unlink blocked.
         assert weird.exists()
         assert stale.exists()
+
+    @pytest.mark.asyncio
+    async def test_collect_in_use_survives_concurrent_gs_insert(self, tmp_path, monkeypatch):
+        """Regression: _collect_in_use iterates a ``list()`` snapshot of
+        _guild_states, so a concurrent ``_gs()``/``setdefault`` insert on the
+        after-callback thread can't raise 'dictionary changed size during
+        iteration'. In the periodic loop that RuntimeError is swallowed by the
+        broad ``except Exception`` (silently skipping a cleanup cycle), so we
+        assert it was never *logged* rather than that it escaped.
+        """
+        import asyncio as _a
+        import sys
+        import threading
+
+        from cogs.music import cog as cogmod
+
+        cog = make_cog()
+
+        temp_dir = tmp_path / "temp"
+        temp_dir.mkdir()
+
+        for gid in range(50):
+            cog._gs(gid).current_track = {"filename": str(temp_dir / f"g{gid}.mp3")}
+
+        real_path = cogmod.Path
+
+        def fake_path(arg="temp", *a, **k):
+            if arg == "temp":
+                return real_path(str(temp_dir))
+            return real_path(arg, *a, **k)
+
+        # Let several periodic cycles run (each calls _collect_in_use once)
+        # before cancelling, so the loop-thread read overlaps the hammer.
+        sleeps = {"n": 0}
+
+        async def fake_sleep(_secs):
+            sleeps["n"] += 1
+            if sleeps["n"] >= 8:
+                raise _a.CancelledError
+
+        stop = threading.Event()
+
+        def hammer():
+            for nid in range(100_000, 120_000):
+                if stop.is_set():
+                    break
+                cog._gs(nid)
+
+        spy_logger = MagicMock()
+        old_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        t = threading.Thread(target=hammer, daemon=True)
+        t.start()
+        try:
+            with (
+                patch.object(cogmod, "Path", side_effect=fake_path),
+                patch("asyncio.sleep", new=fake_sleep),
+                patch.object(cogmod, "logger", spy_logger),
+            ):
+                await cog._periodic_temp_cleanup()  # swallows any RuntimeError
+        finally:
+            stop.set()
+            t.join(timeout=1.0)
+            sys.setswitchinterval(old_interval)
+
+        # The periodic loop logs any caught exception at debug via
+        # ``logger.debug("Temp cleanup error: %s", e)``. Pre-fix the race lands
+        # here; post-fix it never fires.
+        race_logs = [
+            c
+            for c in spy_logger.debug.call_args_list
+            if len(c.args) >= 2
+            and isinstance(c.args[1], RuntimeError)
+            and "changed size during iteration" in str(c.args[1])
+        ]
+        assert not race_logs, f"_collect_in_use raced with _gs() insert: {race_logs}"
 
 
 class TestSafeRunCoroutineResidual:

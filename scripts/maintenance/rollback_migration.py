@@ -306,6 +306,13 @@ def cmd_restore(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    # diff/restore output uses ⚠️/✓; force UTF-8 so it can't crash with
+    # UnicodeEncodeError on a redirected cp874/cp1252 stdout.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser(description="SQLite migration rollback helper.")
     sub = parser.add_subparsers(dest="cmd", required=True)
 

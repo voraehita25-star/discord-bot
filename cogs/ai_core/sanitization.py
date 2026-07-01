@@ -54,6 +54,46 @@ def sanitize_role_name(name: str, max_length: int = 100) -> str:
     return cleaned.strip()[:max_length] or "unnamed-role"
 
 
+def escape_mentions(text: str) -> str:
+    """Defang Discord mentions in ``text`` (NFKC width-fold + ZWSP inserts).
+
+    Shared by :func:`sanitize_message_content` and ``send_as_webhook`` so both
+    paths escape mentions with the SAME rules. Length truncation is intentionally
+    NOT done here; callers that need a hard cap apply it after calling this.
+    """
+    # Escape dangerous mentions by inserting zero-width space.
+    # NFKC normalisation handles compatibility decompositions like
+    # full-width "\uff20" \u2192 "@" so the @everyone/@here regex below
+    # catches them. NOTE: NFKC does NOT fold Latin/Cyrillic/Greek script
+    # confusables (e.g. Cyrillic "\u0435" stays distinct from Latin "e"),
+    # so a string like "@\u0435veryone" passes through unescaped. Discord
+    # itself doesn't ping on confusables either, but be aware this is
+    # NOT a confusables-defeating filter \u2014 only a width-fold one.
+    text = unicodedata.normalize("NFKC", text)
+    # Sanitize BEFORE truncation to avoid splitting escape sequences.
+    # Idempotency guard: skip the substitution when a ZWSP is ALREADY
+    # the next char after the ``@``. Without this, repeated sanitizer
+    # passes (e.g. a value that's stored, fetched, and re-displayed)
+    # accumulate ``\u200b`` chars: ``@everyone`` \u2192
+    # ``@\u200beveryone`` \u2192 ``@\u200b\u200beveryone`` \u2192 \u2026 Use a
+    # negative lookahead so the substitution only fires the first time.
+    # Capture the keyword and re-emit it via a backreference so the original
+    # casing is preserved (a fixed lowercase replacement under IGNORECASE would
+    # silently fold "@EVERYONE" -> "@\u200beveryone", mangling the text). The
+    # ZWSP still breaks the ping; matches the role/user-mention style below.
+    text = re.sub(r"@(?!\u200b)(everyone)", "@\u200b\\1", text, flags=re.IGNORECASE)
+    text = re.sub(r"@(?!\u200b)(here)", "@\u200b\\1", text, flags=re.IGNORECASE)
+
+    # Escape role mentions (<@&ROLE_ID>) and user mentions (<@USER_ID>)
+    # from AI output. Same idempotency guard via negative lookahead.
+    text = re.sub(r"<@&(?!\u200b)(\d+)>", "<@&\u200b\\1>", text)
+    # Capture the optional legacy-nickname bang so it survives the rewrite \u2014
+    # ``<@!123>`` must become ``<@!\u200b123>``, not ``<@\u200b123>`` (the old
+    # ``!?`` consumed the ``!`` and the replacement silently dropped it).
+    text = re.sub(r"<@(!?)(?!\u200b)(\d+)>", "<@\\1\u200b\\2>", text)
+    return text
+
+
 def sanitize_message_content(content: str, max_length: int = 2000) -> str:
     """Sanitize message content for safe sending.
 
@@ -68,36 +108,7 @@ def sanitize_message_content(content: str, max_length: int = 2000) -> str:
     if content is None:
         return ""
 
-    # Escape dangerous mentions by inserting zero-width space.
-    # NFKC normalisation handles compatibility decompositions like
-    # full-width "\uff20" \u2192 "@" so the @everyone/@here regex below
-    # catches them. NOTE: NFKC does NOT fold Latin/Cyrillic/Greek script
-    # confusables (e.g. Cyrillic "\u0435" stays distinct from Latin "e"),
-    # so a string like "@\u0435veryone" passes through unescaped. Discord
-    # itself doesn't ping on confusables either, but be aware this is
-    # NOT a confusables-defeating filter \u2014 only a width-fold one.
-    content = unicodedata.normalize("NFKC", content)
-    # Sanitize BEFORE truncation to avoid splitting escape sequences.
-    # Idempotency guard: skip the substitution when a ZWSP is ALREADY
-    # the next char after the ``@``. Without this, repeated sanitizer
-    # passes (e.g. a value that's stored, fetched, and re-displayed)
-    # accumulate ``\u200b`` chars: ``@everyone`` \u2192
-    # ``@\u200beveryone`` \u2192 ``@\u200b\u200beveryone`` \u2192 \u2026 Use a
-    # negative lookahead so the substitution only fires the first time.
-    # Capture the keyword and re-emit it via a backreference so the original
-    # casing is preserved (a fixed lowercase replacement under IGNORECASE would
-    # silently fold "@EVERYONE" -> "@\u200beveryone", mangling the text). The
-    # ZWSP still breaks the ping; matches the role/user-mention style below.
-    content = re.sub(r"@(?!\u200b)(everyone)", "@\u200b\\1", content, flags=re.IGNORECASE)
-    content = re.sub(r"@(?!\u200b)(here)", "@\u200b\\1", content, flags=re.IGNORECASE)
-
-    # Escape role mentions (<@&ROLE_ID>) and user mentions (<@USER_ID>)
-    # from AI output. Same idempotency guard via negative lookahead.
-    content = re.sub(r"<@&(?!\u200b)(\d+)>", "<@&\u200b\\1>", content)
-    # Capture the optional legacy-nickname bang so it survives the rewrite \u2014
-    # ``<@!123>`` must become ``<@!\u200b123>``, not ``<@\u200b123>`` (the old
-    # ``!?`` consumed the ``!`` and the replacement silently dropped it).
-    content = re.sub(r"<@(!?)(?!\u200b)(\d+)>", "<@\\1\u200b\\2>", content)
+    content = escape_mentions(content)
 
     # Limit length (after sanitization to preserve escape sequences).
     # Walk back from the slice point to the last non-combining
@@ -344,6 +355,7 @@ def screen_memory_content(content: object) -> tuple[bool, str]:
 
 
 __all__ = [
+    "escape_mentions",
     "memory_content_has_injection",
     "sanitize_channel_name",
     "sanitize_message_content",

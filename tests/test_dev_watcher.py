@@ -283,3 +283,100 @@ class TestCheckForCrash:
         # and does NOT re-count the same crash.
         assert restarter.check_for_crash() is False
         assert restarter.stats.crash_count == 1
+
+
+class TestTrailingEdgeDebounce:
+    """Trailing-edge debounce: an edit dropped by the leading-edge debounce
+    guard is remembered and later flushed by the main loop, so the final save
+    of a rapid multi-save still restarts the bot instead of being lost."""
+
+    def test_debounced_start_records_pending_reason_and_returns_false(self):
+        # An edit landing inside the debounce window can't restart now; it must
+        # record the owed restart so a later flush can fire it.
+        restarter, _ = _make_restarter()
+        restarter.last_event_time = 10_000.0
+        restarter._pending_restart_reason = None
+
+        # now - last_event_time = 0.5 < 1.5 (default debounce) -> debounced.
+        with patch.object(dev_watcher.time, "time", return_value=10_000.5):
+            result = restarter._start_bot_unlocked("File changed: b.py")
+
+        assert result is False
+        assert restarter._pending_restart_reason == "File changed: b.py"
+
+    def test_successful_start_clears_pending_reason(self):
+        # A restart that actually fires owes nothing afterwards, so the pending
+        # flag left by an earlier debounced edit must be cleared.
+        restarter, _ = _make_restarter()
+        restarter._pending_restart_reason = "File changed: stale.py"
+        restarter.last_event_time = 0.0
+
+        with (
+            patch.object(dev_watcher.subprocess, "Popen", return_value=MagicMock()),
+            patch.object(dev_watcher.time, "sleep"),
+            patch.object(dev_watcher.time, "time", return_value=10_000.0),
+        ):
+            result = restarter._start_bot_unlocked("File changed: fresh.py")
+
+        assert result is True
+        assert restarter._pending_restart_reason is None
+
+    def test_flush_is_noop_when_nothing_pending(self):
+        restarter, _ = _make_restarter()
+        restarter._pending_restart_reason = None
+
+        with patch.object(restarter, "_start_bot_unlocked") as restart_mock:
+            restarter.flush_pending_restart()
+
+        restart_mock.assert_not_called()
+
+    def test_flush_is_noop_while_burst_still_active(self):
+        # The debounce window has NOT elapsed since the last event, so we keep
+        # coalescing (a later tick flushes it) rather than restarting mid-burst.
+        restarter, _ = _make_restarter()
+        restarter._pending_restart_reason = "File changed: b.py"
+        restarter.last_event_time = 10_000.0
+
+        with (
+            patch.object(dev_watcher.time, "time", return_value=10_000.5),
+            patch.object(restarter, "_start_bot_unlocked") as restart_mock,
+        ):
+            restarter.flush_pending_restart()
+
+        restart_mock.assert_not_called()
+        # Still owed — the flag must survive so a later tick can flush it.
+        assert restarter._pending_restart_reason == "File changed: b.py"
+
+    def test_flush_after_window_calls_start_with_pending_reason(self):
+        # Once the window has elapsed, flush hands the owed reason to
+        # _start_bot_unlocked with the health check deferred (run outside _lock).
+        restarter, _ = _make_restarter()
+        restarter._pending_restart_reason = "File changed: b.py"
+        restarter.last_event_time = 10_000.0
+
+        with (
+            patch.object(dev_watcher.time, "time", return_value=10_002.0),
+            patch.object(restarter, "_start_bot_unlocked", return_value=True) as restart_mock,
+        ):
+            restarter.flush_pending_restart()
+
+        restart_mock.assert_called_once_with("File changed: b.py", run_health_check=False)
+
+    def test_flush_after_window_restarts_and_clears_pending(self):
+        # End-to-end (real _start_bot_unlocked, mocked Popen): the flush fires a
+        # real restart, advances last_event_time, and clears the pending flag.
+        restarter, _ = _make_restarter()
+        restarts_before = restarter.stats.restart_count
+        restarter._pending_restart_reason = "File changed: b.py"
+        restarter.last_event_time = 10_000.0
+
+        with (
+            patch.object(dev_watcher.subprocess, "Popen", return_value=MagicMock()),
+            patch.object(dev_watcher.time, "sleep"),
+            patch.object(dev_watcher.time, "time", return_value=10_002.0),
+        ):
+            restarter.flush_pending_restart()
+
+        assert restarter.stats.restart_count == restarts_before + 1
+        assert restarter._pending_restart_reason is None
+        assert restarter.last_event_time == 10_002.0

@@ -3469,7 +3469,8 @@ class TestEditDuringInflightLoad:
     async def test_edit_during_metadata_load_not_lost(self):
         """The residual window: edit lands during the load_metadata await,
         AFTER load_history returned — get_chat_session's generation re-check
-        must re-read before registering the session."""
+        must re-read history AND metadata before registering the session, so a
+        thinking_enabled toggle riding on that edit is not lost."""
         import cogs.ai_core.storage as storage
 
         channel_id = 777_000_002
@@ -3478,14 +3479,23 @@ class TestEditDuringInflightLoad:
 
         meta_started = asyncio.Event()
         edit_done = asyncio.Event()
+        meta_calls = {"n": 0}
 
         async def fake_get_ai_history(cid, limit=None):
             return [dict(r) for r in rows_holder["rows"]]
 
         async def fake_get_ai_metadata(cid):
-            meta_started.set()
-            await edit_done.wait()
-            return {"thinking_enabled": True}
+            meta_calls["n"] += 1
+            if meta_calls["n"] == 1:
+                meta_started.set()
+                # The edit (a thinking_enabled toggle) runs to completion INSIDE
+                # this await; the in-flight read still returns the pre-edit
+                # snapshot (thinking_enabled True).
+                await edit_done.wait()
+                return {"thinking_enabled": True}
+            # The bounded re-read (and the session's generation re-check) see the
+            # committed post-edit value.
+            return {"thinking_enabled": False}
 
         fake_db = SimpleNamespace(
             get_ai_history=fake_get_ai_history,
@@ -3501,7 +3511,8 @@ class TestEditDuringInflightLoad:
                 storage.invalidate_cache(channel_id)
                 task = asyncio.create_task(mgr.get_chat_session(channel_id))
                 await asyncio.wait_for(meta_started.wait(), timeout=5)
-                # The "edit" lands while load_metadata is awaiting.
+                # The "edit" lands while load_metadata is awaiting: the row is
+                # updated (post-edit) and the cache is invalidated (gen bump).
                 rows_holder["rows"] = [
                     {"id": 1, "role": "user", "content": "edited", "timestamp": ts}
                 ]
@@ -3512,6 +3523,15 @@ class TestEditDuringInflightLoad:
             assert session is not None
             assert session["history"][0]["parts"] == ["edited"]
             assert mgr.chats[channel_id]["history"][0]["parts"] == ["edited"]
+            # The toggled metadata must be post-edit, not the stale pre-edit
+            # snapshot the in-flight read returned.
+            assert session["thinking_enabled"] is False
+            assert mgr.chats[channel_id]["thinking_enabled"] is False
+            # The metadata cache must not be poisoned with the pre-edit True.
+            with storage._cache_lock:
+                cached_meta = storage._metadata_cache.get(channel_id)
+            if cached_meta is not None:
+                assert cached_meta[1]["thinking_enabled"] is False
         finally:
             _storage_cleanup(channel_id)
 

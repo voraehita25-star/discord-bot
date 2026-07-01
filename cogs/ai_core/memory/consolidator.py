@@ -577,14 +577,23 @@ class MemoryConsolidator:
         return None
 
     async def _update_entity_from_extraction(
-        self, entity_data: dict, channel_id: int, guild_id: int | None
+        self, entity_data: Any, channel_id: int, guild_id: int | None
     ) -> bool:
         """Update entity memory from extracted data."""
+        # _parse_extraction wraps a bare JSON list via {"entities": result}
+        # (lines 508/572), so an entity element can be a plain string, not a
+        # dict. Guard with isinstance (mirrors detect_contradictions) before
+        # any .get() below can raise AttributeError.
+        if not isinstance(entity_data, dict):
+            return False
+
         name = entity_data.get("name")
         entity_type = entity_data.get("type", "character")
         facts_data = entity_data.get("facts", {})
 
-        if not name or not facts_data:
+        # A non-dict facts value (e.g. "facts": "student") must be rejected
+        # before facts_data.get(...) below can raise AttributeError.
+        if not name or not isinstance(facts_data, dict) or not facts_data:
             return False
 
         # Calculate importance score based on fact richness

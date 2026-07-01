@@ -149,6 +149,135 @@ def _compress_image_for_claude(image_bytes: bytes, mime_type: str) -> tuple[byte
     )
 
 
+async def _validate_and_decode_images_claude(
+    images: list, max_image_size_bytes: int, ws: Any
+) -> tuple[list[ClaudeContentBlockParam], list[str]]:
+    """Validate + decode data-URL images into Claude image blocks.
+
+    Returns (image_blocks, accepted_raw_strings). Runs BEFORE the user message
+    is persisted so the DB only stores the accepted subset (previously
+    oversized/disallowed images were stored verbatim and re-served to the UI on
+    every reload); a per-image error frame is sent to the client for each
+    rejected attachment. Mirrors the Gemini twin's ``_validate_and_decode_images``.
+    """
+    image_blocks: list[ClaudeContentBlockParam] = []
+    accepted: list[str] = []
+    # Add images if present
+    for img_data in images:
+        try:
+            if "," in img_data:
+                header, b64_data = img_data.split(",", 1)
+                # Defensive parse: a malformed ``data:`` URL like
+                # ``data;base64,XXX`` (note ``;`` instead of ``:``)
+                # would IndexError on ``[1]`` because the first segment
+                # has no colon. The previous shape only checked for a
+                # colon ANYWHERE in the header, not in the first
+                # ``;``-delimited piece, so it crashed on this input.
+                first_segment = header.split(";")[0]
+                if ":" in first_segment:
+                    mime_type = first_segment.split(":", 1)[1] or "image/png"
+                else:
+                    mime_type = "image/png"
+            else:
+                b64_data = img_data
+                mime_type = "image/png"
+
+            # Validate MIME type against allowlist. Claude's Anthropic API
+            # only accepts JPEG/PNG/GIF/WebP — HEIC/HEIF would be silently
+            # accepted by the Gemini path, so call out the difference so
+            # the user knows to convert and retry rather than blame "the
+            # AI doesn't see my photo".
+            if mime_type not in _ALLOWED_IMAGE_MIMES:
+                logger.warning("Rejected image with disallowed MIME type: %s", mime_type)
+                if mime_type in ("image/heic", "image/heif"):
+                    msg = (
+                        f"Claude doesn't accept {mime_type} — please convert to "
+                        "JPEG or PNG and retry."
+                    )
+                else:
+                    msg = f"Unsupported image type: {mime_type}"
+                await ws.send_json({"type": "error", "message": msg})
+                continue
+
+            # Validate base64 string length BEFORE decoding to prevent memory exhaustion
+            estimated_size = len(b64_data) * 3 // 4
+            if estimated_size > max_image_size_bytes:
+                logger.warning(
+                    "Rejected image: estimated %s bytes exceeds %s limit",
+                    estimated_size,
+                    max_image_size_bytes,
+                )
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)",
+                    }
+                )
+                continue
+
+            image_bytes = base64.b64decode(b64_data, validate=True)
+            if len(image_bytes) > max_image_size_bytes:
+                logger.warning(
+                    "Rejected image: %s bytes exceeds %s limit",
+                    len(image_bytes),
+                    max_image_size_bytes,
+                )
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)",
+                    }
+                )
+                continue
+
+            # Compress if exceeding Claude's 5MB API limit. Raises
+            # ValueError if even max compression+downscale can't fit;
+            # surface that to the client so the user knows the image was
+            # dropped instead of silently triggering a 400 retry storm.
+            # PIL work is offloaded to a thread — a 10 MB image
+            # compress+resize sequence is hundreds of ms of CPU and would
+            # otherwise stall the event loop, blocking every other WS client.
+            try:
+                image_bytes, mime_type = await asyncio.to_thread(
+                    _compress_image_for_claude, image_bytes, mime_type
+                )
+            except ValueError as e:
+                logger.warning("Image rejected after compression: %s", e)
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": "Image too large to send to Claude (over 5MB even after compression)",
+                    }
+                )
+                continue
+            b64_data = base64.b64encode(image_bytes).decode("ascii")
+
+            image_block = build_claude_base64_image_block(b64_data, mime_type)
+            if image_block is None:
+                logger.warning("Rejected image with Claude-unsupported MIME type: %s", mime_type)
+                await ws.send_json(
+                    {"type": "error", "message": f"Unsupported image type: {mime_type}"}
+                )
+                continue
+            image_blocks.append(image_block)
+            accepted.append(img_data)
+            logger.info("📷 Added image to Claude message (%s bytes)", len(image_bytes))
+        except Exception as e:
+            logger.warning("Failed to process image: %s", e)
+            # Notify the client. An unexpected failure here (e.g. binascii.Error
+            # from b64decode(validate=True) on corrupt data, which no inner
+            # handler catches) would otherwise drop the image silently — every
+            # other rejection branch in this loop emits an error frame, so match
+            # that contract instead of leaving the user wondering where it went.
+            try:
+                await ws.send_json(
+                    {"type": "error", "message": "Failed to process an attached image"}
+                )
+            except Exception:
+                pass
+    return image_blocks, accepted
+
+
 def _retry_delay_seconds(attempt: int) -> int:
     delay = _RETRY_BASE_DELAY
     for _ in range(1, attempt):
@@ -340,13 +469,22 @@ async def handle_chat_message_claude(
             )
             is_regeneration = False
 
+    # Validate + decode images BEFORE persisting the user message, so the DB
+    # only records the accepted subset (previously oversized/disallowed images
+    # were stored verbatim and re-served to the UI on every reload). Runs
+    # unconditionally — including on regeneration/failover retry — to rebuild
+    # this turn's Claude image blocks, mirroring the old inline loop.
+    image_blocks, accepted_images = await _validate_and_decode_images_claude(
+        images, max_image_size_bytes, ws
+    )
+
     # Save user message to DB (skip for regeneration — the edited message already exists)
     user_msg_id: int = 0
     if DB_AVAILABLE and conversation_id and not is_regeneration:
         try:
             db = _get_db()
             user_msg_id = await db.save_dashboard_message(
-                conversation_id, "user", content, images=images or None
+                conversation_id, "user", content, images=accepted_images or None
             )
         except Exception as e:
             logger.warning("Failed to save user message: %s", e, exc_info=True)
@@ -443,121 +581,11 @@ async def handle_chat_message_claude(
             history_role: ClaudeMessageRole = "user" if msg.get("role") == "user" else "assistant"
             messages.append(build_claude_message(history_role, str(msg.get("content", ""))))
 
-    # Build current message content blocks
-    current_content: list[ClaudeContentBlockParam] = []
-
-    # Add images if present
-    for img_data in images:
-        try:
-            if "," in img_data:
-                header, b64_data = img_data.split(",", 1)
-                # Defensive parse: a malformed ``data:`` URL like
-                # ``data;base64,XXX`` (note ``;`` instead of ``:``)
-                # would IndexError on ``[1]`` because the first segment
-                # has no colon. The previous shape only checked for a
-                # colon ANYWHERE in the header, not in the first
-                # ``;``-delimited piece, so it crashed on this input.
-                first_segment = header.split(";")[0]
-                if ":" in first_segment:
-                    mime_type = first_segment.split(":", 1)[1] or "image/png"
-                else:
-                    mime_type = "image/png"
-            else:
-                b64_data = img_data
-                mime_type = "image/png"
-
-            # Validate MIME type against allowlist. Claude's Anthropic API
-            # only accepts JPEG/PNG/GIF/WebP — HEIC/HEIF would be silently
-            # accepted by the Gemini path, so call out the difference so
-            # the user knows to convert and retry rather than blame "the
-            # AI doesn't see my photo".
-            if mime_type not in _ALLOWED_IMAGE_MIMES:
-                logger.warning("Rejected image with disallowed MIME type: %s", mime_type)
-                if mime_type in ("image/heic", "image/heif"):
-                    msg = (
-                        f"Claude doesn't accept {mime_type} — please convert to "
-                        "JPEG or PNG and retry."
-                    )
-                else:
-                    msg = f"Unsupported image type: {mime_type}"
-                await ws.send_json({"type": "error", "message": msg})
-                continue
-
-            # Validate base64 string length BEFORE decoding to prevent memory exhaustion
-            estimated_size = len(b64_data) * 3 // 4
-            if estimated_size > max_image_size_bytes:
-                logger.warning(
-                    "Rejected image: estimated %s bytes exceeds %s limit",
-                    estimated_size,
-                    max_image_size_bytes,
-                )
-                await ws.send_json(
-                    {
-                        "type": "error",
-                        "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)",
-                    }
-                )
-                continue
-
-            image_bytes = base64.b64decode(b64_data, validate=True)
-            if len(image_bytes) > max_image_size_bytes:
-                logger.warning(
-                    "Rejected image: %s bytes exceeds %s limit",
-                    len(image_bytes),
-                    max_image_size_bytes,
-                )
-                await ws.send_json(
-                    {
-                        "type": "error",
-                        "message": f"Image too large (max {max_image_size_bytes // 1024 // 1024}MB)",
-                    }
-                )
-                continue
-
-            # Compress if exceeding Claude's 5MB API limit. Raises
-            # ValueError if even max compression+downscale can't fit;
-            # surface that to the client so the user knows the image was
-            # dropped instead of silently triggering a 400 retry storm.
-            # PIL work is offloaded to a thread — a 10 MB image
-            # compress+resize sequence is hundreds of ms of CPU and would
-            # otherwise stall the event loop, blocking every other WS client.
-            try:
-                image_bytes, mime_type = await asyncio.to_thread(
-                    _compress_image_for_claude, image_bytes, mime_type
-                )
-            except ValueError as e:
-                logger.warning("Image rejected after compression: %s", e)
-                await ws.send_json(
-                    {
-                        "type": "error",
-                        "message": "Image too large to send to Claude (over 5MB even after compression)",
-                    }
-                )
-                continue
-            b64_data = base64.b64encode(image_bytes).decode("ascii")
-
-            image_block = build_claude_base64_image_block(b64_data, mime_type)
-            if image_block is None:
-                logger.warning("Rejected image with Claude-unsupported MIME type: %s", mime_type)
-                await ws.send_json(
-                    {"type": "error", "message": f"Unsupported image type: {mime_type}"}
-                )
-                continue
-            current_content.append(image_block)
-            logger.info("📷 Added image to Claude message (%s bytes)", len(image_bytes))
-        except Exception as e:
-            logger.warning("Failed to process image: %s", e)
-            # Notify the client. An unexpected failure here (e.g. binascii.Error
-            # from b64decode(validate=True) on corrupt data, which no inner
-            # handler catches) would otherwise drop the image silently — every
-            # other rejection branch in this loop emits an error frame, so match
-            # that contract instead of leaving the user wondering where it went.
-            try:
-                await ws.send_json(
-                    {"type": "error", "message": "Failed to process an attached image"}
-                )
-            except Exception:
-                pass
+    # Build current message content blocks. Images were already validated,
+    # decoded, compressed, and turned into Claude blocks by
+    # _validate_and_decode_images_claude (above, before the user-message save)
+    # so only the accepted subset is persisted and re-served.
+    current_content: list[ClaudeContentBlockParam] = list(image_blocks)
 
     # Add documents — PDFs become native `document` blocks (Claude parses
     # text + embedded images itself); text files become `document` blocks
@@ -722,8 +750,8 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     # unrestricted framing was injected.
     if unrestricted_mode and allow_unrestricted:
         mode_info.append("🔓 Unrestricted")
-    if images:
-        mode_info.append(f"🖼️ {len(images)} image(s)")
+    if accepted_images:
+        mode_info.append(f"🖼️ {len(accepted_images)} image(s)")
 
     mode_str = " • ".join(mode_info)
 

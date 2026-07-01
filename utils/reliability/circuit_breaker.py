@@ -139,11 +139,6 @@ class CircuitBreaker:
                 "⚡ Circuit Breaker [%s]: %s -> %s", self.name, old_state.value, new_state.value
             )
 
-    def _transition_to(self, new_state: CircuitState) -> None:
-        """Transition to a new state with logging (thread-safe)."""
-        with self._lock:
-            self._transition_to_unlocked(new_state)
-
     def can_execute(self) -> bool:
         """Check if a request can be executed (thread-safe)."""
         now = time.time()

@@ -360,7 +360,14 @@ class URLFetcherClient:
                         return result
                     text = raw_bytes.decode("utf-8", errors="replace")
 
-                    if "text/html" in result["content_type"]:
+                    # Match the MIME type exactly (strip charset/boundary) like
+                    # url_fetcher.fetch_url_content's hardened policy — a
+                    # substring test accepts content-type-smuggling values such
+                    # as "application/x-text/html-weird" that merely contain
+                    # "text/html".
+                    primary_mime = result["content_type"].split(";", 1)[0].strip().lower()
+
+                    if primary_mime == "text/html":
                         soup = BeautifulSoup(text, "html.parser")
 
                         # Extract title
@@ -467,6 +474,13 @@ class URLFetcherClient:
                 )
             return service_response  # type: ignore[no-any-return]
         except Exception as e:
+            # The Go batch call failed (likely the service died mid-interval).
+            # Invalidate the cached availability and reset the check time so the
+            # very next fetch_batch()/fetch() re-routes through the aiohttp
+            # fallback instead of hard-failing for up to SERVICE_CHECK_INTERVAL
+            # seconds (mirrors _fetch_via_service's single-URL self-heal).
+            self._service_available = False
+            self._service_check_time = 0
             return {
                 "results": ([{"url": u, "error": str(e)} for u in safe_urls] + blocked_results),
                 "error_count": len(urls),

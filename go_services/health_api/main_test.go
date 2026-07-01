@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -445,6 +446,48 @@ func TestBindHostGate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildListenAddr guards the IPv6/whitespace normalization: every host that
+// isLoopbackHost blesses must yield an address net.Listen can parse. The old
+// bindHost+":"+port produced "::1:8082" (unbracketed IPv6+port), which
+// net.Listen/net.SplitHostPort reject with "too many colons in address".
+func TestBuildListenAddr(t *testing.T) {
+	tests := []struct {
+		bindHost string
+		port     string
+		want     string
+	}{
+		{"127.0.0.1", "8082", "127.0.0.1:8082"},
+		{"::1", "8082", "[::1]:8082"},
+		{"[::1]", "8082", "[::1]:8082"},
+		{" 127.0.0.1 ", "8082", "127.0.0.1:8082"},
+		{"localhost", "8082", "localhost:8082"},
+		{"0.0.0.0", "8082", "0.0.0.0:8082"},
+		{"::", "8082", "[::]:8082"},
+	}
+	for _, tc := range tests {
+		if got := buildListenAddr(tc.bindHost, tc.port); got != tc.want {
+			t.Errorf("buildListenAddr(%q, %q) = %q, want %q", tc.bindHost, tc.port, got, tc.want)
+		}
+	}
+
+	// Every blessed-loopback host (see TestIsLoopbackHost) must produce an
+	// address that SplitHostPort can parse — the deterministic proxy for the
+	// exact bug (SplitHostPort on the old "::1:8082" fails "too many colons").
+	for _, h := range []string{"127.0.0.1", "localhost", "::1", "[::1]", " 127.0.0.1 "} {
+		if _, _, err := net.SplitHostPort(buildListenAddr(h, "0")); err != nil {
+			t.Errorf("SplitHostPort(buildListenAddr(%q, \"0\")) error = %v, want nil", h, err)
+		}
+	}
+
+	// End-to-end binding on the always-available IPv4 loopback (IPv6 loopback
+	// is intentionally not asserted — it can be absent on some CI hosts).
+	ln, err := net.Listen("tcp", buildListenAddr("127.0.0.1", "0"))
+	if err != nil {
+		t.Fatalf("net.Listen on 127.0.0.1 addr failed: %v", err)
+	}
+	_ = ln.Close()
 }
 
 // ---------------------------------------------------------------------------

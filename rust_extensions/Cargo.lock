@@ -623,7 +623,6 @@ dependencies = [
  "serde",
  "serde_json",
  "simsimd",
- "thiserror",
 ]
 
 [[package]]

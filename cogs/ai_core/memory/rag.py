@@ -1284,11 +1284,14 @@ class MemorySystem:
         # row will be included, so the rebuild picks it up. The
         # FAISS add below would then add a duplicate entry. ``add_single``
         # does NOT dedupe (it unconditionally appends to keep the
-        # ``ntotal == len(id_map)`` invariant cheap), so the dup persists
-        # until the next full rebuild — at worst a memory ranks via two FAISS
-        # hits, which the RRF merge + result cap make benign. (The previous
-        # "hold lock across both" shape blocked search for the entire DB write
-        # window — that consistency win wasn't worth the latency hit.)
+        # ``ntotal == len(id_map)`` invariant cheap), so the dup persists in the
+        # id_map until the next full rebuild. That is now handled downstream:
+        # ``hybrid_search`` de-duplicates the semantic hits by memory_id before
+        # the relevance floor and the RRF fusion, so a doubled id neither emits
+        # the memory twice on the semantic-only path nor double-counts its RRF
+        # contribution on the hybrid path. (The previous "hold lock across both"
+        # shape blocked search for the entire DB write window — that consistency
+        # win wasn't worth the latency hit.)
         result = await db.save_rag_memory(
             content=content, embedding_bytes=embedding_bytes, channel_id=channel_id
         )
@@ -1312,7 +1315,16 @@ class MemorySystem:
                 memory_id = result if isinstance(result, int) and result > 0 else None
                 if memory_id is not None:
                     try:
-                        self._faiss_index.add_single(embedding, memory_id)
+                        # Offload add_single to a worker thread: it acquires the
+                        # FAISSIndex threading lock that a concurrent
+                        # ``save_to_disk`` worker can hold for the whole
+                        # write_index + JSON sidecar write (100-500ms, more for a
+                        # large index on slow disk). Running it inline here would
+                        # block the event loop on that lock and stall the
+                        # discord.py gateway heartbeat. Capture a non-None local
+                        # so the worker doesn't re-narrow self._faiss_index.
+                        faiss_index = self._faiss_index
+                        await asyncio.to_thread(faiss_index.add_single, embedding, memory_id)
                         # Schedule debounced save instead of saving immediately (performance)
                         self._schedule_index_save()
                     except (ValueError, RuntimeError) as e:
@@ -1599,6 +1611,26 @@ class MemorySystem:
             # channel-scoped, so the linear scan stays channel-correct.
             if not semantic_results:
                 semantic_results = await self._linear_search_raw(query_vec, limit * 2, all_memories)
+
+        # De-duplicate semantic hits by memory_id, keeping the first (highest-
+        # scored — FAISS results are descending by similarity) occurrence. The
+        # FAISS id_map can hold the same memory_id at two positions after the
+        # add-after-rebuild race documented in add_memory, and both positions
+        # come back with equal cosine. De-duping HERE — before the floor and the
+        # RRF fusion below — fixes both symptoms in one place: the semantic-only
+        # path would otherwise emit the row twice (burning two `limit` slots),
+        # and the hybrid path would double-count the id's RRF contribution and
+        # over-rank it. No-op on the linear-fallback and keyword paths, whose
+        # rows already have unique ids.
+        if semantic_results:
+            seen: set[int] = set()
+            deduped: list[tuple[int, float]] = []
+            for mem_id, score in semantic_results:
+                if mem_id in seen:
+                    continue
+                seen.add(mem_id)
+                deduped.append((mem_id, score))
+            semantic_results = deduped
 
         # Relevance floor on the SEMANTIC hits BEFORE fusion. The cosine scores
         # here are absolute (FAISS on normalized vectors); the RRF scores

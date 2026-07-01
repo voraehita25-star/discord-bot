@@ -118,7 +118,10 @@ class Music(commands.Cog):
         def _collect_in_use() -> set[str]:
             """Snapshot every guild's current_track file path."""
             in_use: set[str] = set()
-            for _, gs in self._guild_states.items():
+            # list() snapshot is atomic against a concurrent _gs()/setdefault
+            # insert on the AudioPlayer after-callback thread, so this loop-thread
+            # read can't raise "dictionary changed size during iteration".
+            for gs in list(self._guild_states.values()):
                 track_info = gs.current_track
                 if track_info and "filename" in track_info:
                     try:
@@ -291,7 +294,7 @@ class Music(commands.Cog):
             self._queue_autosave_task = None
         # Cancel all auto-disconnect tasks (don't bother awaiting — there
         # are potentially many and they don't hold critical state).
-        for gs in self._guild_states.values():
+        for gs in list(self._guild_states.values()):
             if gs.auto_disconnect_task is not None:
                 gs.auto_disconnect_task.cancel()
         # Save queues before clearing to preserve state across reloads
@@ -2941,10 +2944,12 @@ class Music(commands.Cog):
         # Snapshot current_track filenames on the event loop first — iterating
         # self._guild_states inside a worker thread can raise "dictionary
         # changed size during iteration" if a guild state is added/removed
-        # concurrently. Only the Path.resolve() filesystem I/O is deferred.
+        # concurrently. The list() around .values() also guards this loop-thread
+        # read against a concurrent _gs()/setdefault insert on the AudioPlayer
+        # after-callback thread. Only the Path.resolve() filesystem I/O is deferred.
         raw_in_use = [
             gs.current_track["filename"]
-            for gs in self._guild_states.values()
+            for gs in list(self._guild_states.values())
             if gs.current_track and "filename" in gs.current_track
         ]
 

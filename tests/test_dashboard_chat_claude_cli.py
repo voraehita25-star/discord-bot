@@ -486,6 +486,13 @@ class TestHandlerStaleSessionRetry:
         assert "# Conversation so far" not in prompt1  # resumed → minimal prompt
         assert "# Conversation so far" in prompt2  # retry rebuilt full history
         assert cli_mod._CONVERSATION_SESSIONS.get("c1") in (None, "fresh-sess")
+        # Retry returned usage=None, so the len//4 fallback estimate runs. It must
+        # measure the prompt actually sent — prompt2 (fresh_prompt, WITH history) —
+        # not the shorter resume-era prompt1.
+        assert ends[-1]["token_usage"]["input_tokens"] == max(1, len(prompt2) // 4)
+        # prompt2 carries '# Conversation so far' but prompt1 doesn't, so the two
+        # estimates differ; this assert fails without the full_prompt = fresh_prompt fix.
+        assert ends[-1]["token_usage"]["input_tokens"] != max(1, len(prompt1) // 4)
 
 
 class TestHandlerErrorPathsDropSession:

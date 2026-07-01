@@ -433,6 +433,20 @@ def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
     if docx_bytes is None:
         return None
 
+    # Reject oversized DOCX before any zip parsing. _decode_data_url already
+    # allocated the raw bytes, but bounding here stops the compressed input
+    # (and the central directory zipfile would materialise into ZipInfo
+    # objects at ZipFile() construction) from amplifying. Mirrors _extract_pdf
+    # / _extract_text so DOCX isn't the asymmetric weak spot.
+    if len(docx_bytes) > _MAX_DECODED_DOC_BYTES:
+        logger.warning(
+            "Rejecting oversized DOCX %s (%d decoded bytes > %d cap)",
+            filename,
+            len(docx_bytes),
+            _MAX_DECODED_DOC_BYTES,
+        )
+        return None
+
     try:
         import docx
     except ImportError:

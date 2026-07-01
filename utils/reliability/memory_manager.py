@@ -652,13 +652,18 @@ def cached_with_ttl(
     cache: TTLCache[str, Any] = TTLCache(ttl=ttl, max_size=max_size, name="decorator")
 
     def _build_default_key(func_name: str, args: tuple, kwargs: dict) -> str:
-        """Build a cache key without relying on repr() of mutable args.
+        """Build a cache key, coercing unhashable args to a content snapshot.
 
-        repr() of a list/dict only reflects the current state; a mutation
-        between cache writes can collide unrelated calls. We coerce mutable
-        args to ``id(arg)`` so the key reflects identity (stable lifetime
-        of the object) rather than its momentary contents. Callers that
-        need value-based keying should pass an explicit ``key_fn``.
+        Hashable args are used as-is. Unhashable args (list/dict/set) are
+        coerced to ``repr(arg)`` so the key reflects their *contents*. We
+        deliberately do NOT key on ``id(arg)``: id() is unique only among
+        LIVE objects, and CPython recycles a freed object's address, so
+        identity keying risked a false cache HIT (two distinct short-lived
+        args reusing one address -> same key -> wrong result). Residual
+        caveats: a dict whose keys are re-ordered yields a harmless false
+        MISS (never a wrong result), and an unhashable custom object relying
+        on the default ``object.__repr__`` still embeds id() in its repr
+        (pass an explicit ``key_fn`` for value-based keying there).
         """
 
         def _coerce(v: Any) -> Any:
@@ -666,7 +671,7 @@ def cached_with_ttl(
                 hash(v)
                 return v
             except TypeError:
-                return f"<id:{id(v)}>"
+                return f"<repr:{v!r}>"
 
         coerced_args = tuple(_coerce(a) for a in args)
         coerced_kwargs = sorted(

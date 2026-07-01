@@ -44,11 +44,17 @@ def unrestricted_all_enabled() -> bool:
 _UNRESTRICTED_FILE = Path(__file__).parent.parent / "data" / "unrestricted_channels.json"
 _unrestricted_lock = threading.Lock()  # Thread-safe access to unrestricted_channels
 # Serializes disk writes so the on-disk order matches mutation order. Paired with
-# a monotonically increasing version: an older snapshot is never written after a
-# newer one (prevents a turned-off channel re-enabling after restart).
+# a monotonically increasing version: once a snapshot of a given version enters the
+# write path, no older snapshot may be written afterward — even if that newer write
+# FAILED. The high-water mark advances on ATTEMPT (not only on success), which is
+# what prevents a turned-off channel re-enabling after restart via a reordered write.
 _unrestricted_save_lock = threading.Lock()
 _unrestricted_version = 0
+# Highest version actually written to disk (advanced only on a successful save).
 _unrestricted_saved_version = 0
+# Highest version that ever ENTERED the write path (advanced on attempt). Blocks any
+# older snapshot from overwriting a newer one regardless of the newer write's success.
+_unrestricted_attempted_version = 0
 unrestricted_channels: set[int] = set()
 
 # Hard cap on persisted file size to prevent memory exhaustion via malicious/corrupt file
@@ -157,14 +163,22 @@ def set_unrestricted(channel_id: int, enabled: bool) -> bool:
 
     # Save to disk OUTSIDE the mutation lock (no file I/O under it), but serialize
     # writes through a dedicated save lock so on-disk order matches mutation order.
-    # A version guard skips any snapshot older than one already written, so a
-    # turned-off channel can never re-enable after restart due to a reordered write.
-    global _unrestricted_saved_version
+    # The version guard refuses any snapshot older than one that already entered the
+    # write path — keyed off the ATTEMPTED high-water mark, which advances on attempt
+    # (not only on success), so a turned-off channel can never re-enable after restart
+    # via a reordered write even when the newer write itself FAILED.
+    global _unrestricted_saved_version, _unrestricted_attempted_version
     with _unrestricted_save_lock:
-        if my_version <= _unrestricted_saved_version:
-            # A newer snapshot has already been persisted; skip this stale write.
-            saved = True
+        if my_version <= _unrestricted_attempted_version:
+            # A newer (or equal) snapshot has already entered the write path, so this
+            # older one must not overwrite it — even if that newer write FAILED (we
+            # advance the high-water mark on ATTEMPT below, not only on success, which
+            # is what closes the durability gap). Report honestly: True only if a
+            # version at least as new as ours actually reached disk.
+            saved = _unrestricted_saved_version >= my_version
         else:
+            # Highest version to reach the write path so far — block older writes.
+            _unrestricted_attempted_version = my_version
             saved = _save_unrestricted_channels(channels_snapshot)
             if saved:
                 _unrestricted_saved_version = my_version

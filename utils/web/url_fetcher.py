@@ -188,9 +188,6 @@ USER_AGENT = (
     "Chrome/120.0.0.0 Safari/537.36"
 )
 
-# Domains that need special handling
-GITHUB_DOMAINS = ("github.com", "raw.githubusercontent.com")
-
 # Blocked private/internal IP ranges for SSRF protection
 _BLOCKED_NETWORKS = [
     ipaddress.ip_network("127.0.0.0/8"),  # Loopback

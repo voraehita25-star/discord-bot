@@ -255,6 +255,15 @@ def create_backup() -> Path | None:
 
 async def async_main():
     """Main migration function."""
+    # The banner/summary output uses 📦/✅/✓/✗/↺/📊; force UTF-8 so it can't
+    # crash with UnicodeEncodeError on a redirected cp874/cp1252 stdout.
+    # (No `# type: ignore[union-attr]` here — async_main is an untyped def, so
+    # mypy skips its body and would flag the ignore as unused-ignore.)
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser(description="Migrate JSON files to SQLite database")
     parser.add_argument("--dry-run", action="store_true", help="Preview without making changes")
     parser.add_argument("--backup", action="store_true", help="Create backup before migration")
