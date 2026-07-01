@@ -318,6 +318,30 @@ class SelfHealer:
                 continue
 
         watchers.sort(key=lambda x: x["create_time"])
+
+        # Filter out venv launcher/redirector processes (Python 3.12+).
+        # On Windows, .venv/Scripts/python.exe is a small launcher that spawns
+        # the real python.exe as a child with identical arguments.  Both appear
+        # as "python running dev_watcher.py" but only the child is the real
+        # instance.  Mirrors find_all_bot_processes so a single watcher started
+        # via `.venv\Scripts\python.exe scripts\dev_watcher.py` is not counted
+        # twice (which raised a spurious DUPLICATE_WATCHERS and, on a create_time
+        # tie, could terminate the running watcher's own launcher).
+        if len(watchers) > 1:
+            watcher_pids = {w["pid"] for w in watchers}
+            launcher_pids: set[int] = set()
+            for w in watchers:
+                try:
+                    ppid = psutil.Process(w["pid"]).ppid()
+                    if ppid in watcher_pids:
+                        launcher_pids.add(ppid)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+                except psutil.Error:
+                    continue
+            if launcher_pids:
+                watchers = [w for w in watchers if w["pid"] not in launcher_pids]
+
         return watchers
 
     def get_pid_from_file(self) -> int | None:

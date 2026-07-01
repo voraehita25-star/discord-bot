@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -65,6 +66,13 @@ def main() -> None:
     count_cli_sessions`` (e.g. for unit testing the encoder helpers above)
     doesn't trigger ~/.claude scanning, sidecar reads, and stdout prints.
     """
+    # The survey output uses ⚠️/✓/✗; force UTF-8 so it can't crash with
+    # UnicodeEncodeError on a redirected cp874/cp1252 stdout.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
     print("=" * 72)
     print("Claude CLI session-file survey")
     print("=" * 72)

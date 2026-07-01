@@ -1397,6 +1397,22 @@ class TestOverlimitChoiceFlow:
         assert text == "ok"
         assert len(prompts) == 1
 
+    @pytest.mark.asyncio
+    async def test_first_warning_ignores_cooldown_for_never_warned_channel(self) -> None:
+        # A huge cooldown makes `now - 0.0 < cooldown` true for ANY plausible
+        # monotonic() reading, so a never-warned channel would wrongly take the
+        # short-notice path under the old 0.0 sentinel. The membership gate must
+        # still route the FIRST over-limit turn to the interactive view. Fails on
+        # the old code, passes on the fix — deterministic regardless of uptime.
+        send_channel, _ = _mk_send_channel()
+        with patch.object(cli_mod, "_OVERLIMIT_WARN_COOLDOWN", 10**12):
+            await cli_mod._send_overlimit_warning(send_channel, 710, 2_000_000)
+        send_channel.send.assert_awaited_once()
+        await_args = send_channel.send.await_args
+        assert isinstance(await_args.kwargs.get("view"), cli_mod._OverlimitChoiceView)
+        assert "เกิน context window" in await_args.args[0]
+        assert 710 in cli_mod._OVERLIMIT_LAST_WARN
+
 
 class TestOverlimitSummarize:
     """The 📝 button runs the same trim+force-save routine as !auto_summarize."""

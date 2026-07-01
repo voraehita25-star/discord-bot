@@ -6,7 +6,6 @@ Handles execution of Gemini AI function calls and server commands.
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -39,7 +38,7 @@ from ..response.webhook_cache import (
     invalidate_webhook_cache,
     set_cached_webhook,
 )
-from ..sanitization import screen_memory_content
+from ..sanitization import escape_mentions, screen_memory_content
 
 logger = logging.getLogger(__name__)
 
@@ -765,14 +764,10 @@ async def send_as_webhook(bot, channel, name, message):
         The sent message object, or None if failed
     """
     try:
-        # Sanitize dangerous mentions FIRST (before any send path). Negative
-        # lookahead so repeated calls don't accumulate ZWS chars (the
-        # original ``re.sub`` would turn ``@\u200beveryone`` into
-        # ``@\u200b\u200beveryone`` on every additional pass).
-        message = re.sub(r"@(?!\u200b)everyone", "@\u200beveryone", message, flags=re.IGNORECASE)
-        message = re.sub(r"@(?!\u200b)here", "@\u200bhere", message, flags=re.IGNORECASE)
-        message = re.sub(r"<@&(?!\u200b)(\d+)>", "<@&\u200b\\1>", message)  # Role mentions
-        message = re.sub(r"<@!?(?!\u200b)(\d+)>", "<@\u200b\\1>", message)  # User mentions
+        # Sanitize dangerous mentions FIRST (before any send path), delegating
+        # to the authoritative escaper so this path can't drift from the main
+        # send path (NFKC width-fold + idempotent, bang-preserving ZWSP inserts).
+        message = escape_mentions(message)
 
         # Guard against DM channels (no guild/webhooks). Disable mentions on
         # all fallback paths — ``name`` is AI-controlled and may contain
@@ -971,37 +966,43 @@ async def send_as_webhook(bot, channel, name, message):
             if webhook.name == webhook_name:
                 set_cached_webhook(channel_id, webhook_name, webhook)
 
-            sent_message = None
-            # Send message (split safely if too long). ``pending_chunks``
-            # takes priority: it is the undelivered tail of a chunked send
-            # that failed on the cached webhook.
+            # Build the chunk list once, then send guarded so a mid-loop failure
+            # re-sends only the UNDELIVERED tail (not the already-delivered
+            # chunks). ``pending_chunks`` takes priority: it is the undelivered
+            # tail of a chunked send that already failed on the cached webhook.
             limit = 2000
             if pending_chunks is not None:
-                for chunk in pending_chunks:
-                    sent_message = await webhook.send(
-                        content=chunk,
-                        username=name,
-                        wait=True,
-                        allowed_mentions=discord.AllowedMentions.none(),
-                    )
+                fresh_chunks = pending_chunks
             elif len(message) > limit:
-                chunks = _safe_split_message(message, limit)
-                for chunk in chunks:
+                fresh_chunks = _safe_split_message(message, limit)
+            else:
+                fresh_chunks = [message]
+
+            sent_message = None
+            sent_chunks = 0
+            try:
+                for chunk in fresh_chunks:
                     sent_message = await webhook.send(
                         content=chunk,
                         username=name,
                         wait=True,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
-            else:
-                sent_message = await webhook.send(
-                    content=message,
-                    username=name,
-                    wait=True,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            logger.info("🎭 AI spoke as %s", name)
-            return sent_message
+                    sent_chunks += 1
+                logger.info("🎭 AI spoke as %s", name)
+                return sent_message
+            except discord.HTTPException as err:
+                # A later chunk failed mid-send (NotFound / Forbidden / other 5xx
+                # are all discord.HTTPException subclasses). Re-send ONLY the
+                # undelivered tail via the plain fallback so already-delivered
+                # webhook chunks aren't re-posted. Returning here is REQUIRED:
+                # falling through would hit the pending_chunks reset below and
+                # re-inflate ``message`` back to the full text.
+                logger.error("Webhook send failed mid-message: %s", err)
+                remaining = fresh_chunks[sent_chunks:]
+                if not remaining:
+                    return sent_message
+                return await _send_plain_fallback(channel, name, "\n".join(remaining))
 
         # Fallback if no webhook could be found/created
         if pending_chunks is not None:

@@ -31,8 +31,9 @@ static ERROR_LOG_SEPARATOR: LazyLock<String> = LazyLock::new(|| "=".repeat(80));
 //   U+000B U+000C vertical tab / form feed
 //   U+0085        NEL ("Next Line")
 //   U+2028 U+2029 Unicode line / paragraph separator
-const LOG_LINEBREAK_CHARS: [char; 7] =
-    ['\n', '\r', '\u{0B}', '\u{0C}', '\u{85}', '\u{2028}', '\u{2029}'];
+const LOG_LINEBREAK_CHARS: [char; 7] = [
+    '\n', '\r', '\u{0B}', '\u{0C}', '\u{85}', '\u{2028}', '\u{2029}',
+];
 
 /// Sanitize a single-line log field: replace every [`LOG_LINEBREAK_CHARS`] with
 /// a space (so it cannot forge a new log record) and clamp to `max` chars on a
@@ -1572,7 +1573,10 @@ mod tests {
         let attack = format!("evil\u{85}{}", "=".repeat(80));
         let out = sanitize_log_field(&attack, 4096);
         assert!(!out.contains('\n'), "no real newline may be introduced");
-        assert!(!out.contains('\u{85}'), "NEL must be neutralized to a space");
+        assert!(
+            !out.contains('\u{85}'),
+            "NEL must be neutralized to a space"
+        );
     }
 
     #[test]
@@ -1598,7 +1602,10 @@ mod tests {
             !out.contains("alice"),
             "absolute Windows path (with user name) must be redacted: {out}",
         );
-        assert!(out.contains("<path>"), "redacted token marker expected: {out}");
+        assert!(
+            out.contains("<path>"),
+            "redacted token marker expected: {out}"
+        );
         // The non-path prefix survives; the path tail (incl. "line 5") collapses
         // to a single <path> through end-of-line (fail-closed).
         assert_eq!(out, "error at <path>");
@@ -1611,14 +1618,20 @@ mod tests {
         assert!(unc.contains("<path>"));
 
         let posix = scrub_sentry_text("read /home/bob/.ssh/id_rsa now");
-        assert!(!posix.contains("bob"), "POSIX path must be redacted: {posix}");
+        assert!(
+            !posix.contains("bob"),
+            "POSIX path must be redacted: {posix}"
+        );
         assert!(posix.contains("<path>"));
     }
 
     #[test]
     fn scrub_redacts_forward_slash_windows_paths() {
         let out = scrub_sentry_text("at C:/Users/carol/app failed");
-        assert!(!out.contains("carol"), "forward-slash drive path must redact: {out}");
+        assert!(
+            !out.contains("carol"),
+            "forward-slash drive path must redact: {out}"
+        );
         assert!(out.contains("<path>"));
     }
 
@@ -1646,7 +1659,10 @@ mod tests {
         // (it matches the UNC/'//' rule) — both behaviors are intentional.
         assert_eq!(scrub_sentry_text("a / b"), "a / b");
         let pr = scrub_sentry_text("see //evil.example/x");
-        assert!(pr.contains("<path>"), "protocol-relative token should redact: {pr}");
+        assert!(
+            pr.contains("<path>"),
+            "protocol-relative token should redact: {pr}"
+        );
     }
 
     // -- dash-rust-2 completeness: prefix matched ANYWHERE in a token, so a path
@@ -1668,7 +1684,10 @@ mod tests {
         // Trailing text after the path ("failed") is intentionally swallowed by
         // the end-of-line redaction; only the non-path prefix survives.
         let out = scrub_sentry_text("read \"C:\\Users\\dave\\app.log\" failed");
-        assert!(!out.contains("dave"), "double-quoted path leaked user: {out}");
+        assert!(
+            !out.contains("dave"),
+            "double-quoted path leaked user: {out}"
+        );
         assert_eq!(out, "read \"<path>");
     }
 
@@ -1677,7 +1696,10 @@ mod tests {
         // Parenthesized source location, e.g. "(C:\...\bot.py:5)". The closing
         // paren and trailing text collapse into the end-of-line <path>.
         let out = scrub_sentry_text("stack (C:\\Users\\erin\\bot.py) here");
-        assert!(!out.contains("erin"), "paren-wrapped path leaked user: {out}");
+        assert!(
+            !out.contains("erin"),
+            "paren-wrapped path leaked user: {out}"
+        );
         assert_eq!(out, "stack (<path>");
     }
 
@@ -1701,7 +1723,10 @@ mod tests {
 
         // POSIX-rooted file URL — same "e:/" match point.
         let posix = scrub_sentry_text("see file:///home/grace/.ssh/config");
-        assert!(!posix.contains("grace"), "posix file:// URL leaked user: {posix}");
+        assert!(
+            !posix.contains("grace"),
+            "posix file:// URL leaked user: {posix}"
+        );
         assert_eq!(posix, "see fil<path>");
     }
 
@@ -1709,7 +1734,10 @@ mod tests {
     fn scrub_redacts_unc_glued_to_punctuation() {
         // UNC path wrapped in quotes — the leading "\\\\" prefix is mid-token.
         let out = scrub_sentry_text("opened '\\\\server\\share\\secret.db'");
-        assert!(!out.contains("server"), "quoted UNC path leaked host: {out}");
+        assert!(
+            !out.contains("server"),
+            "quoted UNC path leaked host: {out}"
+        );
         assert_eq!(out, "opened '<path>");
     }
 
@@ -1721,9 +1749,13 @@ mod tests {
     #[test]
     fn scrub_spaced_path_does_not_leak_surname_in_backtrace() {
         // Classic JS stack frame: "(C:\Users\Jane Doe\app\main.js:10:5)".
-        let out = scrub_sentry_text("at Object.<anonymous> (C:\\Users\\Jane Doe\\app\\main.js:10:5)");
+        let out =
+            scrub_sentry_text("at Object.<anonymous> (C:\\Users\\Jane Doe\\app\\main.js:10:5)");
         assert!(!out.contains("Doe"), "spaced path leaked surname: {out}");
-        assert!(!out.contains("Jane"), "spaced path leaked given name: {out}");
+        assert!(
+            !out.contains("Jane"),
+            "spaced path leaked given name: {out}"
+        );
         assert!(out.contains("<path>"), "redacted marker expected: {out}");
         // Only the path tail collapses; the non-path lead-in is preserved.
         assert_eq!(out, "at Object.<anonymous> (<path>");
@@ -1733,7 +1765,10 @@ mod tests {
     fn scrub_spaced_path_does_not_leak_surname_bare() {
         let out = scrub_sentry_text("C:\\Users\\John Smith\\AppData\\creds");
         assert!(!out.contains("Smith"), "spaced path leaked surname: {out}");
-        assert!(!out.contains("John"), "spaced path leaked given name: {out}");
+        assert!(
+            !out.contains("John"),
+            "spaced path leaked given name: {out}"
+        );
         assert_eq!(out, "<path>");
     }
 

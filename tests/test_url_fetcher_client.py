@@ -426,6 +426,35 @@ class TestFetchFallbackGuards:
         assert result["content"] == '{"key": "value"}'
         assert "title" not in result
 
+    @pytest.mark.asyncio
+    async def test_content_type_substring_not_treated_as_html(self, monkeypatch):
+        """A Content-Type merely containing 'text/html' takes the raw-text branch.
+
+        Mirrors url_fetcher.fetch_url_content's exact primary-MIME match so a
+        content-type-smuggling value like 'application/x-text/html-weird' is not
+        routed through BeautifulSoup.
+        """
+        from utils.web.url_fetcher_client import URLFetcherClient
+
+        monkeypatch.setattr("utils.web.url_fetcher._is_private_url", AsyncMock(return_value=False))
+
+        body = b"<title>Not parsed</title>plain body"
+        client = URLFetcherClient()
+        resp = _make_cm_response(
+            status=200, headers={"Content-Type": "application/x-text/html-weird"}
+        )
+        resp.content = MagicMock()
+        resp.content.read = AsyncMock(return_value=body)
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=resp)
+        client._session = mock_session
+
+        result = await client._fetch_fallback("http://example.com")
+
+        assert result["status_code"] == 200
+        assert result["content"] == "<title>Not parsed</title>plain body"
+        assert "title" not in result
+
 
 class TestFetchFallbackNoHelperSSRF:
     """Tests for the built-in SSRF fallback when url_fetcher helper is absent."""
@@ -664,6 +693,8 @@ class TestFetchBatchViaServiceSSRF:
         )
 
         client = URLFetcherClient()
+        client._service_available = True
+        client._service_check_time = 123.0
         mock_session = MagicMock()
         mock_session.post = MagicMock(side_effect=Exception("connreset"))
         client._session = mock_session
@@ -674,6 +705,11 @@ class TestFetchBatchViaServiceSSRF:
         assert result["success_count"] == 0
         assert result["error_count"] == len(urls)
         assert len(result["results"]) == 2
+        # A mid-interval batch failure invalidates the cached availability so the
+        # next call re-routes through the aiohttp fallback (self-heals like the
+        # single-URL path) instead of hard-failing for SERVICE_CHECK_INTERVAL.
+        assert client._service_available is False
+        assert client._service_check_time == 0
 
 
 class TestConstantsAndConfig:

@@ -195,31 +195,51 @@ async def handle_load_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
             total_chars += len(thinking)
         estimated_tokens = max(1, total_chars // 3)
 
+        # Cumulative content budget (see MAX_HISTORY_RESPONSE_CHARS): the token
+        # estimate above still sums the FULL history so the context-window
+        # indicator is unchanged, but the WIRE payload is capped because the
+        # dashboard client silently DROPS any frame over 50MB (ws-client.ts
+        # MAX_MESSAGE_LENGTH). Iterate NEWEST-first so truncation drops the
+        # OLDEST messages, then re-reverse to restore ascending order. Always
+        # keep at least one message.
+        budgeted: list[dict[str, Any]] = []
+        budget = MAX_HISTORY_RESPONSE_CHARS
+        truncated = False
+        for msg in reversed(messages):
+            size = len(msg.get("content") or "") + len(msg.get("thinking") or "")
+            if budgeted and budget - size < 0:
+                truncated = True
+                break
+            budget -= size
+            budgeted.append(msg)
+        budgeted.reverse()
+
         ai_provider = conversation.get("ai_provider", DEFAULT_AI_PROVIDER)
         context_window = CLAUDE_CONTEXT_WINDOW if ai_provider == "claude" else GEMINI_CONTEXT_WINDOW
 
         # Include the conversation's tags (#22) so the UI can render chips immediately.
         tags = await db.get_conversation_tags(conversation_id)
 
-        await ws.send_json(
-            {
-                "type": "conversation_loaded",
-                "conversation": {
-                    **conversation,
-                    "role_name": preset["name"],
-                    "role_emoji": preset["emoji"],
-                    "role_color": preset["color"],
-                    "tags": tags,
-                },
-                "messages": messages,
-                "token_usage": {
-                    "input_tokens": estimated_tokens,
-                    "output_tokens": 0,
-                    "total_tokens": estimated_tokens,
-                    "context_window": context_window,
-                },
-            }
-        )
+        payload: dict[str, Any] = {
+            "type": "conversation_loaded",
+            "conversation": {
+                **conversation,
+                "role_name": preset["name"],
+                "role_emoji": preset["emoji"],
+                "role_color": preset["color"],
+                "tags": tags,
+            },
+            "messages": budgeted,
+            "token_usage": {
+                "input_tokens": estimated_tokens,
+                "output_tokens": 0,
+                "total_tokens": estimated_tokens,
+                "context_window": context_window,
+            },
+        }
+        if truncated:
+            payload["truncated"] = True
+        await ws.send_json(payload)
     except Exception:
         logger.exception("WebSocket handler error")
         await ws.send_json(
@@ -423,6 +443,20 @@ async def handle_export_conversation(ws: WebSocketResponse, data: dict[str, Any]
     try:
         db = _get_db()
         export_data = await db.export_dashboard_conversation(conversation_id, export_format)
+        # A truncated JSON/markdown/html export is corrupt, so surface an
+        # explicit error instead of letting the dashboard client silently DROP
+        # an oversized frame (ws-client.ts MAX_MESSAGE_LENGTH, ~50MB). The 20M
+        # char cap (MAX_HISTORY_RESPONSE_CHARS) stays safely under it incl. the
+        # JSON envelope overhead.
+        if isinstance(export_data, str) and len(export_data) > MAX_HISTORY_RESPONSE_CHARS:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "code": "EXPORT_TOO_LARGE",
+                    "message": "Conversation too large to export over the dashboard",
+                }
+            )
+            return
         await ws.send_json(
             {
                 "type": "conversation_exported",
@@ -1555,6 +1589,22 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
                         elif isinstance(i, bool | int | float):
                             cleaned_list.append(str(i)[:200])
                     clean[key] = cleaned_list
+            # A non-empty dict whose values were ALL dropped (nested dict / None
+            # / unsupported type) leaves ``clean`` empty; writing None below
+            # would flow to save_dashboard_user_profile's else-branch and
+            # OVERWRITE the stored preferences with NULL while still acking
+            # success — silent data loss. Reject instead. An explicitly empty
+            # ``{}`` (raw_prefs falsy) is a legitimate clear and still falls
+            # through to the None path, so guard on ``raw_prefs and not clean``.
+            if raw_prefs and not clean:
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "INVALID_ARG",
+                        "message": "preferences contains no usable values",
+                    }
+                )
+                return
             sanitized_prefs = json.dumps(clean, ensure_ascii=False) if clean else None
         await db.save_dashboard_user_profile(
             display_name=display_name,

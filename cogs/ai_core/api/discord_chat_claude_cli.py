@@ -611,9 +611,12 @@ async def _send_overlimit_warning(
     # so abandoned entries (channels long past their cooldown) would linger.
     for cid in [c for c, t in _OVERLIMIT_LAST_WARN.items() if now - t >= _OVERLIMIT_WARN_COOLDOWN]:
         _OVERLIMIT_LAST_WARN.pop(cid, None)
-    last = _OVERLIMIT_LAST_WARN.get(key, 0.0)
+    last = _OVERLIMIT_LAST_WARN.get(key)
     with contextlib.suppress(Exception):
-        if now - last < _OVERLIMIT_WARN_COOLDOWN:
+        # time.monotonic() is uptime-based, so a 0.0 default made
+        # `now - 0.0 < cooldown` true within ~10 min of a reboot, misrouting a
+        # never-warned channel's first over-limit turn to the short notice.
+        if last is not None and now - last < _OVERLIMIT_WARN_COOLDOWN:
             await send_channel.send(
                 "⚠️ แชทยังเกินขนาด context — เลือกจากข้อความเตือนก่อนหน้า หรือใช้ `!auto_summarize`",
                 delete_after=15,

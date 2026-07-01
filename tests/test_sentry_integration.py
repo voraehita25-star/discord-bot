@@ -64,6 +64,37 @@ class TestInitSentry:
             if result:
                 mock_init.assert_called_once()
 
+    def test_before_send_redacts_exception_value(self):
+        """The before_send scrubber must redact the exception's own message
+        string (exc['value']) — a secret in exception text is the single most
+        common place secrets appear, and it isn't covered by the stack/message
+        scrubs. exc['type'] (the grouping/fingerprint identifier) stays intact.
+        """
+        from utils.monitoring import sentry_integration
+
+        if not sentry_integration.SENTRY_AVAILABLE:
+            pytest.skip("Sentry SDK not available")
+
+        with patch("sentry_sdk.init") as mock_init:
+            sentry_integration.init_sentry(dsn="https://test@sentry.io/123")
+
+        before_send = mock_init.call_args.kwargs["before_send"]
+        # Real sk-ant token shape (40+ chars after the prefix) so the REAL
+        # _redact_sensitive regex actually fires — do not mock the redactor.
+        token = "sk-ant-api03-" + "A" * 45
+        event = {
+            "exception": {
+                "values": [{"type": "RuntimeError", "value": f"auth failed with token {token}"}]
+            }
+        }
+        out = before_send(event, {})
+
+        redacted = out["exception"]["values"][0]["value"]
+        assert "sk-ant" not in redacted
+        assert "[REDACTED]" in redacted
+        # Exception type must be untouched (used for Sentry issue grouping).
+        assert out["exception"]["values"][0]["type"] == "RuntimeError"
+
 
 class TestCaptureException:
     """Tests for capture_exception function."""
@@ -113,6 +144,36 @@ class TestCaptureException:
             assert result is None
         finally:
             sentry_integration.SENTRY_AVAILABLE = original
+
+    def test_capture_exception_does_not_mutate_context(self):
+        """capture_exception must redact a COPY of the caller's context. Passing
+        a reused mutable object (e.g. self._config) must not have its live
+        secret overwritten with '[REDACTED]' as a side effect of the report.
+        """
+        from utils.monitoring import sentry_integration
+
+        if not sentry_integration.SENTRY_AVAILABLE:
+            pytest.skip("Sentry SDK not available")
+
+        # Real sk-ant token shape so the REAL redactor fires — without the
+        # deep-copy fix this exact leaf would be overwritten in the caller's dict.
+        secret = "sk-ant-api03-" + "B" * 45
+        ctx = {"cfg": {"api_key": secret}}
+
+        mock_scope = MagicMock()
+        with (
+            patch("sentry_sdk.new_scope") as mock_new_scope,
+            patch("sentry_sdk.capture_exception", return_value="event-id"),
+        ):
+            mock_new_scope.return_value.__enter__ = MagicMock(return_value=mock_scope)
+            mock_new_scope.return_value.__exit__ = MagicMock(return_value=False)
+
+            sentry_integration.capture_exception(ValueError("x"), context=ctx)
+
+        # Caller's live object is untouched...
+        assert ctx["cfg"]["api_key"] == secret
+        # ...while the redacted COPY is what reached Sentry.
+        mock_scope.set_extra.assert_called_once_with("cfg", {"api_key": "[REDACTED]"})
 
 
 class TestCaptureMessage:

@@ -257,3 +257,67 @@ class TestCacheIntegration:
 
         assert hasattr(stats, "total_entries")
         assert hasattr(stats, "hit_rate")
+
+
+class TestTypingOrNoop:
+    """Tests for the fail-safe typing helper ``_typing_or_noop``.
+
+    Regression guard: a typing() ``__aenter__`` HTTP failure (Forbidden / 5xx /
+    rate-limit) must degrade to "no typing indicator" instead of escaping
+    process_chat and silently dropping the user's turn.
+    """
+
+    @pytest.mark.asyncio
+    async def test_success_path_enters_and_exits(self):
+        """Happy path: yields the body and awaits ``__aexit__`` for cleanup."""
+        from cogs.ai_core.logic import _typing_or_noop
+
+        channel = MagicMock()
+        channel.typing = MagicMock(return_value=AsyncMock())
+        cm = channel.typing.return_value
+
+        body_ran = False
+        async with _typing_or_noop(channel):
+            body_ran = True
+
+        assert body_ran
+        cm.__aenter__.assert_awaited_once()
+        cm.__aexit__.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_enter_failure_degrades_to_noop(self):
+        """A typing ``__aenter__`` HTTPException must not propagate; body still runs."""
+        import discord
+
+        from cogs.ai_core.logic import _typing_or_noop
+
+        channel = MagicMock()
+        channel.typing = MagicMock(return_value=AsyncMock())
+        channel.typing.return_value.__aenter__ = AsyncMock(
+            side_effect=discord.HTTPException(MagicMock(status=503, reason="err"), "boom")
+        )
+        cm = channel.typing.return_value
+
+        body_ran = False
+        async with _typing_or_noop(channel):
+            body_ran = True
+
+        assert body_ran  # turn preserved despite the typing failure
+        cm.__aexit__.assert_not_awaited()  # never entered, so nothing to exit
+
+    @pytest.mark.asyncio
+    async def test_cancellation_propagates_through_finally(self):
+        """CancelledError from the body must propagate (``suppress(Exception)`` spares it)."""
+        import asyncio
+
+        from cogs.ai_core.logic import _typing_or_noop
+
+        channel = MagicMock()
+        channel.typing = MagicMock(return_value=AsyncMock())
+        cm = channel.typing.return_value
+
+        with pytest.raises(asyncio.CancelledError):
+            async with _typing_or_noop(channel):
+                raise asyncio.CancelledError
+
+        cm.__aexit__.assert_awaited_once()  # cleanup still ran

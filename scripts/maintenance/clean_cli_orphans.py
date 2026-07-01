@@ -31,6 +31,13 @@ PROJECTS = Path.home() / ".claude" / "projects" / encode(WORKDIR)
 
 
 def main() -> int:
+    # The status output uses ⚠️/❌; force UTF-8 so it can't crash with
+    # UnicodeEncodeError on a redirected cp874/cp1252 stdout.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
     apply = "--apply" in sys.argv
 
     # `--apply` is destructive (unlink + rmtree). Require an explicit "yes" so

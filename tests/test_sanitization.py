@@ -292,6 +292,21 @@ class TestSanitizeMessageContent:
         # Exactly one ZWSP per defanged token (4 tokens → 4 ZWSPs), not stacked.
         assert twice.count("\u200b") == 4
 
+    def test_escape_mentions_preserves_bang_and_no_truncation(self):
+        """escape_mentions keeps the legacy bang and never truncates.
+
+        Truncation is intentionally left to sanitize_message_content, so the
+        webhook path can escape a >2000-char reply and chunk it afterwards.
+        """
+        from cogs.ai_core.sanitization import escape_mentions
+
+        assert escape_mentions("yo <@!789>") == "yo <@!\u200b789>"
+        # A 5000-char input comes back unclamped: no ellipsis, no length cap.
+        big = "A" * 5000
+        result = escape_mentions(big)
+        assert len(result) == 5000
+        assert not result.endswith("...")
+
 
 class TestModuleExports:
     """Tests for module exports."""
@@ -303,6 +318,7 @@ class TestModuleExports:
         assert "sanitize_channel_name" in sanitization.__all__
         assert "sanitize_role_name" in sanitization.__all__
         assert "sanitize_message_content" in sanitization.__all__
+        assert "escape_mentions" in sanitization.__all__
 
     def test_imports_work(self):
         """Test that imports work correctly."""

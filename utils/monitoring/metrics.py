@@ -348,6 +348,7 @@ class BotMetrics:
         "forget",
         "view_memories",
         "memory_stats",
+        "db_write_lock_wait",  # synthetic internal latency series (DB write-lock contention), not a user command
     }
 
     # Same defence for circuit-breaker and rate-limiter labels. An
@@ -361,7 +362,6 @@ class BotMetrics:
         "youtube",
         "spotify",
         "discord",
-        "db_write_lock_wait",
         "go_url_fetcher",
         "go_health_api",
     }

@@ -100,3 +100,28 @@ class TestAudit3FindAllDevWatchers:
             result = healer.find_all_dev_watchers()
 
         assert len(result) == 0
+
+    def test_filters_venv_launcher_child_duplicate(self):
+        """A single dev_watcher launched via `.venv\\Scripts\\python.exe
+        scripts\\dev_watcher.py` shows up as a launcher+child pair; the
+        ppid-based filter must collapse it to one so it is not miscounted as
+        DUPLICATE_WATCHERS."""
+        from utils.reliability.self_healer import SelfHealer
+
+        healer = SelfHealer()
+        launcher = _proc(100, ["python", "scripts\\dev_watcher.py"])
+        child = _proc(101, ["python", "scripts\\dev_watcher.py"])
+
+        def fake_process(pid):
+            m = MagicMock()
+            # child (101) is spawned by launcher (100); launcher's parent is an
+            # unrelated shell (1) that is not in the watcher set.
+            m.ppid.return_value = 100 if pid == 101 else 1
+            return m
+
+        with patch("psutil.process_iter", return_value=[launcher, child]):
+            with patch("psutil.Process", side_effect=fake_process):
+                result = healer.find_all_dev_watchers()
+
+        assert len(result) == 1
+        assert result[0]["pid"] == 101

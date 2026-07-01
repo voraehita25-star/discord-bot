@@ -191,6 +191,9 @@ class MediaProcessorWrapper:
                             # Best-effort: PIL.close() on already-closed
                             # images can raise OSError; we don't care.
                             pass
+            except (Image.DecompressionBombError, Image.DecompressionBombWarning) as e:
+                logger.warning("PIL resize failed (decompression bomb): %s", e)
+                return data, 0, 0
             finally:
                 _PIL_Image.MAX_IMAGE_PIXELS = prev_max_pixels
 
@@ -219,7 +222,12 @@ class MediaProcessorWrapper:
                 return False
             finally:
                 img.close()
-        except (OSError, ValueError) as e:
+        except (
+            OSError,
+            ValueError,
+            Image.DecompressionBombError,
+            Image.DecompressionBombWarning,
+        ) as e:
             logger.debug("PIL animated GIF check failed: %s", e)
             return False
 
@@ -230,11 +238,15 @@ class MediaProcessorWrapper:
         else:
             if not PIL_AVAILABLE:
                 raise RuntimeError("Neither Rust extension nor PIL is available")
-            img = Image.open(io.BytesIO(data))
             try:
-                return img.size
-            finally:
-                img.close()
+                img = Image.open(io.BytesIO(data))
+                try:
+                    return img.size
+                finally:
+                    img.close()
+            except (Image.DecompressionBombError, Image.DecompressionBombWarning) as e:
+                logger.warning("PIL get_dimensions failed (decompression bomb): %s", e)
+                return 0, 0
 
     def to_base64(self, data: bytes) -> str:
         """Encode bytes to base64 string."""

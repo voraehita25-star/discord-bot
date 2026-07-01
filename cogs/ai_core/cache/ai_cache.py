@@ -113,6 +113,13 @@ class AICache:
         self._semantic_hits = 0  # embedding-based matches (currently unused)
         self._fuzzy_hits = 0  # difflib SequenceMatcher matches
 
+        # Optional shared L2 handle. Set on the instance, not the class — only
+        # the module singleton ``ai_cache`` is wired to the shared on-disk DB
+        # (see Global Instances), mirroring the per-instance ``_post_set_hook``
+        # rationale below. Throwaway instances (tests) stay L1-only so their
+        # invalidate() can't wipe data/ai_cache_l2.db.
+        self._l2_cache: L2SqliteCache | None = None
+
         # Compile normalize patterns
         self._normalize_compiled = [
             (re.compile(pattern), repl) for pattern, repl in self.NORMALIZE_PATTERNS
@@ -437,7 +444,8 @@ class AICache:
             write-through-mirrored to L2 under the same key, so an entry
             present in both layers is counted twice — this is a rows-cleared
             total, not a distinct-key count, and the operator-facing
-            "cleared N entries" message should be read that way.
+            "cleared N entries" message should be read that way. L1-only
+            instances (no shared L2 handle) return only the L1 count.
         """
         with self._cache_lock:
             if pattern is None:
@@ -451,9 +459,13 @@ class AICache:
                 count = len(to_remove)
 
         # Purge the persistent L2 layer too — otherwise load_recent's 24h
-        # warm-up resurrects the cleared entries at the next startup.
-        with contextlib.suppress(Exception):
-            count += _l2_cache.clear(pattern)
+        # warm-up resurrects the cleared entries at the next startup. Only the
+        # singleton carries the shared L2 handle; L1-only instances (tests)
+        # skip this and so can't wipe data/ai_cache_l2.db.
+        l2 = self._l2_cache
+        if l2 is not None:
+            with contextlib.suppress(Exception):
+                count += l2.clear(pattern)
 
         return count
 
@@ -864,6 +876,11 @@ def _l2_post_set_hook(key: str, entry: CacheEntry) -> None:
 
 
 ai_cache._post_set_hook = _l2_post_set_hook  # type: ignore[attr-defined]
+
+# Wire the shared on-disk L2 to the singleton only, so invalidate() purges L2
+# for production but throwaway (L1-only) instances leave data/ai_cache_l2.db
+# untouched. Declared on the class (see __init__), so no type: ignore needed.
+ai_cache._l2_cache = _l2_cache
 
 
 def get_cache_stats() -> CacheStats:

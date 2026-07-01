@@ -5,7 +5,6 @@
 //! - Parallel search with Rayon
 
 mod cosine;
-mod errors;
 
 use parking_lot::RwLock;
 use pyo3::exceptions::PyValueError;
@@ -14,7 +13,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use cosine::cosine_similarity;
-pub use errors::RagError;
 
 /// A single memory entry with embedding and metadata
 #[pyclass(from_py_object)]
@@ -450,10 +448,20 @@ impl RagEngine {
             use std::io::Write;
             let mut f = std::fs::File::create(&temp_path)
                 .map_err(|e| PyValueError::new_err(format!("create temp: {}", e)))?;
-            f.write_all(json.as_bytes())
-                .map_err(|e| PyValueError::new_err(format!("write temp: {}", e)))?;
-            f.sync_all()
-                .map_err(|e| PyValueError::new_err(format!("fsync temp: {}", e)))?;
+            // Clean up the partial temp on any write/fsync failure so repeated
+            // errors don't pile up orphaned `.tmp.*` files (unique suffix per
+            // call), matching the copy-fallback cleanup below. Drop the handle
+            // first so remove_file succeeds on Windows (open handle has no
+            // FILE_SHARE_DELETE).
+            let write_res = f
+                .write_all(json.as_bytes())
+                .map_err(|e| format!("write temp: {}", e))
+                .and_then(|()| f.sync_all().map_err(|e| format!("fsync temp: {}", e)));
+            drop(f);
+            if let Err(msg) = write_res {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(PyValueError::new_err(msg));
+            }
         }
 
         // rename may fail on Windows if file is locked; fall back to copy+delete.
@@ -573,45 +581,45 @@ impl RagEngine {
                 item["timestamp"].as_f64(),
                 item["importance"].as_f64(),
             ) {
-                let emb: Vec<f32> = embedding
-                    .iter()
-                    .filter_map(|v| {
-                        v.as_f64().and_then(|f| {
-                            let val = f as f32;
-                            if val.is_finite() {
-                                Some(val)
-                            } else {
-                                None
-                            }
-                        })
-                    })
-                    .collect();
-
-                if emb.len() == self.dimension {
-                    let imp = importance as f32;
-                    if !imp.is_finite() {
-                        continue; // Skip entries with NaN/Infinity importance
-                    }
-                    if imp < 0.0 {
-                        continue; // Skip negative importance — a negative weight
-                                  // flips final_score's sign in search() and can
-                                  // rank an opposite-meaning memory above threshold.
-                    }
-                    if !timestamp.is_finite() {
-                        continue; // Skip entries with NaN/Infinity timestamp — keep
-                                  // the stored-data invariant consistent with importance/embedding
-                    }
-                    new_entries.insert(
-                        id.to_string(),
-                        MemoryEntry {
-                            id: id.to_string(),
-                            text: text.to_string(),
-                            embedding: emb,
-                            timestamp,
-                            importance: imp,
-                        },
-                    );
+                // Reject the entry unless the RAW embedding array is exactly `dimension`
+                // long AND every element is a finite number. filter-then-count let an
+                // OVER-LENGTH array whose surplus elements were non-finite (e.g.
+                // [null, e0, e1, ..., e_{d-1}]) collapse to exactly `dimension` finite
+                // values and load positionally-shifted data instead of being rejected.
+                if embedding.len() != self.dimension {
+                    continue;
                 }
+                let Some(emb) = embedding
+                    .iter()
+                    .map(|v| v.as_f64().map(|f| f as f32).filter(|val| val.is_finite()))
+                    .collect::<Option<Vec<f32>>>()
+                else {
+                    continue; // non-numeric or non-finite element -> reject whole entry
+                };
+
+                let imp = importance as f32;
+                if !imp.is_finite() {
+                    continue; // Skip entries with NaN/Infinity importance
+                }
+                if imp < 0.0 {
+                    continue; // Skip negative importance — a negative weight
+                              // flips final_score's sign in search() and can
+                              // rank an opposite-meaning memory above threshold.
+                }
+                if !timestamp.is_finite() {
+                    continue; // Skip entries with NaN/Infinity timestamp — keep
+                              // the stored-data invariant consistent with importance/embedding
+                }
+                new_entries.insert(
+                    id.to_string(),
+                    MemoryEntry {
+                        id: id.to_string(),
+                        text: text.to_string(),
+                        embedding: emb,
+                        timestamp,
+                        importance: imp,
+                    },
+                );
             }
         }
 
@@ -736,6 +744,15 @@ mod tests {
             let count = loaded.load("dump.json").unwrap();
             assert_eq!(count, 2);
             assert_eq!(loaded.len(), 2);
+
+            // The success path must not orphan the atomic-write temp file.
+            let leftover = std::fs::read_dir(".").unwrap().any(|e| {
+                e.unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("dump.json.tmp.")
+            });
+            assert!(!leftover, "save() must not leave a .tmp.* file on success");
         });
 
         std::env::set_current_dir(prev).unwrap();
@@ -900,8 +917,10 @@ mod tests {
 
         let result = std::panic::catch_unwind(|| {
             // null is JSON's way to smuggle a non-numeric — as_f64() returns
-            // None and the value is filtered, so the embedding ends up shorter
-            // than `dimension` and the whole entry is dropped (dim mismatch).
+            // None, so the Option<Vec<f32>> collect short-circuits and the whole
+            // entry is rejected. Raw length matches `dimension` here, but the
+            // non-numeric element fails the all-finite requirement (the raw-length
+            // guard also enforces exact length independently of this).
             let json = r#"[
               {"id":"good","text":"g","embedding":[0.1,0.2,0.3,0.4],"timestamp":1.0,"importance":0.5},
               {"id":"bad","text":"b","embedding":[0.1,null,0.3,0.4],"timestamp":1.0,"importance":0.5}
@@ -911,6 +930,37 @@ mod tests {
             let engine = RagEngine::new(4, 0.0);
             let count = engine.load("mixed.json").unwrap();
             assert_eq!(count, 1, "only the all-finite entry should load");
+        });
+
+        std::env::set_current_dir(prev).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
+    }
+
+    #[test]
+    fn load_rejects_over_length_embedding_with_nonfinite_surplus() {
+        let _g = CWD_LOCK.lock().unwrap();
+        let dir = unique_tempdir("overlen");
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        let result = std::panic::catch_unwind(|| {
+            // Regression: filter-then-count accepted an OVER-LENGTH embedding
+            // whose surplus elements were non-finite. `[null,0.1,0.2,0.3,0.4]`
+            // (len 5, dim 4) used to have the null filtered away, collapsing to
+            // exactly `dimension` finite values and loading positionally-shifted
+            // data. The raw-length guard now rejects it outright. An all-finite
+            // over-length embedding is likewise rejected (raw length != dim).
+            let json = r#"[
+              {"id":"good","text":"g","embedding":[0.1,0.2,0.3,0.4],"timestamp":1.0,"importance":0.5},
+              {"id":"nonfinite","text":"n","embedding":[null,0.1,0.2,0.3,0.4],"timestamp":1.0,"importance":0.5},
+              {"id":"finite","text":"f","embedding":[0.1,0.2,0.3,0.4,0.5],"timestamp":1.0,"importance":0.5}
+            ]"#;
+            std::fs::write("overlen.json", json).unwrap();
+
+            let engine = RagEngine::new(4, 0.0);
+            let count = engine.load("overlen.json").unwrap();
+            assert_eq!(count, 1, "only the exact-length entry should load; over-length rejected");
         });
 
         std::env::set_current_dir(prev).unwrap();

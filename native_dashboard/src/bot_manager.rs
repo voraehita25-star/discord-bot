@@ -385,6 +385,26 @@ impl BotManager {
             .ok()
     }
 
+    /// True if the process's ENTRY SCRIPT basename — the first non-interpreter,
+    /// non-flag argv token (skip cmd[0] and any leading `-` option) — equals
+    /// `script`. `cmd` items and `script` are expected already lowercased. This is
+    /// the exact gate `reap_orphan_dev_watcher` uses; `stop_dev_watcher` and
+    /// `get_status`'s mode detection call it so all three cannot drift (a bare
+    /// python-name + `process_belongs_to_us` match would force-kill / mislabel an
+    /// unrelated project python after Windows PID reuse).
+    fn entry_script_is(cmd: &[String], script: &str) -> bool {
+        cmd.iter()
+            .skip(1)
+            .find(|arg| !arg.starts_with('-'))
+            .map(|arg| {
+                std::path::Path::new(arg.as_str())
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_lowercase() == script)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    }
+
     fn stop_dev_watcher(&mut self) {
         if let Some(pid) = self.get_dev_watcher_pid() {
             // Verify the PID actually points at a python process before
@@ -396,10 +416,11 @@ impl BotManager {
             Self::refresh_processes_with_cmd(&mut self.sys);
             let base_path_str = self.base_path.to_string_lossy().to_lowercase().to_string();
             // Require BOTH a python name AND that the process belongs to our own
-            // project tree (cmdline references base_path OR cwd IS base_path) —
-            // a bare PID match is never trusted because Windows reuses PIDs, so
-            // after reuse the recorded PID could map to an unrelated python
-            // process tree (mirrors kill_orphan_bot_processes).
+            // project tree (cmdline references base_path OR cwd IS base_path) AND
+            // that its entry script is dev_watcher.py — a bare PID match is never
+            // trusted because Windows reuses PIDs, so after reuse the recorded PID
+            // could map to an unrelated python process tree (enforces the same
+            // entry-script + belongs-to-us gate as reap_orphan_dev_watcher).
             let is_ours = self
                 .sys
                 .process(sysinfo::Pid::from_u32(pid))
@@ -413,6 +434,14 @@ impl BotManager {
                         .iter()
                         .map(|s| s.to_string_lossy().to_lowercase().to_string())
                         .collect();
+                    // Entry-script gate (previously missing): only kill when this
+                    // python's ENTRY SCRIPT is dev_watcher.py — mirrors
+                    // reap_orphan_dev_watcher so a stale/reused PID pointing at an
+                    // unrelated project python (pytest under base_path, the bot
+                    // itself) is not force-killed.
+                    if !Self::entry_script_is(&cmd, "dev_watcher.py") {
+                        return false;
+                    }
                     let cmdline = cmd.join(" ");
                     Self::process_belongs_to_us(
                         p,
@@ -581,18 +610,7 @@ impl BotManager {
             // Match on the ENTRY SCRIPT basename only (first non-interpreter,
             // non-flag argv token) so an unrelated process that merely passes a
             // "dev_watcher.py" string as a later argument isn't swept.
-            let entry_is_dev_watcher = cmd
-                .iter()
-                .skip(1)
-                .find(|arg| !arg.starts_with('-'))
-                .map(|arg| {
-                    std::path::Path::new(arg.as_str())
-                        .file_name()
-                        .map(|f| f.to_string_lossy().to_lowercase() == "dev_watcher.py")
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false);
-            if !entry_is_dev_watcher {
+            if !Self::entry_script_is(&cmd, "dev_watcher.py") {
                 continue;
             }
 
@@ -869,6 +887,11 @@ impl BotManager {
                         .iter()
                         .map(|s| s.to_string_lossy().to_lowercase().to_string())
                         .collect();
+                    // Same entry-script gate as stop_dev_watcher so the mode badge
+                    // stays honest after PID reuse (display-only; kills nothing).
+                    if !Self::entry_script_is(&cmd, "dev_watcher.py") {
+                        return false;
+                    }
                     let cmdline = cmd.join(" ");
                     // Fail CLOSED, consistent with the main-bot check above and
                     // process_belongs_to_us' own empty-base_path guard — no
@@ -1662,4 +1685,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn entry_script_is_matches_only_the_entry_script() {
+        let dev = |args: &[&str]| {
+            let cmd: Vec<String> = args.iter().map(|s| s.to_lowercase()).collect();
+            BotManager::entry_script_is(&cmd, "dev_watcher.py")
+        };
+        // Entry script (with path, either separator) matches.
+        assert!(dev(&["c:\\py\\python.exe", "scripts\\dev_watcher.py"]));
+        assert!(dev(&["python.exe", "-u", "scripts/dev_watcher.py"]));
+        // A different entry script must NOT match (this is the bug the gate closes).
+        assert!(!dev(&["python.exe", "bot.py"]));
+        // dev_watcher.py only as a LATER arg must NOT match (entry is bot.py).
+        assert!(!dev(&["python.exe", "bot.py", "--note", "dev_watcher.py"]));
+        // `-m pytest` entry token resolves to "pytest", not our script.
+        assert!(!dev(&["python.exe", "-m", "pytest"]));
+        // Interpreter-only argv -> false.
+        assert!(!dev(&["python.exe"]));
+    }
 }

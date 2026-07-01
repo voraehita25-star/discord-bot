@@ -254,6 +254,81 @@ class TestSendAsWebhook:
         # Should be called twice (chunked)
         assert mock_webhook.send.call_count == 2
 
+    @pytest.mark.asyncio
+    async def test_fresh_webhook_partial_failure_sends_only_tail(self):
+        """Fresh find/create webhook path: when a later chunk fails mid-send, only
+        the UNDELIVERED tail goes to the plain fallback; already-delivered chunks
+        are NOT re-posted (Finding 1). Regression for the duplicate/garbled output
+        bug where the outer handler used to re-send the full original message.
+        """
+        import discord
+
+        from cogs.ai_core.tools.tool_executor import send_as_webhook
+
+        bot = MagicMock()
+        channel = MagicMock()
+        channel.id = 987654
+        channel.send = AsyncMock()
+        channel.guild = MagicMock()
+        channel.guild.me = MagicMock()
+
+        permissions = MagicMock()
+        permissions.manage_webhooks = True
+        channel.permissions_for.return_value = permissions
+
+        channel.webhooks = AsyncMock(return_value=[])
+        mock_webhook = MagicMock()
+        mock_webhook.name = "AI: TestChar"
+        mock_webhook.send = AsyncMock(
+            side_effect=[MagicMock(), discord.HTTPException(MagicMock(), "boom")]
+        )
+        channel.create_webhook = AsyncMock(return_value=mock_webhook)
+
+        # Splits into exactly two chunks at the space near 1500 (limit 2000).
+        first = "A" * 1490
+        tail = "B" * 1009
+        message = first + " " + tail
+
+        with (
+            patch("cogs.ai_core.tools.tool_executor.get_cached_webhook", return_value=None),
+            patch("cogs.ai_core.tools.tool_executor.set_cached_webhook"),
+        ):
+            await send_as_webhook(bot, channel, "TestChar", message)
+
+        # Both chunks were attempted on the webhook (chunk 0 ok, chunk 1 raised).
+        assert mock_webhook.send.call_count == 2
+        # Plain fallback fired for the undelivered tail only.
+        assert channel.send.called
+        sent_text = "".join(str(c.args[0]) for c in channel.send.call_args_list)
+        # The already-delivered first chunk must NOT be re-posted; only the tail.
+        assert first not in sent_text
+        assert "B" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_webhook_escapes_legacy_bang_mention(self):
+        """The webhook path delegates to the authoritative escape_mentions, so a
+        legacy nickname mention <@!ID> keeps its bang (defanged to <@!\u200bID>,
+        not <@\u200bID>). manage_webhooks False forces the plain-text fallback.
+        """
+        from cogs.ai_core.tools.tool_executor import send_as_webhook
+
+        bot = MagicMock()
+        channel = MagicMock()
+        channel.send = AsyncMock()
+        channel.guild = MagicMock()
+        channel.guild.me = MagicMock()
+
+        permissions = MagicMock()
+        permissions.manage_webhooks = False
+        channel.permissions_for.return_value = permissions
+
+        await send_as_webhook(bot, channel, "TestChar", "yo <@!123>")
+
+        channel.send.assert_called_once()
+        content = channel.send.call_args[0][0]
+        assert "<@!\u200b123>" in content
+        assert "<@\u200b123>" not in content
+
 
 class TestSafeSplitMessage:
     def test_no_orphaned_thai_mark_on_hard_cut(self):

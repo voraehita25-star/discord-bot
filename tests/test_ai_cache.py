@@ -245,14 +245,19 @@ class TestAICacheEviction:
 
         cache = AICache(max_size=3)
 
-        cache.set("key1", "value1")
-        cache.set("key2", "value2")
-        cache.set("key3", "value3")
-        cache.set("key4", "value4")  # Should evict key1
+        # Responses must clear the _CACHE_MIN_RESPONSE_CHARS (10) gate, else
+        # set() drops them silently and this test would pass vacuously.
+        cache.set("key1", "value1 content")
+        cache.set("key2", "value2 content")
+        cache.set("key3", "value3 content")
+        cache.set("key4", "value4 content")  # Should evict key1
 
-        # key1 should be evicted (LRU)
+        # key1 should be evicted (LRU). use_fuzzy=False so a lexical fuzzy hit
+        # cannot mask the eviction.
         stats = cache.get_stats()
-        assert stats.total_entries <= 3
+        assert stats.total_entries == 3
+        assert cache.get("key1", use_fuzzy=False) is None
+        assert cache.get("key4", use_fuzzy=False) == "value4 content"
 
 
 class TestAICacheSingleton:
@@ -849,3 +854,52 @@ class TestAICacheEvictionOnSet:
         assert refreshed.response == "charlie refreshed content"
         assert refreshed.hits == 5
         assert refreshed.ttl_multiplier == 1.2
+
+
+class TestAICacheInvalidateL2Isolation:
+    """invalidate()'s L2 purge is confined to the wired singleton.
+
+    A throwaway AICache() must stay L1-only so running the suite can't
+    DELETE FROM the real data/ai_cache_l2.db, and its returned count must
+    not fold in L2 rows it never wrote.
+    """
+
+    def test_throwaway_instance_has_no_l2(self):
+        """A freshly constructed AICache is not wired to any shared L2."""
+        from cogs.ai_core.cache.ai_cache import AICache
+
+        assert AICache()._l2_cache is None
+
+    def test_singleton_wired_to_global_l2(self):
+        """The module singleton is wired to the global L2 instance."""
+        from cogs.ai_core.cache.ai_cache import _l2_cache, ai_cache
+
+        assert ai_cache._l2_cache is _l2_cache
+
+    def test_invalidate_on_throwaway_does_not_touch_global_l2(self, monkeypatch):
+        """Throwaway invalidate() never calls the global L2.clear and counts only L1."""
+        # Use the ``from <submodule> import`` form: the package __init__ re-exports
+        # the ``ai_cache`` singleton, which shadows the submodule under attribute
+        # access (so ``import cogs.ai_core.cache.ai_cache as mod`` would bind the
+        # instance, not the module). This form binds the real module globals.
+        from cogs.ai_core.cache.ai_cache import AICache, _l2_cache
+
+        calls = []
+
+        def spy_clear(pattern=None):
+            calls.append(pattern)
+            return 99  # would inflate the count if ever folded in
+
+        monkeypatch.setattr(_l2_cache, "clear", spy_clear)
+
+        cache = AICache()
+        cache.set("throwaway message one", "throwaway response content one")
+        cache.set("throwaway message two", "throwaway response content two")
+
+        l1_count = len(cache.cache)
+        assert l1_count == 2  # both entries actually stored
+
+        count = cache.invalidate()
+
+        assert calls == []  # global L2.clear never invoked
+        assert count == l1_count  # count reflects only L1 rows

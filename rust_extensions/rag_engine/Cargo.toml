@@ -13,7 +13,6 @@ pyo3.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 parking_lot.workspace = true
 # fs2 dropped — no advisory file locking is used at all. save() achieves
 # crash safety via a per-process-unique temp file (PID + nanos), atomic

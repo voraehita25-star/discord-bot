@@ -226,6 +226,56 @@ class TestClaudeDashboardRetry:
         )
         assert client.attempts == 0
 
+    @pytest.mark.asyncio
+    async def test_chat_persists_only_accepted_images(self, ws: FakeWS):
+        """Parity with the Gemini twin: a rejected (disallowed-MIME) image must
+        NOT be persisted. The user-message save has to receive images=None so
+        the raw blob is never re-served on reload nor counted in the mode badge.
+        """
+        from cogs.ai_core.api.dashboard_chat_claude import handle_chat_message_claude
+
+        client = FakeClaudeClient([[_text_event("ok response")]])
+        heic_image = f"data:image/heic;base64,{base64.b64encode(b'abc').decode('ascii')}"
+
+        mock_db = MagicMock()
+        mock_db.save_dashboard_message = AsyncMock(return_value=1)
+        mock_db.get_dashboard_messages = AsyncMock(return_value=[])
+        mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "x"})
+        mock_db.update_dashboard_conversation = AsyncMock()
+
+        with (
+            patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat_claude._get_db", return_value=mock_db),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
+                new=AsyncMock(return_value=("User context", False)),
+            ),
+        ):
+            await handle_chat_message_claude(
+                cast(Any, ws),
+                {
+                    "content": "hello",
+                    "conversation_id": "conv-1",
+                    "images": [heic_image],
+                },
+                cast(Any, client),
+                stream_timeout=1,
+            )
+
+        # The disallowed HEIC image is rejected with an error frame...
+        assert any("image/heic" in message["message"].lower() for message in ws.find("error"))
+        # ...and the user-message row is saved with images=None — the raw blob
+        # is NOT persisted, so it can't be re-served or counted on later turns.
+        user_saves = [
+            call
+            for call in mock_db.save_dashboard_message.await_args_list
+            if call.args[1] == "user"
+        ]
+        assert len(user_saves) == 1
+        assert user_saves[0].kwargs.get("images") is None
+        # The mode badge must not advertise an image for this turn.
+        assert "🖼️" not in ws.find("stream_start")[0]["mode"]
+
 
 class TestApplySearchReplace:
     """The SDK backend must delegate to the shared dashboard_common patcher.

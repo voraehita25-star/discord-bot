@@ -58,7 +58,14 @@ const BARE_URL_RE = new RegExp('(^|[\\s(])(' + HTTPS_URL + ')', 'g');
 // ~297 restores single-line `code` content here, BEFORE the autolink pass; the
 // primary \x04ICODE_ path is still a placeholder, but this also covers that
 // fallback so a URL inside inline code is never linkified).
-const PROTECTED_SPLIT_RE = /(<a href="[^"]*">[^<]*<\/a>|<code>[^<]*<\/code>)/g;
+// The anchor body is matched lazily ([\s\S]*? up to the first </a>), not with
+// [^<]*, because the earlier bold/em/`code` passes may have emitted inline tags
+// (<strong>/<em>/<code>) INSIDE a markdown link's visible label — [^<]* would
+// stop at that first nested '<', never reach </a>, and leave the anchor
+// unprotected, so a bare URL in the label would get double-wrapped. Anchors are
+// never nested at split time, so the lazy match still stops at the FIRST </a>
+// and can't swallow a following separate anchor. (<code> body stays [^<]*.)
+const PROTECTED_SPLIT_RE = /(<a href="[^"]*">[\s\S]*?<\/a>|<code>[^<]*<\/code>)/g;
 /** Strip a trailing run of sentence punctuation from an autolinked URL so
  *  "see https://x.com." doesn't linkify the dot. Returns [url, trailing]. */
 function splitTrailingPunctuation(url) {
@@ -70,12 +77,16 @@ function splitTrailingPunctuation(url) {
     // and strip only unmatched parens + the non-paren sentence punctuation, so
     // a legitimate closing paren isn't lopped off into a broken 404 link.
     //
-    // Walk the trailing ')' run with RUNNING paren counters instead of
-    // re-`match()`-ing the growing prefix each iteration. The old per-step
-    // .match(/\(/g)/.match(/\)/g) was O(n) inside an O(n) loop -> O(n^2), so a
-    // bare URL ending in a long balanced-paren run (the BARE_URL_RE captures
-    // '(' and ')' as URL chars) froze the render thread for seconds. Counting
-    // once up to the run start, then incrementing as we advance, is O(n) total.
+    // Walk the ENTIRE trailing punctuation run (not just a leading ')' sub-run)
+    // with RUNNING paren counters instead of re-`match()`-ing the growing prefix
+    // each iteration. The old per-step .match(/\(/g)/.match(/\)/g) was O(n)
+    // inside an O(n) loop -> O(n^2), so a bare URL ending in a long balanced-
+    // paren run (BARE_URL_RE captures '(' and ')' as URL chars) froze the render
+    // thread for seconds. Counting once up to the run start, then advancing a
+    // keep-cursor as we scan, is a single O(n) pass. Scanning the whole run (not
+    // stopping at the first non-')') keeps a ')' that balances an earlier '('
+    // PLUS any '.'/',' it encloses (e.g. .../page(v1.) ), while a bare
+    // "see https://x.com." still strips the trailing dot.
     const runStart = url.length - m[0].length;
     // Count parens in the prefix BEFORE the trailing punctuation run, once.
     let opens = 0;
@@ -86,15 +97,16 @@ function splitTrailingPunctuation(url) {
         else if (url[i] === ')')
             closes++;
     }
-    let end = runStart;
-    while (end < url.length && url[end] === ')') {
-        closes++; // account for the ')' at `end` we're about to test
-        if (opens >= closes)
-            end++; // this ')' is balanced — keep it in the URL
-        else
-            break;
+    let keep = runStart;
+    for (let i = runStart; i < url.length; i++) {
+        if (url[i] === ')') {
+            closes++;
+            if (opens < closes)
+                break; // unmatched ')' — strip from here on
+            keep = i + 1; // balanced ')' — keep it (and any '.'/',' it encloses)
+        }
     }
-    return [url.slice(0, end), url.slice(end)];
+    return [url.slice(0, keep), url.slice(keep)];
 }
 function applyLinks(html) {
     // First: explicit [text](url) markdown links.

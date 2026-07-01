@@ -9,6 +9,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+import copy
 import os
 from collections.abc import Callable
 from typing import Any
@@ -195,6 +196,16 @@ def init_sentry(
                             frame.pop("post_context", None)
 
                 for exc in (event.get("exception") or {}).get("values") or []:
+                    # Redact the exception's own message string. A secret in
+                    # exception text (e.g. RuntimeError(f"auth failed {token}")
+                    # or a DB driver's "postgres://user:pass@db") lands here in
+                    # exc["value"] and is NOT covered by the stacktrace/message
+                    # scrubs. exc["type"] is left alone — it's the class name
+                    # Sentry uses for issue grouping and carries no secret.
+                    if _redact_sensitive is not None:
+                        val = exc.get("value")
+                        if isinstance(val, str):
+                            exc["value"] = _redact_sensitive(val)
                     stack = exc.get("stacktrace")
                     if isinstance(stack, dict):
                         _scrub_stack(stack)
@@ -285,6 +296,16 @@ def capture_exception(
                     from utils.monitoring.logger import _redact_sensitive as _redact
                 except Exception:
                     _redact = None
+                # Redact a COPY, not the caller's object — _deep_redact rewrites
+                # string leaves in place, so redacting a shared/reused context
+                # (e.g. self._config) would permanently overwrite the caller's
+                # live secret with "[REDACTED]". Fall back to the original on a
+                # rare non-copyable context (locks/sockets) rather than dropping
+                # the report — that path just redacts in place as before.
+                try:
+                    context = copy.deepcopy(context)
+                except Exception:
+                    pass
                 for key, value in context.items():
                     if _redact is not None:
                         value = _deep_redact(value, _redact)
@@ -325,6 +346,13 @@ def capture_message(
                     from utils.monitoring.logger import _redact_sensitive as _redact
                 except Exception:
                     _redact = None
+                # Redact a COPY, not the caller's object — mirrors
+                # capture_exception (see there for rationale). Fall back to the
+                # original on a rare non-copyable context.
+                try:
+                    context = copy.deepcopy(context)
+                except Exception:
+                    pass
                 for key, value in context.items():
                     if _redact is not None:
                         value = _deep_redact(value, _redact)

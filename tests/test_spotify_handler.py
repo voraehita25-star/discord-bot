@@ -330,17 +330,18 @@ class TestApiCallWithRetry:
             return
 
         mock_bot = MagicMock()
-        mock_bot.loop = asyncio.new_event_loop()
 
         with patch.dict("os.environ", {}, clear=True):
             handler = SpotifyHandler(mock_bot)
 
         mock_func = MagicMock(return_value={"name": "Test Track"})
 
-        with patch.object(handler.bot.loop, "run_in_executor", new_callable=AsyncMock) as mock_exec:
+        running_loop = asyncio.get_running_loop()
+        with patch.object(running_loop, "run_in_executor", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = {"name": "Test Track"}
             result = await handler._api_call_with_retry(mock_func, "arg1")
 
+        mock_exec.assert_awaited_once()
         assert result == {"name": "Test Track"}
 
 

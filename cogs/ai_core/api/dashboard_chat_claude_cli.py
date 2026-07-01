@@ -3004,6 +3004,11 @@ async def handle_chat_message_claude_cli(
                         is_resumed_session=False,
                         persona_in_system=persona_in_system,
                     )
+                    # Keep the token-usage fallback (len(full_prompt)//4 below) in sync with
+                    # what we actually send: the retry sends fresh_prompt, rebuilt WITH the
+                    # full history block, so the estimate must measure it, not the shorter
+                    # resume-era prompt.
+                    full_prompt = fresh_prompt
                     fresh_argv = _build_claude_argv(
                         claude_exe,
                         session_id=None,

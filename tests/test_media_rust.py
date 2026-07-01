@@ -307,3 +307,77 @@ class TestModuleImports:
         from utils.media.media_rust import PIL_AVAILABLE
 
         assert isinstance(PIL_AVAILABLE, bool)
+
+
+class TestMediaRustDecompressionBomb:
+    """Regression guard: the PIL fallback must catch Pillow's
+    ``DecompressionBombError`` / ``DecompressionBombWarning`` and degrade
+    cleanly instead of letting them escape ``resize`` / ``is_animated`` /
+    ``get_dimensions``.
+
+    Neither bomb class subclasses ``OSError``/``ValueError``, so the old
+    handlers let them propagate. The sibling ``cogs/ai_core/media_processor``
+    installs a process-wide ``filterwarnings("error", ...)`` that promotes the
+    Warning to a raised exception, so both must be absorbed here too.
+
+    We mock ``Image.open`` to raise directly rather than reusing the sibling's
+    MAX_IMAGE_PIXELS pixel-band trick: ``_pil_resize`` overrides
+    ``MAX_IMAGE_PIXELS`` to 100_000_000 inside ``_PIL_LOCK``, so a patched-down
+    cap would never fire on the resize path.
+    """
+
+    @pytest.mark.parametrize("bomb_attr", ["DecompressionBombError", "DecompressionBombWarning"])
+    @patch("utils.media.media_rust.RUST_AVAILABLE", False)
+    @patch("utils.media.media_rust.PIL_AVAILABLE", True)
+    def test_resize_swallows_bomb(self, bomb_attr):
+        """resize returns (data, 0, 0) instead of raising on a bomb."""
+        from utils.media import media_rust
+        from utils.media.media_rust import MediaProcessorWrapper
+
+        bomb_cls = getattr(media_rust.Image, bomb_attr)
+        data = b"crafted bomb payload"
+        with patch.object(media_rust.Image, "open", side_effect=bomb_cls("boom")):
+            assert MediaProcessorWrapper().resize(data, 512, 512) == (data, 0, 0)
+
+    @pytest.mark.parametrize("bomb_attr", ["DecompressionBombError", "DecompressionBombWarning"])
+    @patch("utils.media.media_rust.RUST_AVAILABLE", False)
+    @patch("utils.media.media_rust.PIL_AVAILABLE", True)
+    def test_is_animated_swallows_bomb(self, bomb_attr):
+        """is_animated returns False instead of raising on a bomb."""
+        from utils.media import media_rust
+        from utils.media.media_rust import MediaProcessorWrapper
+
+        bomb_cls = getattr(media_rust.Image, bomb_attr)
+        data = b"crafted bomb payload"
+        with patch.object(media_rust.Image, "open", side_effect=bomb_cls("boom")):
+            assert MediaProcessorWrapper().is_animated(data) is False
+
+    @pytest.mark.parametrize("bomb_attr", ["DecompressionBombError", "DecompressionBombWarning"])
+    @patch("utils.media.media_rust.RUST_AVAILABLE", False)
+    @patch("utils.media.media_rust.PIL_AVAILABLE", True)
+    def test_get_dimensions_swallows_bomb(self, bomb_attr):
+        """get_dimensions returns (0, 0) instead of raising on a bomb."""
+        from utils.media import media_rust
+        from utils.media.media_rust import MediaProcessorWrapper
+
+        bomb_cls = getattr(media_rust.Image, bomb_attr)
+        data = b"crafted bomb payload"
+        with patch.object(media_rust.Image, "open", side_effect=bomb_cls("boom")):
+            assert MediaProcessorWrapper().get_dimensions(data) == (0, 0)
+
+    def test_except_handlers_list_warning_class(self):
+        """Source guard: all three PIL-fallback decode sites must name the
+        Warning class (belt-and-suspenders alongside the behavioral tests)."""
+        import inspect
+
+        from utils.media.media_rust import MediaProcessorWrapper
+
+        for func in (
+            MediaProcessorWrapper._pil_resize,
+            MediaProcessorWrapper._pil_is_animated,
+            MediaProcessorWrapper.get_dimensions,
+        ):
+            src = inspect.getsource(func)
+            assert "DecompressionBombWarning" in src, (
+                f"{func.__name__} must catch DecompressionBombWarning"
+            )

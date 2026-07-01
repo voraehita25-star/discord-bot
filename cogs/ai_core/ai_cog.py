@@ -758,6 +758,27 @@ class AI(commands.Cog):
         except Exception:
             logger.exception("Failed to sync Discord edit for message %s", payload.message_id)
 
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        """Record a user reaction as feedback on a tracked AI reply.
+
+        Only meaningful when FEEDBACK_COLLECTION_ENABLED is set — that flag
+        decides whether the producer ever called track_message. process_reaction
+        returns None for untracked messages / non-palette emojis, so this is a
+        cheap in-memory no-op on unrelated reactions. The bot's own auto-added
+        palette is skipped so it isn't recorded as user feedback.
+        """
+        if not FEEDBACK_AVAILABLE or feedback_collector is None:
+            return
+        if self.bot.user is not None and payload.user_id == self.bot.user.id:
+            return
+        try:
+            feedback_collector.process_reaction(
+                payload.message_id, payload.user_id, str(payload.emoji)
+            )
+        except Exception:
+            logger.exception("Failed to record feedback reaction on message %s", payload.message_id)
+
     async def _resolve_prefix_tuple(self, message: discord.Message) -> tuple[str, ...]:
         """Resolve bot.command_prefix into a tuple of prefix strings.
 
@@ -1024,11 +1045,14 @@ class AI(commands.Cog):
 
         message_content = message.content or ""
         prefix_tuple = await self._resolve_prefix_tuple(message)
-        # Strip leading whitespace before the prefix test so a command typed
-        # with a leading space (e.g. " !chat hi") is still recognised as a
-        # command — matching the guild path's content_without_mention logic
-        # — instead of being forwarded verbatim to process_chat as chat text.
-        if message_content.strip().startswith(prefix_tuple):
+        # Test the prefix against the raw (unstripped) content to mirror
+        # discord.py's dispatcher, which matches a string prefix at StringView
+        # index 0 without lstripping. A command typed with a leading space
+        # (e.g. " !chat hi") is therefore NOT dispatched by the framework, so we
+        # must not treat it as a command here either — otherwise it would be
+        # neither run as a command nor answered as chat, and silently dropped.
+        # Falling through forwards it to process_chat (answered as chat).
+        if message_content.startswith(prefix_tuple):
             return
 
         # Check for voice channel commands

@@ -10,6 +10,7 @@ import hmac
 import html
 import json
 import logging
+import math
 import os
 import platform
 import tempfile
@@ -228,7 +229,15 @@ class BotHealthData:
             self.is_ready = bot.is_ready()
 
             if bot.is_ready():
-                self.latency_ms = bot.latency * 1000
+                lat = bot.latency * 1000
+                # discord.py Client.latency returns float('nan') while the gateway
+                # socket (bot.ws) is momentarily None during a reconnect/RESUME even
+                # though is_ready() may still be True. A bare nan serializes as an
+                # invalid JSON `NaN` literal (json.dumps default allow_nan=True) on
+                # /health/json, /stats/json and /health/ready, breaking strict
+                # JSON.parse consumers. Coerce to 0.0 at the source so every reader
+                # stays valid.
+                self.latency_ms = lat if math.isfinite(lat) else 0.0
                 self.guild_count = len(bot.guilds)
                 self.user_count = sum(g.member_count or 0 for g in bot.guilds)
                 self.cogs_loaded = list(bot.cogs.keys())

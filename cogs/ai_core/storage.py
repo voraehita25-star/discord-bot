@@ -967,7 +967,8 @@ def last_load_was_db(channel_id: int) -> bool:
     return channel_id in _db_loaded_channels
 
 
-# Bounded re-read attempts when an invalidation lands mid-load (see below).
+# Bounded re-read attempts for load_history/load_metadata when an invalidation
+# lands mid-load (see below).
 _LOAD_HISTORY_MAX_ATTEMPTS = 3
 
 
@@ -1122,37 +1123,74 @@ async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
     Always returns a deep copy: callers mutating the returned dict (e.g.
     setting last_user_id) used to corrupt the cached entry on hits and not
     on misses, depending on path.
+
+    Guarded against the in-flight-edit race exactly like load_history: an
+    invalidation (e.g. a dashboard thinking_enabled toggle) landing WHILE the
+    DB/JSON read below is awaiting would otherwise re-poison the cache with the
+    pre-edit snapshot for up to CACHE_TTL. The generation counter is
+    snapshotted before the read and re-checked before the cache store — on a
+    bump, re-read (bounded); if the bumps keep coming, return the last snapshot
+    WITHOUT caching it.
     """
-    now = time.time()
+    for attempt in range(_LOAD_HISTORY_MAX_ATTEMPTS):
+        last_attempt = attempt == _LOAD_HISTORY_MAX_ATTEMPTS - 1
+        now = time.time()
 
-    # Check cache first (thread-safe)
-    with _cache_lock:
-        if channel_id in _metadata_cache:
-            cached_time, cached_data = _metadata_cache[channel_id]
-            if now - cached_time < CACHE_TTL:
-                logger.debug("📋 Cache hit for metadata channel %s", channel_id)
-                return copy.deepcopy(cached_data)
-
-    if DATABASE_AVAILABLE:
-        metadata = await db.get_ai_metadata(channel_id)
-        if metadata:
-            # Cache a DEEP COPY rather than the live dict. Previously the
-            # cache held a reference to the same object returned to the
-            # caller; if any caller mutated the dict (e.g. updating
-            # ``thinking_enabled`` in place), the next cache hit would
-            # serve the mutated value to other callers and the DB would
-            # silently diverge.
-            with _cache_lock:
-                _metadata_cache[channel_id] = (now, copy.deepcopy(metadata))
-            logger.info("📋 Loaded metadata from database for channel %s", channel_id)
-            return copy.deepcopy(metadata)
-
-    # Fallback to JSON file
-    metadata = await _load_metadata_json(bot, channel_id)
-    if metadata:
+        # Check cache first (thread-safe), snapshotting the generation the
+        # load starts from in the same locked section.
         with _cache_lock:
-            _metadata_cache[channel_id] = (now, copy.deepcopy(metadata))
-    return copy.deepcopy(metadata) if metadata else metadata
+            generation = _cache_generations.get(channel_id, 0)
+            if channel_id in _metadata_cache:
+                cached_time, cached_data = _metadata_cache[channel_id]
+                if now - cached_time < CACHE_TTL:
+                    logger.debug("📋 Cache hit for metadata channel %s", channel_id)
+                    return copy.deepcopy(cached_data)
+
+        if DATABASE_AVAILABLE:
+            metadata = await db.get_ai_metadata(channel_id)
+            if metadata:
+                # Cache a DEEP COPY rather than the live dict. Previously the
+                # cache held a reference to the same object returned to the
+                # caller; if any caller mutated the dict (e.g. updating
+                # ``thinking_enabled`` in place), the next cache hit would
+                # serve the mutated value to other callers and the DB would
+                # silently diverge. Skip the store when an invalidation landed
+                # during the await above (the snapshot is then pre-edit).
+                with _cache_lock:
+                    fresh = _cache_generations.get(channel_id, 0) == generation
+                    if fresh:
+                        _metadata_cache[channel_id] = (now, copy.deepcopy(metadata))
+                if not fresh and not last_attempt:
+                    continue  # re-read: the post-edit row is one SELECT away
+                if not fresh:
+                    logger.warning(
+                        "⚠️ load_metadata for channel %s kept racing invalidations "
+                        "(%d attempts) — returning uncached snapshot",
+                        channel_id,
+                        _LOAD_HISTORY_MAX_ATTEMPTS,
+                    )
+                logger.info("📋 Loaded metadata from database for channel %s", channel_id)
+                return copy.deepcopy(metadata)
+
+        # Fallback to JSON file
+        metadata = await _load_metadata_json(bot, channel_id)
+        if metadata:
+            with _cache_lock:
+                fresh = _cache_generations.get(channel_id, 0) == generation
+                if fresh:
+                    _metadata_cache[channel_id] = (now, copy.deepcopy(metadata))
+            if not fresh and not last_attempt:
+                continue
+            if not fresh:
+                logger.warning(
+                    "⚠️ load_metadata (JSON) for channel %s kept racing invalidations "
+                    "(%d attempts) — returning uncached snapshot",
+                    channel_id,
+                    _LOAD_HISTORY_MAX_ATTEMPTS,
+                )
+        return copy.deepcopy(metadata) if metadata else metadata
+
+    return {}  # unreachable: the last attempt always returns above
 
 
 async def _load_metadata_json(bot: Bot, channel_id: int) -> dict[str, Any]:

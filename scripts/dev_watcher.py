@@ -471,6 +471,12 @@ if WATCHDOG_AVAILABLE:
             self.file_hashes: dict[str, str] = {}
             self.consecutive_crashes = 0
             self._lock = threading.Lock()  # Protect shared state between threads
+            # Trailing-edge debounce: when an edit arrives inside the debounce
+            # window it can't restart immediately, so we remember the owed
+            # restart here and the main loop flushes it once the burst settles.
+            # Guarded by _lock alongside last_event_time (set here before any
+            # thread exists, so the initial assignment needs no lock).
+            self._pending_restart_reason: str | None = None
 
             # Start bot
             self.start_bot("Initial start")
@@ -497,8 +503,15 @@ if WATCHDOG_AVAILABLE:
             # Debounce
             current_time = time.time()
             if current_time - self.last_event_time < self.config.debounce_seconds:
+                # Trailing-edge debounce: this edit lands inside the window so we
+                # can't restart now, but remember it so flush_pending_restart()
+                # fires exactly one restart once the burst settles — otherwise
+                # the last edit of a rapid multi-save would be silently dropped.
+                self._pending_restart_reason = reason
                 return False
             self.last_event_time = current_time
+            # A restart is happening now, so nothing is owed anymore.
+            self._pending_restart_reason = None
 
             # Stop existing process
             if self.process:
@@ -595,6 +608,32 @@ if WATCHDOG_AVAILABLE:
                 print_status("Health check failed ✗", Colors.RED, "  └─")
                 self.logger.warning("Health check failed - bot may have crashed")
                 return False
+
+        def flush_pending_restart(self) -> None:
+            """Fire a debounced (trailing-edge) restart once the burst settles.
+
+            Called from the main loop each tick. If an edit was dropped by the
+            debounce guard it owes a restart; run it once the debounce window
+            has elapsed since the last accepted restart so a rapid multi-save
+            still reflects its final edit. Mirrors start_bot()'s lock
+            discipline: the post-spawn health check sleeps OUTSIDE _lock so the
+            watchdog observer thread is never blocked across the restart.
+            """
+            started = False
+            with self._lock:
+                if self._pending_restart_reason is None:
+                    return
+                # Burst still active — keep coalescing until it settles so we
+                # fire a single restart after the last edit, not one per edit.
+                if time.time() - self.last_event_time < self.config.debounce_seconds:
+                    return
+                reason = self._pending_restart_reason
+                # _start_bot_unlocked re-checks the debounce (now guaranteed to
+                # pass), resets last_event_time, and clears the pending reason.
+                started = self._start_bot_unlocked(reason, run_health_check=False)
+            if started and (not self.config.health_check_enabled or self._perform_health_check()):
+                with self._lock:
+                    self.consecutive_crashes = 0
 
         def check_for_crash(self) -> bool:
             """Check if bot has crashed and handle auto-retry."""
@@ -1014,6 +1053,9 @@ def main():
             service.run_pending_confirm()
             # Check for crashes
             event_handler.check_for_crash()
+            # Flush any trailing-edge restart owed by a debounced edit once the
+            # burst settles, so the last save of a rapid multi-save still lands.
+            event_handler.flush_pending_restart()
     except (KeyboardInterrupt, SystemExit):
         pass
 

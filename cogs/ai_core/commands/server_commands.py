@@ -599,23 +599,30 @@ async def cmd_add_role(
     user_name = args[0].strip()
     role_name = args[1].strip()
 
-    # Duplicate-name guard, mirroring cmd_delete_role: Discord allows multiple
-    # roles sharing a name, and a bare first-match could silently grant the
-    # wrong same-named role (the hierarchy check below only blocks roles at/above
-    # the bot, not the wrong one below it). Ask for a role ID to disambiguate.
-    role_matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
-    if len(role_matches) > 1:
-        # ACTION-ABORTING bail: no role is added. Prefix ❌ so the model gets the
-        # failure instead of an optimistic "Requested adding role …" (audit
-        # py-aicore-tools-3).
-        await origin_channel.send(
-            f"❌ ⚠️ พบยศชื่อ **{role_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
-            allowed_mentions=_NO_MENTIONS,
+    # Resolve the role ID-first, then fall back to a name match with a
+    # duplicate-name guard, mirroring cmd_delete_role: Discord allows a numeric
+    # role name AND multiple roles sharing a name. ID-first makes the "กรุณาระบุ ID
+    # แทน" advice below actually resolve; the guard stops a bare first-match from
+    # silently granting the wrong same-named role (the hierarchy check below only
+    # blocks roles at/above the bot, not the wrong one below it).
+    role = None
+    _rid = _safe_int(role_name)
+    if _rid is not None:
+        role = guild.get_role(_rid)
+    if role is None:
+        role_matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
+        if len(role_matches) > 1:
+            # ACTION-ABORTING bail: no role is added. Prefix ❌ so the model gets the
+            # failure instead of an optimistic "Requested adding role …" (audit
+            # py-aicore-tools-3).
+            await origin_channel.send(
+                f"❌ ⚠️ พบยศชื่อ **{role_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+                allowed_mentions=_NO_MENTIONS,
+            )
+            return
+        role = discord.utils.get(guild.roles, name=role_name) or (
+            role_matches[0] if role_matches else None
         )
-        return
-    role = discord.utils.get(guild.roles, name=role_name) or (
-        role_matches[0] if role_matches else None
-    )
 
     member = find_member(guild, user_name)
 
@@ -716,22 +723,29 @@ async def cmd_remove_role(
     user_name = args[0].strip()
     role_name = args[1].strip()
 
-    # Duplicate-name guard, mirroring cmd_delete_role / cmd_add_role: when two
+    # Resolve the role ID-first, then fall back to a name match with a
+    # duplicate-name guard, mirroring cmd_delete_role / cmd_add_role: when two
     # roles share a name a bare first-match could silently strip the wrong
-    # same-named role. Ask for a role ID to disambiguate.
-    role_matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
-    if len(role_matches) > 1:
-        # ACTION-ABORTING bail: no role is removed. Prefix ❌ so the model gets
-        # the failure instead of an optimistic "Requested removing role …"
-        # (audit py-aicore-tools-3).
-        await origin_channel.send(
-            f"❌ ⚠️ พบยศชื่อ **{role_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
-            allowed_mentions=_NO_MENTIONS,
+    # same-named role, and ID-first makes the "กรุณาระบุ ID แทน" advice below
+    # actually resolve.
+    role = None
+    _rid = _safe_int(role_name)
+    if _rid is not None:
+        role = guild.get_role(_rid)
+    if role is None:
+        role_matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
+        if len(role_matches) > 1:
+            # ACTION-ABORTING bail: no role is removed. Prefix ❌ so the model gets
+            # the failure instead of an optimistic "Requested removing role …"
+            # (audit py-aicore-tools-3).
+            await origin_channel.send(
+                f"❌ ⚠️ พบยศชื่อ **{role_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+                allowed_mentions=_NO_MENTIONS,
+            )
+            return
+        role = discord.utils.get(guild.roles, name=role_name) or (
+            role_matches[0] if role_matches else None
         )
-        return
-    role = discord.utils.get(guild.roles, name=role_name) or (
-        role_matches[0] if role_matches else None
-    )
 
     member = find_member(guild, user_name)
     if not member:
@@ -877,17 +891,36 @@ async def cmd_set_channel_perm(
     if target_name == "@everyone":
         target = guild.default_role
     else:
-        # Mirror the case-insensitive role fallback used in cmd_set_role_perm /
-        # cmd_add_role / cmd_remove_role: exact-case first, then a folded match,
-        # so e.g. "Admin" still resolves the role literally named "admin"
-        # instead of falling through to find_member and reporting "not found".
-        # Role precedence over member is intentional (a perm overwrite is far
-        # more commonly meant for a role) and matches the prior `or` ordering.
-        target = (
-            discord.utils.get(guild.roles, name=target_name)
-            or next((r for r in guild.roles if r.name.lower() == target_name.lower()), None)
-            or find_member(guild, target_name)
-        )
+        # Resolve the target role ID-first with a duplicate-name guard, mirroring
+        # the channel block above and cmd_delete_role / cmd_add_role / cmd_remove_role:
+        # Discord allows multiple roles sharing a name, so a bare first-match could
+        # silently apply the overwrite to the WRONG same-named role (e.g. exposing a
+        # private channel to an unintended group by toggling view_channel), and the
+        # "กรุณาระบุ ID แทน" advice the siblings emit was previously unresolvable here.
+        # _safe_int (not isdigit()+int()): a Unicode-"digit" role name falls through
+        # to the name match instead of raising ValueError on int().
+        _tid = _safe_int(target_name)
+        if _tid is not None:
+            target = guild.get_role(_tid)
+        if target is None:
+            role_matches = [r for r in guild.roles if r.name.lower() == target_name.lower()]
+            if len(role_matches) > 1:
+                # ACTION-ABORTING bail: no overwrite is set. Prefix ❌ so the model
+                # gets the failure instead of an optimistic "Requested setting
+                # channel permission …" (audit py-aicore-tools-3).
+                await origin_channel.send(
+                    f"❌ ⚠️ พบยศชื่อ **{target_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+                    allowed_mentions=_NO_MENTIONS,
+                )
+                return
+            # Exact-case first, then the folded match, then a member fallback.
+            # Role precedence over member is intentional (a perm overwrite is far
+            # more commonly meant for a role) and matches the prior `or` ordering.
+            target = (
+                discord.utils.get(guild.roles, name=target_name)
+                or (role_matches[0] if role_matches else None)
+                or find_member(guild, target_name)
+            )
 
     if channel and target:
         overwrite = channel.overwrites_for(target)
@@ -1213,12 +1246,14 @@ async def cmd_get_user_info(
         if len(matches) == 1:
             member = matches[0]
         elif len(matches) > 1:
-            info = "**🔍 Found multiple users:**\n" + "\n".join(
-                [f"- {m.display_name} (@{m.name}) [ID: {m.id}]" for m in matches[:10]]
-            )
+            # Route through send_long_message so display_name/name pass through
+            # _escape_for_code_block — otherwise a member whose display name
+            # contains ``` could break out of the fenced block and inject
+            # markdown/links (the single-user path below already escapes).
+            lines = [f"- {m.display_name} (@{m.name}) [ID: {m.id}]" for m in matches[:10]]
             if len(matches) > 10:
-                info += f"...and {len(matches) - 10} more."
-            await origin_channel.send(f"```\n{info}\n```", allowed_mentions=_NO_MENTIONS)
+                lines.append(f"...and {len(matches) - 10} more.")
+            await send_long_message(origin_channel, "**🔍 Found multiple users:**\n", lines)
             return
 
     if member:

@@ -333,6 +333,29 @@ class TestSmartTrimAsync:
         all_content = " ".join(manager._get_message_content(m) for m in result)
         assert "John" in all_content or "สำคัญ" in all_content
 
+    @pytest.mark.asyncio
+    async def test_smart_trim_offloads_scoring_on_large_history(self, monkeypatch):
+        """Large histories offload the importance scan to a worker thread."""
+        from cogs.ai_core.memory import history_manager as hm
+
+        manager = hm.HistoryManager(keep_recent=10)
+        # older == history[:-10] == ~690 messages > TOKEN_ESTIMATE_OFFLOAD_THRESHOLD (500)
+        history = [{"role": "user", "parts": [f"msg{idx}"]} for idx in range(700)]
+
+        calls = {"count": 0}
+        real_to_thread = hm.asyncio.to_thread
+
+        async def counting_to_thread(func, /, *args, **kwargs):
+            calls["count"] += 1
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(hm.asyncio, "to_thread", counting_to_thread)
+
+        result = await manager.smart_trim(history, max_messages=600)
+
+        assert calls["count"] >= 1  # offload branch taken
+        assert len(result) <= 600  # cap respected
+
 
 class TestSmartTrimByTokens:
     """Async tests for smart_trim_by_tokens method."""

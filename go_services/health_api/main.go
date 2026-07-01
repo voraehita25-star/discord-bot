@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -335,6 +336,17 @@ func isLoopbackHost(host string) bool {
 	default:
 		return false
 	}
+}
+
+// buildListenAddr normalizes bindHost (trims whitespace, strips any surrounding
+// IPv6 brackets) and joins it with port via net.JoinHostPort, which re-brackets
+// IPv6 literals so net.Listen can parse the result. Raw host+":"+port produced
+// an unbracketed IPv6+port ("::1:8082") that net.Listen rejects.
+func buildListenAddr(bindHost, port string) string {
+	host := strings.TrimSpace(bindHost)
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	return net.JoinHostPort(host, port)
 }
 
 // safeLabel returns value only if it's in the allowed set for that label key,
@@ -776,8 +788,9 @@ func main() {
 	}(metricsCtx)
 
 	// Server
+	addr := buildListenAddr(bindHost, port)
 	server := &http.Server{
-		Addr:              bindHost + ":" + port,
+		Addr:              addr,
 		Handler:           r,
 		ReadTimeout:       15 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -810,8 +823,8 @@ func main() {
 		close(idleConnsClosed)
 	}()
 
-	log.Printf("Health API service starting on %s:%s", bindHost, port)
-	log.Printf("Metrics available at http://%s:%s/metrics", bindHost, port)
+	log.Printf("Health API service starting on %s", addr)
+	log.Printf("Metrics available at http://%s/metrics", addr)
 
 	// Use errors.Is for forward-compatible comparison.
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

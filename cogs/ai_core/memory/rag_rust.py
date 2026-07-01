@@ -119,16 +119,27 @@ class RagEngineWrapper:
     def add_batch(self, entries: list[dict[str, Any]]) -> int:
         """Add multiple entries at once."""
         if self._use_rust:
-            rust_entries = [
-                MemoryEntry(  # type: ignore[misc]
-                    e["id"],
-                    e["text"],
-                    e["embedding"],
-                    e.get("timestamp", time.time()),
-                    e.get("importance", 1.0),
-                )
-                for e in entries
-            ]
+            # Silent-skip contract parity: build MemoryEntry objects per entry so
+            # a single dict missing a required key (KeyError) or holding a wrong-
+            # typed value (TypeError/ValueError from PyO3 conversion) drops only
+            # that entry instead of aborting the whole batch. Dimension / finite /
+            # non-negative-importance validation is left to the Rust add_batch
+            # (lib.rs:215), which silently skips those too.
+            rust_entries: list[Any] = []
+            for e in entries:
+                try:
+                    rust_entries.append(
+                        MemoryEntry(  # type: ignore[misc]
+                            e["id"],
+                            e["text"],
+                            e["embedding"],
+                            e.get("timestamp", time.time()),
+                            e.get("importance", 1.0),
+                        )
+                    )
+                except (ValueError, KeyError, TypeError):
+                    logger.debug("Skipping malformed RAG entry in add_batch", exc_info=True)
+                    continue
             return self._engine.add_batch(rust_entries)  # type: ignore[no-any-return]
         else:
             # Silent-skip contract: mirror Rust add_batch (lib.rs:153-175),

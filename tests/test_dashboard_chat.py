@@ -295,6 +295,50 @@ class TestChatStreaming:
         assert len(ws.find("document_saved")) == 1
 
     @pytest.mark.asyncio
+    async def test_documents_only_produces_reply(self, ws):
+        """Regression: a documents-only turn (empty content, no images, >=1 doc)
+        from a non-standard WS client must persist the doc AND stream a normal
+        reply AND record a meaningful user row — not emit the misleading 'all
+        images rejected' error and return with no response. The official
+        frontend substitutes this placeholder itself (chat-manager.ts); the
+        backend now applies the same one so any client behaves consistently.
+        """
+        from cogs.ai_core.api.dashboard_chat import handle_chat_message
+
+        client = self._make_client([FakeChunk(text="Here is the summary")])
+        mock_db = MagicMock()
+        mock_db.save_dashboard_message = AsyncMock(return_value=5)
+        mock_db.get_dashboard_messages = AsyncMock(return_value=[])
+        mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Existing"})
+        fake_extract = AsyncMock(return_value=[{"id": 1, "filename": "sheet.pdf"}])
+        docs = [{"name": "sheet.pdf", "kind": "binary", "data": "data:application/pdf;base64,AAAA"}]
+
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+            patch(
+                "cogs.ai_core.api.dashboard_chat.build_user_context",
+                new=AsyncMock(return_value=("ctx", False)),
+            ),
+            patch("cogs.ai_core.api.document_extractor.extract_and_persist", fake_extract),
+        ):
+            await handle_chat_message(
+                ws,
+                {"content": "", "conversation_id": "conv-doc-only", "documents": docs},
+                client,
+            )
+
+        # Document persisted + a real streamed reply, and NO images-rejected error.
+        assert len(ws.find("document_saved")) == 1
+        stream_end = ws.find("stream_end")
+        assert len(stream_end) == 1
+        assert stream_end[0]["full_response"] == "Here is the summary"
+        assert not any("rejected" in e.get("message", "").lower() for e in ws.find("error"))
+        # The user row records the placeholder, not an empty string.
+        first_save = mock_db.save_dashboard_message.await_args_list[0]
+        assert first_save.args[2] == "[attached file(s) for you to review]"
+
+    @pytest.mark.asyncio
     async def test_regeneration_skips_document_persist(self, ws):
         """is_regeneration must NOT re-persist documents — the original turn
         already did (mirrors the user-message skip)."""

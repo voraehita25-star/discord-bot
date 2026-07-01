@@ -3,6 +3,11 @@ Tests for utils.monitoring.feedback module.
 """
 
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import discord
+import pytest
 
 
 class TestFeedbackType:
@@ -252,3 +257,109 @@ class TestFeedbackCollectorSingleton:
         from utils.monitoring.feedback import FeedbackCollector, feedback_collector
 
         assert isinstance(feedback_collector, FeedbackCollector)
+
+
+class TestMaybeTrackFeedbackProducer:
+    """Tests for ChatManager._maybe_track_feedback (the producer wiring)."""
+
+    @staticmethod
+    def _bare_manager():
+        """A ChatManager with no __init__ — the helper only uses module globals."""
+        from cogs.ai_core.logic import ChatManager
+
+        return ChatManager.__new__(ChatManager)
+
+    @pytest.mark.asyncio
+    async def test_tracks_and_adds_reactions_when_enabled(self, monkeypatch):
+        """With the flag on, the reply is tracked and the palette is added."""
+        monkeypatch.setenv("FEEDBACK_COLLECTION_ENABLED", "1")
+        fake_collector = MagicMock()
+        add_reactions = AsyncMock()
+        monkeypatch.setattr("cogs.ai_core.logic.FEEDBACK_AVAILABLE", True)
+        monkeypatch.setattr("cogs.ai_core.logic.feedback_collector", fake_collector)
+        monkeypatch.setattr("cogs.ai_core.logic.add_feedback_reactions", add_reactions)
+
+        sent = MagicMock()
+        sent.id = 555
+        await self._bare_manager()._maybe_track_feedback(sent, 456, "hello world")
+
+        fake_collector.track_message.assert_called_once_with(555, 456, "hello world")
+        add_reactions.assert_awaited_once_with(sent)
+
+    @pytest.mark.asyncio
+    async def test_noop_when_flag_unset(self, monkeypatch):
+        """Default (flag unset) is a byte-for-byte no-op — nothing is tracked."""
+        monkeypatch.delenv("FEEDBACK_COLLECTION_ENABLED", raising=False)
+        fake_collector = MagicMock()
+        add_reactions = AsyncMock()
+        monkeypatch.setattr("cogs.ai_core.logic.FEEDBACK_AVAILABLE", True)
+        monkeypatch.setattr("cogs.ai_core.logic.feedback_collector", fake_collector)
+        monkeypatch.setattr("cogs.ai_core.logic.add_feedback_reactions", add_reactions)
+
+        sent = MagicMock()
+        sent.id = 555
+        await self._bare_manager()._maybe_track_feedback(sent, 456, "hello world")
+
+        fake_collector.track_message.assert_not_called()
+        add_reactions.assert_not_awaited()
+
+
+class TestOnRawReactionAddConsumer:
+    """Tests for AI.on_raw_reaction_add (the consumer listener)."""
+
+    @staticmethod
+    def _listener(bot_user_id: int):
+        """Bind the real listener to a minimal object exposing bot.user.id."""
+        from cogs.ai_core.ai_cog import AI
+
+        obj = SimpleNamespace(bot=SimpleNamespace(user=SimpleNamespace(id=bot_user_id)))
+        return AI.on_raw_reaction_add.__get__(obj)
+
+    @staticmethod
+    def _payload(message_id: int, user_id: int, emoji: str):
+        payload = MagicMock()
+        payload.message_id = message_id
+        payload.user_id = user_id
+        payload.emoji = discord.PartialEmoji(name=emoji)
+        return payload
+
+    @pytest.mark.asyncio
+    async def test_records_user_reaction_on_tracked_message(self, monkeypatch):
+        """A real user reaction on a tracked message increments the stats."""
+        from utils.monitoring.feedback import FeedbackCollector
+
+        collector = FeedbackCollector()
+        collector.track_message(1234, 5678)
+        monkeypatch.setattr("cogs.ai_core.ai_cog.FEEDBACK_AVAILABLE", True)
+        monkeypatch.setattr("cogs.ai_core.ai_cog.feedback_collector", collector)
+
+        await self._listener(bot_user_id=999)(self._payload(1234, 42, "👍"))
+
+        stats = collector.get_stats()
+        assert stats.total_feedback == 1
+        assert stats.positive_count == 1
+
+    @pytest.mark.asyncio
+    async def test_ignores_bots_own_reaction(self, monkeypatch):
+        """The bot's own auto-added palette must not be recorded as feedback."""
+        from utils.monitoring.feedback import FeedbackCollector
+
+        collector = FeedbackCollector()
+        collector.track_message(1234, 5678)
+        monkeypatch.setattr("cogs.ai_core.ai_cog.FEEDBACK_AVAILABLE", True)
+        monkeypatch.setattr("cogs.ai_core.ai_cog.feedback_collector", collector)
+
+        await self._listener(bot_user_id=999)(self._payload(1234, 999, "👍"))
+
+        assert collector.get_stats().total_feedback == 0
+
+    @pytest.mark.asyncio
+    async def test_noop_when_feedback_unavailable(self, monkeypatch):
+        """FEEDBACK_AVAILABLE False → clean no-op, process_reaction never runs."""
+        fake_collector = MagicMock()
+        monkeypatch.setattr("cogs.ai_core.ai_cog.FEEDBACK_AVAILABLE", False)
+        monkeypatch.setattr("cogs.ai_core.ai_cog.feedback_collector", fake_collector)
+
+        await self._listener(bot_user_id=999)(self._payload(1234, 42, "👍"))
+
+        fake_collector.process_reaction.assert_not_called()

@@ -964,6 +964,59 @@ class TestCmdAddRole:
         # Should show error about position
         assert "ตำแหน่ง" in str(mock_origin.send.call_args)
 
+    @pytest.mark.asyncio
+    async def test_add_role_by_id(self):
+        """Test adding role resolved by numeric ID (guild.get_role)."""
+        from cogs.ai_core.commands.server_commands import cmd_add_role
+
+        mock_role = MagicMock(spec=discord.Role)
+        mock_role.name = "TestRole"
+        mock_role.position = 5
+        mock_role.__ge__ = MagicMock(return_value=False)
+
+        mock_member = MagicMock(spec=discord.Member)
+        mock_member.display_name = "TestUser"
+        mock_member.add_roles = AsyncMock()
+
+        bot_role = MagicMock(spec=discord.Role)
+        bot_role.position = 10
+        mock_bot = MagicMock()
+        mock_bot.top_role = bot_role
+
+        mock_guild = MagicMock(spec=discord.Guild)
+        mock_guild.roles = []
+        mock_guild.get_role = MagicMock(return_value=mock_role)
+        mock_guild.members = [mock_member]
+        mock_guild.me = mock_bot
+
+        mock_origin = MagicMock(spec=discord.TextChannel)
+        mock_origin.send = AsyncMock()
+
+        with patch("cogs.ai_core.commands.server_commands.find_member", return_value=mock_member):
+            await cmd_add_role(mock_guild, mock_origin, "", ["TestUser", "987654321"])
+
+        mock_guild.get_role.assert_called_once_with(987654321)
+        mock_member.add_roles.assert_called_once_with(mock_role)
+
+    @pytest.mark.asyncio
+    async def test_add_role_duplicate_role_names(self):
+        """Test adding role with duplicate names bails asking for an ID."""
+        from cogs.ai_core.commands.server_commands import cmd_add_role
+
+        role1 = MagicMock(spec=discord.Role)
+        role1.name = "VIP"
+        role2 = MagicMock(spec=discord.Role)
+        role2.name = "VIP"
+
+        mock_guild = MagicMock(spec=discord.Guild)
+        mock_guild.roles = [role1, role2]
+
+        mock_origin = MagicMock(spec=discord.TextChannel)
+        mock_origin.send = AsyncMock()
+
+        await cmd_add_role(mock_guild, mock_origin, "", ["TestUser", "VIP"])
+        assert "ID" in str(mock_origin.send.call_args)
+
 
 class TestCmdRemoveRole:
     """Tests for cmd_remove_role function."""
@@ -1015,6 +1068,59 @@ class TestCmdRemoveRole:
                 await cmd_remove_role(mock_guild, mock_origin, "", ["TestUser", "TestRole"])
 
         mock_member.remove_roles.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_remove_role_by_id(self):
+        """Test removing role resolved by numeric ID (guild.get_role)."""
+        from cogs.ai_core.commands.server_commands import cmd_remove_role
+
+        mock_role = MagicMock(spec=discord.Role)
+        mock_role.name = "TestRole"
+        mock_role.position = 5
+        mock_role.__ge__ = MagicMock(return_value=False)
+
+        mock_member = MagicMock(spec=discord.Member)
+        mock_member.display_name = "TestUser"
+        mock_member.remove_roles = AsyncMock()
+
+        bot_role = MagicMock(spec=discord.Role)
+        bot_role.position = 10
+        mock_bot = MagicMock()
+        mock_bot.top_role = bot_role
+
+        mock_guild = MagicMock(spec=discord.Guild)
+        mock_guild.roles = []
+        mock_guild.get_role = MagicMock(return_value=mock_role)
+        mock_guild.members = [mock_member]
+        mock_guild.me = mock_bot
+
+        mock_origin = MagicMock(spec=discord.TextChannel)
+        mock_origin.send = AsyncMock()
+
+        with patch("cogs.ai_core.commands.server_commands.find_member", return_value=mock_member):
+            await cmd_remove_role(mock_guild, mock_origin, "", ["TestUser", "987654321"])
+
+        mock_guild.get_role.assert_called_once_with(987654321)
+        mock_member.remove_roles.assert_called_once_with(mock_role)
+
+    @pytest.mark.asyncio
+    async def test_remove_role_duplicate_role_names(self):
+        """Test removing role with duplicate names bails asking for an ID."""
+        from cogs.ai_core.commands.server_commands import cmd_remove_role
+
+        role1 = MagicMock(spec=discord.Role)
+        role1.name = "VIP"
+        role2 = MagicMock(spec=discord.Role)
+        role2.name = "VIP"
+
+        mock_guild = MagicMock(spec=discord.Guild)
+        mock_guild.roles = [role1, role2]
+
+        mock_origin = MagicMock(spec=discord.TextChannel)
+        mock_origin.send = AsyncMock()
+
+        await cmd_remove_role(mock_guild, mock_origin, "", ["TestUser", "VIP"])
+        assert "ID" in str(mock_origin.send.call_args)
 
 
 class TestCmdSetChannelPerm:
@@ -2191,6 +2297,55 @@ class TestSetChannelPermFull:
                 )
         assert "ไม่พบเป้าหมาย" in str(origin.send.call_args)
 
+    @pytest.mark.asyncio
+    async def test_set_channel_perm_duplicate_role_names(self):
+        # Two roles share the name "Members": the target block must bail with the
+        # "specify an ID" advice instead of silently applying the overwrite to the
+        # first same-named role (wrong-principal permission mutation).
+        from cogs.ai_core.commands.server_commands import cmd_set_channel_perm
+
+        ch, _ = self._channel_with_overwrite()
+        role1 = MagicMock(spec=discord.Role)
+        role1.name = "Members"
+        role2 = MagicMock(spec=discord.Role)
+        role2.name = "Members"
+        guild = MagicMock(spec=discord.Guild)
+        guild.roles = [role1, role2]
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+
+        # Only the channel name hits discord.utils.get; the duplicate-role bail
+        # returns before the target role get, so one side_effect entry suffices.
+        with patch("discord.utils.get", side_effect=[ch]):
+            await cmd_set_channel_perm(
+                guild, origin, None, ["chan", "Members", "view_channel", "true"]
+            )
+        assert "ID" in str(origin.send.call_args)
+        ch.set_permissions.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_set_channel_perm_target_role_by_id(self):
+        # A numeric target resolves ID-first via guild.get_role (mirrors the
+        # channel block and cmd_delete_role), so the overwrite is applied.
+        from cogs.ai_core.commands.server_commands import cmd_set_channel_perm
+
+        ch, overwrite = self._channel_with_overwrite()
+        overwrite.view_channel = False
+        role = MagicMock(spec=discord.Role)
+        guild = MagicMock(spec=discord.Guild)
+        guild.get_role = MagicMock(return_value=role)
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+
+        # Numeric target skips discord.utils.get for the role; only the channel
+        # name hits it.
+        with patch("discord.utils.get", side_effect=[ch]):
+            await cmd_set_channel_perm(
+                guild, origin, None, ["chan", "123456", "view_channel", "true"]
+            )
+        guild.get_role.assert_called_once_with(123456)
+        ch.set_permissions.assert_awaited_once()
+
 
 class TestSetRolePermFull:
     """Full branch coverage for cmd_set_role_perm."""
@@ -2694,6 +2849,41 @@ class TestGetUserInfoFull:
         with patch("cogs.ai_core.commands.server_commands.find_member", return_value=None):
             await cmd_get_user_info(guild, origin, None, ["zed"], user)
         assert "more." in str(origin.send.call_args)
+
+    @pytest.mark.asyncio
+    async def test_get_user_info_multiple_matches_escapes_backticks(self):
+        # A member whose display name contains ``` must not break out of the
+        # fenced code block. Routing the multi-match branch through
+        # send_long_message runs each line through _escape_for_code_block, so the
+        # only raw ``` left in the payload are the two wrapping fence markers.
+        from cogs.ai_core.commands.server_commands import cmd_get_user_info
+
+        user = MagicMock(spec=discord.Member)
+        user.guild_permissions = _perms(manage_guild=True)
+
+        m1 = MagicMock(spec=discord.Member)
+        m1.name = "evil1"
+        m1.display_name = "```evil"
+        m1.id = 1
+        m2 = MagicMock(spec=discord.Member)
+        m2.name = "evil2"
+        m2.display_name = "```pwn"
+        m2.id = 2
+
+        guild = MagicMock(spec=discord.Guild)
+        guild.members = [m1, m2]
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+
+        with patch("cogs.ai_core.commands.server_commands.find_member", return_value=None):
+            await cmd_get_user_info(guild, origin, None, ["evil"], user)
+
+        payload = origin.send.call_args.args[0]
+        assert payload.count("```") == 2  # opening + closing fence only
+        assert "```evil" not in payload  # raw injected fence is gone
+        zwsp = chr(0x200B)  # _escape_for_code_block splits ``` with zero-width spaces
+        assert f"`{zwsp}`{zwsp}`" in payload
+        assert "multiple users" in payload
 
     @pytest.mark.asyncio
     async def test_get_user_info_partial_single(self):
