@@ -629,17 +629,25 @@ function setupCardTilt() {
 /**
  * Toggle `.has-content` on the send button so its glow pulses when the
  * chat input isn't empty. Cheap state sync on every keystroke.
+ *
+ * Exported so code that changes the textarea PROGRAMMATICALLY (send-clear,
+ * draft restore, retry — `input.value = …` fires no 'input' event) can re-sync
+ * the glow instead of leaving it stale until the next keystroke.
  */
+export function refreshSendButtonGlow() {
+    const input = document.getElementById('chat-input');
+    const btn = document.getElementById('btn-send');
+    if (!input || !btn)
+        return;
+    btn.classList.toggle('has-content', input.value.trim().length > 0);
+}
 function setupSendButtonPulse() {
     const input = document.getElementById('chat-input');
     const btn = document.getElementById('btn-send');
     if (!input || !btn)
         return;
-    const update = () => {
-        btn.classList.toggle('has-content', input.value.trim().length > 0);
-    };
-    input.addEventListener('input', update);
-    update();
+    input.addEventListener('input', refreshSendButtonGlow);
+    refreshSendButtonGlow();
 }
 /**
  * Sakura parallax — petals drift slightly opposite to the cursor so the

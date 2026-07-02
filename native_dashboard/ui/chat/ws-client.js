@@ -283,8 +283,18 @@ export class WebSocketClient {
             };
         }
         catch (e) {
+            // `new WebSocket(url)` throws SYNCHRONOUSLY on a malformed URL
+            // (e.g. a .env typo like `WS_DASHBOARD_HOST=my host`). Mirror the
+            // onclose fallback: try the remaining candidates — they include the
+            // known-good 127.0.0.1/localhost defaults — instead of discarding
+            // them and reconnect-looping on the same bad primary forever.
             console.error('Failed to create WebSocket:', e);
             errorLogger.log('WEBSOCKET_CREATE_ERROR', 'Failed to create WebSocket', String(e));
+            if (fallbackUrls.length > 0) {
+                const [nextUrl, ...remaining] = fallbackUrls;
+                this.connectWithUrl(nextUrl, remaining);
+                return;
+            }
             this.scheduleReconnect();
         }
     }

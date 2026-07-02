@@ -100,6 +100,34 @@ test('a11y: rename modal when open', async ({ page }) => {
     expect(blockers.map((v) => v.id), JSON.stringify(blockers, null, 2)).toEqual([]);
 });
 
+// The remaining dialogs were previously never axe-scanned — only their
+// open/close mechanics were tested — so a control losing its accessible name
+// inside one of them would have shipped green. Mirror the rename-modal scan.
+for (const { id, onChatPage } of [
+    { id: 'new-chat-modal', onChatPage: true },
+    { id: 'delete-confirm-modal', onChatPage: true },
+    { id: 'shortcuts-modal', onChatPage: false },
+]) {
+    test(`a11y: ${id} when open`, async ({ page }) => {
+        if (onChatPage) await page.click('[data-page="chat"]');
+        await page.evaluate((modalId) => {
+            document.getElementById(modalId)?.classList.add('active');
+        }, id);
+        await page.waitForTimeout(150);
+
+        const results = await new AxeBuilder({ page })
+            .include(`#${id}`)
+            .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+            .disableRules(['color-contrast'])
+            .analyze();
+
+        const blockers = results.violations.filter(
+            (v) => v.impact === 'critical' || v.impact === 'serious',
+        );
+        expect(blockers.map((v) => v.id), JSON.stringify(blockers, null, 2)).toEqual([]);
+    });
+}
+
 test('modal inert: shortcuts modal inerts .app, traps Tab, and restores on Escape', async ({ page }) => {
     // Open via the real '?' shortcut (document-level handler in app.ts).
     await page.keyboard.press('?');

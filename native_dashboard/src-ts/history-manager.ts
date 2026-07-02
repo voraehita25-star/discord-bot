@@ -878,6 +878,18 @@ export class HistoryManager {
      *  loaded (e.g. 2000 after "Load all") instead of resetting to 200. */
     openChannel(channelId: string, limit: number = DEFAULT_LOAD_LIMIT): void {
         if (!channelId) return;
+        // A channel switch re-renders the whole pane and would silently destroy
+        // an open editor's UNSAVED typed text — block it with the same warning
+        // loadAll()/refresh() use so the user finishes or cancels first.
+        // Only while NOT in flight: once Save is clicked (editInFlight, editor
+        // held open awaiting the ack) the text is already on the wire and
+        // switching away is a supported flow — the ack is keyed by channel+id
+        // and still pushes its undo entry for the original channel (see the
+        // "foreign-channel ack still pushes" test).
+        if (this.editingIdx !== null && !this.editInFlight) {
+            this.notify('Finish or cancel the edit first', { type: 'warning' });
+            return;
+        }
         this.currentChannelId = channelId;
         this.pendingChannelLoadId = channelId;
         this.lastLoadLimit = limit;

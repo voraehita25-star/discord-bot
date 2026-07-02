@@ -141,6 +141,35 @@ describe('WebSocketClient — exports', () => {
     });
 });
 
+describe('WebSocketClient — synchronous constructor throw', () => {
+    it('falls back to the next candidate when new WebSocket() throws on a malformed configured URL', async () => {
+        const { callbacks } = makeCallbacks();
+        // get_ws_endpoint returns a malformed URL (space in host — e.g. a .env
+        // typo passed through verbatim). The real browser WebSocket constructor
+        // throws SyntaxError SYNCHRONOUSLY for this, which used to discard the
+        // fallback candidates and reconnect-loop on the same bad URL forever.
+        mockInvoke.mockImplementation((cmd: string) =>
+            Promise.resolve(cmd === 'get_ws_endpoint' ? 'ws://my host:8765/ws' : ''));
+        const ThrowingWebSocket = class extends FakeWebSocket {
+            constructor(url: string) {
+                if (url.includes(' ')) throw new SyntaxError('invalid WebSocket URL');
+                super(url);
+            }
+        };
+        (globalThis as unknown as { WebSocket: unknown }).WebSocket = ThrowingWebSocket;
+
+        const client = new WebSocketClient(callbacks);
+        client.connect();
+        await new Promise((r) => setTimeout(r, 0));
+
+        // The throw on the malformed primary must NOT discard the fallbacks:
+        // a socket for the default loopback endpoint gets created.
+        const socket = FakeWebSocket.instances.at(-1);
+        expect(socket).toBeDefined();
+        expect(socket!.url).toBe('ws://127.0.0.1:8765/ws');
+    });
+});
+
 describe('WebSocketClient.onmessage — frame hardening', () => {
     it('drops a Blob frame without calling onMessage', async () => {
         const { callbacks, onMessage } = makeCallbacks();

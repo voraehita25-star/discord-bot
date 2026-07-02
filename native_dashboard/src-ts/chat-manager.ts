@@ -15,6 +15,7 @@ import {
     saveSettings,
     icon,
     normalizeSqliteUtc,
+    refreshSendButtonGlow,
 } from './shared.js';
 
 // ============================================================================
@@ -1235,6 +1236,10 @@ export class ChatManager {
             } else if (input) {
                 input.value = '';
             }
+            // Programmatic value set fires no 'input' event — re-sync the send
+            // button's .has-content glow (restored draft should glow; cleared
+            // input should not).
+            refreshSendButtonGlow();
         } catch {
             // Swallow — drafts are best-effort.
         }
@@ -1382,6 +1387,7 @@ export class ChatManager {
                     input.value = rawContent;
                     this.autoResizeInput();
                     input.focus();
+                    refreshSendButtonGlow();
                 }
             } else {
                 // Edit sent successfully — consume any attachments so they don't
@@ -1438,6 +1444,9 @@ export class ChatManager {
             input.value = '';
             this.autoResizeInput();
             input.focus();  // Keep cursor in input
+            // Programmatic clear fires no 'input' event — drop the stale
+            // .has-content glow on the send button.
+            refreshSendButtonGlow();
         }
         // Message sent — draft no longer needed for this conversation.
         if (this.currentConversation) {
@@ -1531,11 +1540,22 @@ export class ChatManager {
         this.messages.splice(idx, 1);
         this.renderMessages();
         const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+        // The retry routes through the shared composer (sendMessage() reads from
+        // it) — but the user may have started typing a NEW message since the
+        // failure. Stash that in-progress text and put it back afterwards; the
+        // retried content itself lives on in either the sent message or a fresh
+        // failed bubble, so nothing is lost in either outcome.
+        const typedSince = input ? input.value : '';
         if (input) {
             input.value = content;
             this.autoResizeInput();
         }
         this.sendMessage();
+        if (input) {
+            input.value = typedSince;
+            this.autoResizeInput();
+            refreshSendButtonGlow();
+        }
     }
 
     appendStreamingMessage(mode: string = ''): void {
@@ -1952,6 +1972,19 @@ export class ChatManager {
         container.innerHTML = result.html;
 
         if (this.messages.length === 0) return;  // no events to bind on the welcome card
+
+        // A pin/like click — or a server pin/like ack — can trigger this in-place
+        // re-render WHILE a response is still streaming. The innerHTML rebuild
+        // above wipes the #streaming-message bubble (it lives only in the DOM, not
+        // in this.messages), and every later chunk then no-ops on a missing
+        // .streaming-text, so the live answer appears frozen until stream_end.
+        // Re-attach the bubble from the buffered partial (idempotent; mirrors the
+        // conversation_loaded restore path) so mid-stream re-renders are seamless.
+        if (this.isStreaming && !this.isEditStreaming
+            && this.streamingConversationId !== null
+            && this.streamingConversationId === (this.currentConversation?.id ?? null)) {
+            this.restoreStreamingBubble();
+        }
 
         if (wasNearBottom) this.scrollToBottom();
         this.setupScrollListener();
@@ -2526,10 +2559,15 @@ export class ChatManager {
         if (list) list.innerHTML = '';
         if (empty) empty.classList.add('hidden');
         modal.classList.add('active');
-        this.send({
+        const sent = this.send({
             type: 'list_conversation_documents',
             conversation_id: this.currentConversation.id,
         });
+        // send() returns false (and toasts) when the WS is down — without this
+        // the modal sits on 'Loading…' forever with no in-modal failure state.
+        if (!sent && subtitle) {
+            subtitle.textContent = 'Not connected — start the bot and reopen this dialog.';
+        }
     }
 
     closeChatFilesModal(): void {
@@ -2982,6 +3020,16 @@ export class ChatManager {
     saveEdit(msgIdx: number, newContent: string, regenerate: boolean): void {
         const msg = this.messages[msgIdx];
         if (!msg) return;
+        // Block a Save & Regenerate while a response is already streaming: the
+        // inline edit box can stay open when a composer message starts a stream,
+        // and firing a second turn on the same socket makes both streams
+        // interleave into one garbled bubble. Mirrors the AI-edit submit guard.
+        // (A plain edit — regenerate=false — starts no new stream and is safe:
+        // its re-render restores the live bubble via the guard in renderMessages.)
+        if (regenerate && this.isStreaming) {
+            showToast('Wait for the current response to finish', { type: 'warning' });
+            return;
+        }
         if (msg.id == null) {
             // No DB id yet (stream_end id-backfill missing / protocol drift):
             // the server would silently drop an edit_message with message_id

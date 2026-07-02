@@ -391,8 +391,8 @@ html::after {
     mix-blend-mode: soft-light;
 }
 
-/* retire the anime-era decorations */
-.anime-characters { display: none !important; }
+/* (the .anime-characters kill-switch that used to live here was removed —
+   no markup or TS has carried that class for several versions) */
 /* #sakura-container is intentionally NOT force-hidden here: the Sakura Petals
    toggle (#sakura-toggle) + persisted `sakuraEnabled` setting + initSakuraAnimation()
    in app.ts are all still wired, so visibility must be controlled by that JS path,
@@ -908,14 +908,19 @@ html[data-theme="light"] .btn-primary { color: #fff; }
 /* ============================================================================
    INPUTS / SELECTS / TOGGLES
    ============================================================================ */
-.setting-input, .setting-select, .conversation-filter, #log-filter,
+/* NOTE: .conversation-filter is deliberately NOT in these input groups — it is
+   a wrapper <div> AROUND the chat-sidebar search input (styles.css styles the
+   container and its inner input separately). Styling the wrapper as a field
+   rendered a bordered box INSIDE a bordered box around that search input; the
+   inner <input type="search"> is already covered by the type selectors here. */
+.setting-input, .setting-select, #log-filter,
 input[type="text"], input[type="search"], input[type="number"], textarea, select {
     border-radius: var(--radius-sm);
     background: var(--surface-2);
     border: 1px solid var(--border-color);
 }
 input:focus, textarea:focus, select:focus,
-.setting-input:focus, .setting-select:focus, .conversation-filter:focus, #log-filter:focus {
+.setting-input:focus, .setting-select:focus, #log-filter:focus {
     border-color: var(--border-focus);
     box-shadow: var(--focus-ring);
 }
@@ -1385,7 +1390,12 @@ h1 .ic, h2 .ic, h3 .ic,
     .sidebar { width: 64px; padding-left: var(--space-2); padding-right: var(--space-2); }
     .nav-item { justify-content: center; gap: 0; padding-left: 0; padding-right: 0; }
     .nav-item > span:not(.nav-icon),
-    .nav-item .shortcut { display: none; }
+    .nav-item .shortcut,
+    /* Also collapse the sidebar-footer labels — the theme-toggle text and the
+       Online/Offline status text — which otherwise overflow the 64px rail
+       between 901–1100px (styles.css only hides them at ≤900px). */
+    .theme-toggle span:not(#theme-icon),
+    .status-text { display: none; }
     .nav-icon { margin: 0; }
     .logo-text { display: none; }
 }
@@ -1745,6 +1755,15 @@ textarea:focus-visible, [tabindex]:focus-visible {
     outline-offset: 2px;
     box-shadow: var(--focus-ring);
 }
+/* Toggle switches hide the real <input> (0×0, opacity:0) under the .toggle-slider,
+   so the generic input:focus-visible ring above lands on an invisible box behind
+   the slider. Redirect the ring to the visible slider sibling so keyboard users
+   can see which settings toggle is focused before pressing Space (WCAG 2.4.7). */
+.toggle-switch input:focus-visible + .toggle-slider {
+    outline: 2px solid var(--accent-cyan);
+    outline-offset: 2px;
+    box-shadow: var(--focus-ring);
+}
 a:focus:not(:focus-visible), button:focus:not(:focus-visible),
 .btn:focus:not(:focus-visible), .nav-item:focus:not(:focus-visible),
 .theme-toggle:focus:not(:focus-visible) { outline: none; }
@@ -1756,4 +1775,37 @@ a:focus:not(:focus-visible), button:focus:not(:focus-visible),
 }
 @media (prefers-contrast: more) {
     :root { --border-color: var(--border-strong); }
+}
+
+/* ============================================================================
+   IPC DISCONNECTED BANNER — sticky cue shown when the dashboard itself can't
+   reach its Tauri backend (app.ts setDisconnectedCue, after 3 failed status
+   ticks). It is appended to <body>, which is height:100vh + overflow:hidden,
+   so a statically-positioned element lays out below the fold and is CLIPPED —
+   position:fixed is load-bearing here, not cosmetic. Anchored bottom-centre and
+   above app chrome so it stays visible over any page/modal. Carbon surface with
+   a danger-red hairline to read as an alert in the ORBITAL palette.
+   ============================================================================ */
+.ipc-disconnected-banner {
+    position: fixed;
+    left: 50%;
+    bottom: 20px;
+    transform: translateX(-50%);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: min(92vw, 560px);
+    padding: 12px 18px;
+    border-radius: var(--r-pill, 999px);
+    background: var(--surface-2, #0a1018);
+    border: 1px solid var(--accent-red, #ff4d61);
+    color: var(--text-primary, #e6f3f8);
+    font-size: 14px;
+    font-weight: 600;
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 77, 97, 0.22);
+}
+.ipc-disconnected-banner .ic {
+    flex: 0 0 auto;
+    color: var(--accent-red, #ff4d61);
 }

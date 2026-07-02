@@ -32,7 +32,7 @@ function ensureModal(): HTMLElement {
     modal.className = 'modal';
     modal.innerHTML = `
         <div class="modal-overlay" data-close-export></div>
-        <div class="modal-content modal-small">
+        <div class="modal-content modal-small" role="dialog" aria-modal="true" aria-label="Export Format">
             <div class="modal-header">
                 <h2>${icon('download')} Export Format</h2>
                 <button class="modal-close" data-close-export aria-label="Close">&times;</button>
@@ -76,8 +76,15 @@ export function promptExportFormat(): Promise<ExportFormat | null> {
     if (activeCancel) activeCancel();
 
     return new Promise<ExportFormat | null>(resolve => {
+        // Remember what had focus so we can restore it on close (WCAG 2.4.3):
+        // the trigger is a menu/button behind the overlay, and leaving focus
+        // there after the modal closes strands keyboard/AT users.
+        const prevFocus = document.activeElement as HTMLElement | null;
         const modal = ensureModal();
         modal.classList.add('active');
+        // Move focus into the dialog so Tab is trapped to the format buttons and
+        // AT announces the dialog, instead of leaving focus on the inert trigger.
+        (modal.querySelector('.export-format-btn') as HTMLElement | null)?.focus();
 
         // AbortController is the right tool here: `{once: true}` only removes the
         // handler that fires, so listeners on un-clicked buttons accumulate every
@@ -91,6 +98,13 @@ export function promptExportFormat(): Promise<ExportFormat | null> {
             // the same signal below) — single source of truth for teardown.
             ac.abort();
             modal.classList.remove('active');
+            // Restore focus to the trigger (if it's still in the DOM). Guarded:
+            // a superseding call may have moved focus itself, and a detached node
+            // has no focus(). We only restore if focus is still inside this modal
+            // (i.e. nothing else grabbed it after we opened).
+            if (prevFocus && document.body.contains(prevFocus) && modal.contains(document.activeElement)) {
+                prevFocus.focus();
+            }
             // Clear the module-scope handle only if it still points at THIS
             // invocation (a newer promptExportFormat() may have replaced it).
             if (activeCancel === selfCancel) activeCancel = null;

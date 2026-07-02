@@ -32,6 +32,21 @@ fn taskkill_path() -> String {
             .join("taskkill.exe")
             .to_string_lossy()
             .into_owned(),
+        // Windows genuinely not installed on C: — `C:\Windows` failed to
+        // canonicalize, so the hardcoded fallback below cannot exist either and
+        // every taskkill spawn would silently fail (orphaned bots from previous
+        // sessions become unkillable from the UI). A validated env SystemRoot is
+        // the only remaining source; trust it only if the taskkill.exe it points
+        // at actually exists. On a normal C:\Windows host this arm never fires,
+        // so the strict equality check above stays the anti-poisoning gate.
+        (Some(env_root), None) => {
+            let candidate = env_root.join("System32").join("taskkill.exe");
+            if candidate.is_file() {
+                candidate.to_string_lossy().into_owned()
+            } else {
+                String::from("C:\\Windows\\System32\\taskkill.exe")
+            }
+        }
         // Fallback to the canonical default — virtually every Windows
         // install has SystemRoot=C:\Windows, and if the env var is missing
         // or fails to canonicalize-match we must not trust it.
@@ -1146,6 +1161,18 @@ impl BotManager {
         };
 
         if !self.is_running() {
+            // A bot.pid existed (we got past get_pid) but is_running() says the
+            // process is gone/reused — i.e. the bot crashed or was killed
+            // externally. is_running() performs the same PID-reuse validation as
+            // the stale-PID branches below, so from this state those branches
+            // are unreachable; do their cleanup HERE instead of erroring out and
+            // leaving the stale bot.pid (and a zombie Child handle) behind until
+            // the next start().
+            if let Some(mut c) = self.child.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            let _ = fs::remove_file(self.pid_file());
             return Err("Bot is not running".to_string());
         }
 

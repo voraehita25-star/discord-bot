@@ -703,16 +703,24 @@ function setupCardTilt(): void {
 /**
  * Toggle `.has-content` on the send button so its glow pulses when the
  * chat input isn't empty. Cheap state sync on every keystroke.
+ *
+ * Exported so code that changes the textarea PROGRAMMATICALLY (send-clear,
+ * draft restore, retry — `input.value = …` fires no 'input' event) can re-sync
+ * the glow instead of leaving it stale until the next keystroke.
  */
+export function refreshSendButtonGlow(): void {
+    const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+    const btn = document.getElementById('btn-send');
+    if (!input || !btn) return;
+    btn.classList.toggle('has-content', input.value.trim().length > 0);
+}
+
 function setupSendButtonPulse(): void {
     const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
     const btn = document.getElementById('btn-send');
     if (!input || !btn) return;
-    const update = (): void => {
-        btn.classList.toggle('has-content', input.value.trim().length > 0);
-    };
-    input.addEventListener('input', update);
-    update();
+    input.addEventListener('input', refreshSendButtonGlow);
+    refreshSendButtonGlow();
 }
 
 /**

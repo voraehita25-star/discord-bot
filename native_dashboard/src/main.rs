@@ -119,7 +119,7 @@ async fn start_bot(state: State<'_, AppState>) -> Result<String, String> {
         let _op = lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let mut mgr = manager
             .lock()
-            .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+            .unwrap_or_else(|e| e.into_inner()); // recover a poisoned lock — same policy as lock_bot_manager! (an Err here would brick Start/Stop/Restart until app restart while status/logs recover)
         mgr.start()
     })
     .await
@@ -142,7 +142,7 @@ async fn get_start_progress(state: State<'_, AppState>) -> Result<StartProgress,
     tauri::async_runtime::spawn_blocking(move || {
         let mut mgr = manager
             .lock()
-            .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+            .unwrap_or_else(|e| e.into_inner()); // recover a poisoned lock — same policy as lock_bot_manager! (an Err here would brick Start/Stop/Restart until app restart while status/logs recover)
         Ok(mgr.start_progress())
     })
     .await
@@ -163,7 +163,7 @@ async fn stop_bot(state: State<'_, AppState>) -> Result<String, String> {
         let pid = {
             let mut mgr = manager
                 .lock()
-                .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+                .unwrap_or_else(|e| e.into_inner()); // recover a poisoned lock — same policy as lock_bot_manager! (an Err here would brick Start/Stop/Restart until app restart while status/logs recover)
             match mgr.stop_begin()? {
                 // Early-return branches already completed the stop — done.
                 StopOutcome::Done(msg) => return Ok(msg),
@@ -180,7 +180,7 @@ async fn stop_bot(state: State<'_, AppState>) -> Result<String, String> {
             let gone = {
                 let mut mgr = manager
                     .lock()
-                    .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+                    .unwrap_or_else(|e| e.into_inner()); // recover a poisoned lock — same policy as lock_bot_manager! (an Err here would brick Start/Stop/Restart until app restart while status/logs recover)
                 mgr.process_is_gone(pid)
             };
             if gone {
@@ -191,7 +191,7 @@ async fn stop_bot(state: State<'_, AppState>) -> Result<String, String> {
         // Phase 3 (lock-held, quick): orphan sweep + reap + delete PID file.
         let mut mgr = manager
             .lock()
-            .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+            .unwrap_or_else(|e| e.into_inner()); // recover a poisoned lock — same policy as lock_bot_manager! (an Err here would brick Start/Stop/Restart until app restart while status/logs recover)
         mgr.stop_finish()
     })
     .await
@@ -211,7 +211,7 @@ async fn restart_bot(state: State<'_, AppState>) -> Result<String, String> {
         let plan = {
             let mut mgr = manager
                 .lock()
-                .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+                .unwrap_or_else(|e| e.into_inner()); // recover a poisoned lock — same policy as lock_bot_manager! (an Err here would brick Start/Stop/Restart until app restart while status/logs recover)
             mgr.restart_begin()
         }; // <- lock dropped before any wait below.
 
@@ -229,7 +229,7 @@ async fn restart_bot(state: State<'_, AppState>) -> Result<String, String> {
                 let gone = {
                     let mut mgr = manager
                         .lock()
-                        .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+                        .unwrap_or_else(|e| e.into_inner()); // recover a poisoned lock — same policy as lock_bot_manager! (an Err here would brick Start/Stop/Restart until app restart while status/logs recover)
                     mgr.process_is_gone(pid)
                 };
                 if gone {
@@ -242,7 +242,7 @@ async fn restart_bot(state: State<'_, AppState>) -> Result<String, String> {
         // phase fired a kill, then start the bot again.
         let mut mgr = manager
             .lock()
-            .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+            .unwrap_or_else(|e| e.into_inner()); // recover a poisoned lock — same policy as lock_bot_manager! (an Err here would brick Start/Stop/Restart until app restart while status/logs recover)
         if needs_finish {
             let _ = mgr.stop_finish();
         }
@@ -263,7 +263,7 @@ async fn start_dev_bot(state: State<'_, AppState>) -> Result<String, String> {
         let _op = lifecycle.lock().unwrap_or_else(|e| e.into_inner());
         let mut mgr = manager
             .lock()
-            .map_err(|e| format!("Failed to acquire bot manager lock: {}", e))?;
+            .unwrap_or_else(|e| e.into_inner()); // recover a poisoned lock — same policy as lock_bot_manager! (an Err here would brick Start/Stop/Restart until app restart while status/logs recover)
         mgr.start_dev()
     })
     .await
@@ -548,6 +548,19 @@ fn open_folder(path: String, state: State<AppState>) -> Result<(), String> {
     let explorer_path = match (sysroot_canonical, default_root_canonical.as_ref()) {
         (Some(env_root), Some(def_root)) if &env_root == def_root => {
             env_root.join("explorer.exe").to_string_lossy().into_owned()
+        }
+        // Windows not on C: (C:\Windows failed to canonicalize) — the hardcoded
+        // fallback can't exist either, so trust a validated env SystemRoot iff
+        // the explorer.exe it points at exists. Mirrors taskkill_path() in
+        // bot_manager.rs; on a normal C:\Windows host this arm never fires and
+        // the strict equality above remains the anti-poisoning gate.
+        (Some(env_root), None) => {
+            let candidate = env_root.join("explorer.exe");
+            if candidate.is_file() {
+                candidate.to_string_lossy().into_owned()
+            } else {
+                String::from("C:\\Windows\\explorer.exe")
+            }
         }
         _ => String::from("C:\\Windows\\explorer.exe"),
     };
@@ -1306,6 +1319,20 @@ fn main() {
     let db_service = DatabaseService::new(base_path.join("data").join("bot_database.db"));
 
     tauri::Builder::default()
+        // Single-instance must be the FIRST registered plugin (per its docs) so
+        // a second launch is intercepted before anything else initializes. The
+        // close button hides to tray, so users WILL double-click the shortcut
+        // again: without this a second full process starts — two tray icons and
+        // two BotManagers racing the same bot.pid across processes (the
+        // bot_lifecycle mutex is per-process and cannot serialize them). Show +
+        // focus the existing window instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             bot_manager: Arc::new(Mutex::new(bot_manager)),
