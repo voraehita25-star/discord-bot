@@ -237,15 +237,30 @@ PATTERN_ROLE_TAG = re.compile("<@&(?!\u200b)(\\d+)>")
 # ("cat\u200begory", "1000") \u2014 the previous ``kw in text`` substring test forced a
 # web search on a lot of false positives. Thai keywords keep substring matching
 # because Thai is written without spaces. Split + compile once at import.
+#
+# Digit-only keywords ("00"/"000" \u2014 Limbus rarity tiers) need stricter
+# anchoring than ``(?<!\w)\u2026(?!\w)``: ':' ',' '.' are non-word chars, so the
+# plain boundary still matched the tail of clock times ("18:00"),
+# thousands-separated prices ("30,000") and decimals ("100.00"), forcing a
+# web search on ordinary chat. Reject digit/number-punctuation context on
+# both sides while keeping standalone tier references ("00 identity") firing.
 _GAME_KW_ASCII: tuple[str, ...] = tuple(kw for kw in GAME_SEARCH_KEYWORDS if kw.isascii())
 _GAME_KW_NONASCII: tuple[str, ...] = tuple(kw for kw in GAME_SEARCH_KEYWORDS if not kw.isascii())
-_GAME_KW_ASCII_RE = (
-    re.compile(
-        r"(?<!\w)(?:" + "|".join(re.escape(k) for k in _GAME_KW_ASCII) + r")(?!\w)",
-        re.IGNORECASE,
+_GAME_KW_ASCII_WORD: tuple[str, ...] = tuple(kw for kw in _GAME_KW_ASCII if not kw.isdigit())
+_GAME_KW_ASCII_DIGIT: tuple[str, ...] = tuple(kw for kw in _GAME_KW_ASCII if kw.isdigit())
+_GAME_KW_PARTS: list[str] = []
+if _GAME_KW_ASCII_WORD:
+    _GAME_KW_PARTS.append(
+        r"(?<!\w)(?:" + "|".join(re.escape(k) for k in _GAME_KW_ASCII_WORD) + r")(?!\w)"
     )
-    if _GAME_KW_ASCII
-    else None
+if _GAME_KW_ASCII_DIGIT:
+    _GAME_KW_PARTS.append(
+        r"(?<![\w:.,])(?:"
+        + "|".join(re.escape(k) for k in _GAME_KW_ASCII_DIGIT)
+        + r")(?!\w|[:.,]\d)"
+    )
+_GAME_KW_ASCII_RE = (
+    re.compile("|".join(_GAME_KW_PARTS), re.IGNORECASE) if _GAME_KW_PARTS else None
 )
 
 
@@ -295,14 +310,26 @@ def _split_for_discord(text: str, limit: int = 2000) -> list[str]:
         if split_at == -1 or split_at < limit // 2:
             split_at = limit
         # Newline/space split points can never land on a combining mark, so
-        # only the hard-split case needs the rewind: walk back past the marks
-        # AND their base char (stopping at the base would orphan its marks).
+        # only the hard-split case needs the rewind.
         if split_at >= limit:
             rewind = split_at
-            while rewind > 1 and ord(remaining[rewind - 1]) in _THAI_COMBINING:
+            # Case 1: the cut lands ON a mark (base|first-mark boundary, or
+            # inside a multi-mark cluster) — the char AT the cut is combining.
+            # Step back to the cluster's base so the whole cluster moves to
+            # the next chunk. This case was previously missed: only
+            # remaining[rewind-1] was inspected, so a cut exactly between a
+            # base and its FIRST mark orphaned the mark at the next chunk's
+            # start (stray dotted-circle glyph).
+            while rewind > 1 and ord(remaining[rewind]) in _THAI_COMBINING:
                 rewind -= 1
-            if rewind > 1 and rewind < split_at:
-                rewind -= 1
+            # Case 2 (only when case 1 didn't fire): the cut lands right
+            # AFTER trailing marks — walk back past the marks AND their base
+            # char (stopping at the base would orphan its marks).
+            if rewind == split_at:
+                while rewind > 1 and ord(remaining[rewind - 1]) in _THAI_COMBINING:
+                    rewind -= 1
+                if rewind > 1 and rewind < split_at:
+                    rewind -= 1
             split_at = rewind
         chunks.append(remaining[:split_at])
         if split_on_newline:
@@ -1422,6 +1449,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                     now_bangkok = datetime.datetime.now(BANGKOK_TZ)
                     now = now_bangkok.strftime("%A, %d %B %Y %H:%M:%S (ICT)")
 
+                    # Trace anchors for the owner's !ai_trace panel — written
+                    # into chat_data["last_trace"] right after the API call.
+                    _trace_turn_start = time.time()
+                    _trace_rag_ms = 0.0
+                    _trace_rag_results = 0
+
                     # 1. Prepare user avatar using helper method
                     avatar_image = await self._prepare_user_avatar(
                         user, message, chat_data, context_channel.id
@@ -1502,6 +1535,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 display_message, limit=RAG_TOP_K
                             )
                             self.record_timing("rag_search", time.time() - _rag_start)
+                            _trace_rag_ms = (time.time() - _rag_start) * 1000
+                            _trace_rag_results = len(memories) if memories else 0
                             if memories:
                                 rag_context = "\n\n[Long-term Memory]\n" + "\n".join(
                                     f"- {m}" for m in memories
@@ -1612,8 +1647,18 @@ class ChatManager(SessionMixin, ResponseMixin):
                         )
                     content_parts.append(prompt_with_context)
 
-                    # 3. Load character reference image if mentioned
-                    char_result = self._load_character_image(message, guild_id)
+                    # 3. Load character reference image if mentioned.
+                    # Offload to a worker thread: load_character_image runs
+                    # Image.open + .copy(), and .copy() forces a FULL pixel
+                    # decode (only the raw file bytes are cached, so the
+                    # decode repeats on every matching turn — up to the 30MP
+                    # cap that's tens-to-hundreds of ms). Running it inline
+                    # stalled the event loop for ALL guilds; process_attachments
+                    # already offloads the identical operation for the same
+                    # reason.
+                    char_result = await asyncio.to_thread(
+                        self._load_character_image, message, guild_id
+                    )
                     if char_result:
                         char_name, char_image = char_result
                         content_parts.append(f"[Character Reference Image: {char_name}]")
@@ -1871,6 +1916,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Check if streaming is enabled for this channel
                     use_streaming = self.is_streaming_enabled(channel_id)
 
+                    _trace_api_start = time.time()
                     if use_streaming:
                         # Use streaming API for real-time updates. Third slot
                         # is the legacy tool-call list from the Gemini era —
@@ -1898,6 +1944,23 @@ class ChatManager(SessionMixin, ResponseMixin):
                             user_id=user.id,
                             guild_id=guild_id,
                         )
+
+                    # Per-channel trace for the owner's !ai_trace debug panel
+                    # (debug_commands.ai_trace_cmd reads chat_data["last_trace"]).
+                    # This key previously had NO producer anywhere, so the
+                    # panel always claimed "No trace data available" even right
+                    # after a request. Tokens are intentionally omitted (they
+                    # are recorded in api_handler/token_tracker; the panel
+                    # renders N/A) and total_ms spans context-build → API done.
+                    _trace_now = time.time()
+                    chat_data["last_trace"] = {
+                        "total_ms": (_trace_now - _trace_turn_start) * 1000,
+                        "api_ms": (_trace_now - _trace_api_start) * 1000,
+                        "rag_ms": _trace_rag_ms,
+                        "rag_results": _trace_rag_results,
+                        "intent": "search" if use_search else "no_search",
+                        "cache_hit": False,
+                    }
 
                     # Check for cancellation after API call
                     was_cancelled = self._message_queue.is_cancelled(channel_id)

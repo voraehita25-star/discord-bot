@@ -319,7 +319,16 @@ class HistoryManager:
         summary_entry = None
         if summary_slots and len(discarded) >= 10:
             try:
-                summary_text = await summarizer.summarize(discarded, max_messages=50)
+                # max_messages must cover the WHOLE discarded set: summarize()
+                # slices history[-max_messages:], so the old max_messages=50
+                # silently summarized only the newest 50 discarded messages
+                # while the stored entry below claims coverage of all
+                # len(discarded) — the model then treated lost context as
+                # summarized. compress_history fixed this identical trap the
+                # same way.
+                summary_text = await summarizer.summarize(
+                    discarded, max_messages=len(discarded)
+                )
                 if summary_text:
                     summary_entry = {
                         "role": "user",

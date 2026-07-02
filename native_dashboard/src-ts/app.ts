@@ -1542,13 +1542,20 @@ async function loadLogs(): Promise<void> {
         // Use DocumentFragment for better performance
         const fragment = document.createDocumentFragment();
 
+        // Continuation lines (traceback bodies, wrapped messages) carry no
+        // level token of their own — they belong to the last tagged entry.
+        // Carrying that level forward keeps a filtered ERROR view showing its
+        // traceback instead of dropping the most useful part of the error.
+        let carriedLevelToken: string | undefined;
         logs.forEach((line: string) => {
             // Anchor the level to a standalone token (the structured log-level
             // column) rather than a whole-line substring match, so message text
             // that incidentally contains a level word (e.g. an INFO line "no
             // ERROR found") is neither mis-colored nor wrongly selected by the
             // level filter. The first token wins, matching the column order.
-            const levelToken = /\b(ERROR|WARNING|DEBUG|INFO)\b/.exec(line)?.[1];
+            const ownLevelToken = /\b(ERROR|WARNING|DEBUG|INFO)\b/.exec(line)?.[1];
+            if (ownLevelToken) carriedLevelToken = ownLevelToken;
+            const levelToken = ownLevelToken ?? carriedLevelToken;
             const level = levelToken ? levelToken.toLowerCase() : 'info';
 
             if (filter === 'all' || levelToken === filter) {
@@ -2249,6 +2256,9 @@ function saveCroppedAvatar(): void {
         settings.aiAvatar = croppedDataUrl;
         saveSettings();
         setAvatarPreview('ai', croppedDataUrl);
+        // Also refresh the chat-page avatars (#chat-empty-avatar has no other
+        // writer, so it kept showing the OLD avatar until app restart).
+        updateAiAvatars();
         showToast('AI Avatar updated!', { type: 'success' });
     } else {
         settings.userAvatar = croppedDataUrl;
@@ -2304,6 +2314,8 @@ function removeAvatar(target: 'user' | 'ai' = 'user'): void {
         settings.aiAvatar = '';
         saveSettings();
         setAvatarPreview('ai', '');
+        // Keep the chat page in sync (see saveCroppedAvatar).
+        updateAiAvatars();
         showToast('AI Avatar removed', { type: 'info' });
     } else {
         settings.userAvatar = '';
@@ -2319,7 +2331,10 @@ function removeAvatar(target: 'user' | 'ai' = 'user'): void {
 }
 
 function saveProfileToAI(): void {
-    const displayName = (document.getElementById('user-name-input') as HTMLInputElement)?.value?.trim() || 'User';
+    // Empty-name fallback must match the input handler + settings default
+    // ('You') — a divergent 'User' here silently flipped settings.userName
+    // depending on which code path ran last.
+    const displayName = (document.getElementById('user-name-input') as HTMLInputElement)?.value?.trim() || 'You';
     const bio = (document.getElementById('user-bio-input') as HTMLTextAreaElement)?.value?.trim() || '';
     const preferences = (document.getElementById('user-preferences-input') as HTMLTextAreaElement)?.value?.trim() || '';
     const isCreator = (document.getElementById('creator-toggle') as HTMLInputElement)?.checked || false;
@@ -2415,14 +2430,16 @@ function initApiFailoverUI(): void {
                 chatManager.send({ type: 'get_api_endpoints' });
                 clearInterval(checkInterval);
                 // Stay latched on success so we don't re-poll an already-served
-                // panel.
+                // panel — cancel the give-up timer too, or its unconditional
+                // re-arm below would undo the latch 60s later.
+                clearTimeout(giveUpTimer);
             }
         }, 2000);
         // Give-up timeout: stop the poll AND re-arm the guard so a late connect
         // (slower than the 60s ceiling) can start a fresh readiness poll the
         // next time initApiFailoverUI runs, instead of being permanently
         // suppressed by a latched flag after we gave up.
-        setTimeout(() => {
+        const giveUpTimer = window.setTimeout(() => {
             clearInterval(checkInterval);
             apiFailoverReadinessRequested = false;
         }, 60000);

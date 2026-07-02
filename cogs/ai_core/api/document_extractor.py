@@ -498,7 +498,12 @@ def _extract_docx(filename: str, data_field: str) -> ExtractedDocument | None:
                         entry_name,
                     )
                     return None
-                with zf.open(info.filename) as entry:
+                # Open via the ZipInfo OBJECT, not the name: opening by name
+                # resolves through ZipFile.NameToInfo, where duplicate entry
+                # names shadow earlier entries — the loop would then stream-
+                # count the same (last) entry repeatedly and never measure the
+                # shadowed ones this guard exists to catch.
+                with zf.open(info) as entry:
                     while True:
                         chunk = entry.read(_CHUNK)
                         if not chunk:

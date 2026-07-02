@@ -59,12 +59,19 @@ ytdl_opts_hq = {
     # handed straight to ffmpeg. The stream path enforces an equivalent bound
     # itself via the extracted filesize/duration metadata check in from_url().
     "max_filesize": 300 * 1024 * 1024,
-    # Updated Chrome user-agent (2024)
-    "user_agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
+    # Chrome user-agent via http_headers — the embedded YoutubeDL API has NO
+    # 'user_agent' param (that spelling is the --user-agent CLI flag, which
+    # the CLI layer translates into http_headers; YoutubeDL.__doc__ documents
+    # http_headers only, verified against the installed yt-dlp 2026.06.09).
+    # The previous "user_agent" key was silently ignored, so every request
+    # went out with yt-dlp's default UA.
+    "http_headers": {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+    },
     # Performance optimizations
     "retries": 5,  # Reduced from 10 (faster fail)
     "fragment_retries": 5,  # Reduced from 10

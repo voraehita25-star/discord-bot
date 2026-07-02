@@ -126,6 +126,27 @@ CACHE_TTL = 900  # 15 minutes (was 5 min) - keep data in RAM longer
 MAX_CACHE_SIZE = 2000  # Maximum channels to cache (was 1000)
 
 
+def _lock_evictable(lock: asyncio.Lock) -> bool:
+    """True when a per-channel history lock is safe to drop from the dict.
+
+    ``locked()`` alone is NOT sufficient: on CPython, ``Lock.release()`` sets
+    the woken waiter's future and only schedules its resumption via
+    ``call_soon`` — until that waiter's ``acquire()`` actually resumes,
+    ``locked()`` reads False while a coroutine is committed to acquiring THAT
+    lock object. Evicting in that window orphans the waiter; a later
+    ``get_history_lock`` then mints a SECOND lock for the same channel and two
+    save/edit critical sections run concurrently — exactly the duplicate-row /
+    stale-snapshot corruption the lock exists to prevent. Reads the private
+    ``_waiters`` attr (None or deque on CPython 3.14); if a future CPython
+    removes it, fail safe: treat the lock as NOT evictable.
+    """
+    if lock.locked():
+        return False
+    if not hasattr(lock, "_waiters"):
+        return False
+    return not getattr(lock, "_waiters", None)
+
+
 def _cleanup_expired_cache() -> int:
     """Remove expired cache entries proactively.
 
@@ -147,21 +168,27 @@ def _cleanup_expired_cache() -> int:
         # on every save while bumping its generation, so a save-heavy workload
         # can keep the live cache under MAX_CACHE_SIZE indefinitely and never
         # trigger _enforce_cache_size_limit's eviction loop (the only other place
-        # these maps shrink). Drop the orphans here too, applying the same safety
-        # rules as that loop: a held _history_lock is in active use by a save/edit
-        # and must survive; _cache_generations re-reads start fresh at 0 and
+        # these maps shrink). Drop the orphans here too: a held/awaited
+        # _history_lock is in active use by a save/edit and must survive;
         # _post_replace_min_id / _db_loaded_channels are rebuilt on the next
         # force-replace / DB load.
+        #
+        # _cache_generations is deliberately NOT pruned: generations are
+        # staleness counters whose only contract is "never repeats within a
+        # snapshot→re-check window". Popping an entry resets the channel to
+        # the implicit 0 — a load that snapshotted 0, raced a dashboard edit
+        # (gen→1), then saw this tick pop the entry back to 0 would pass its
+        # re-check and register PRE-edit history as fresh (a later force-save
+        # then durably destroys the edit). An int→int entry per channel ever
+        # invalidated is a trivial, naturally-bounded cost.
         live = _history_cache.keys() | _metadata_cache.keys()
-        for k in [c for c in _cache_generations if c not in live]:
-            _cache_generations.pop(k, None)
         for k in [c for c in _post_replace_min_id if c not in live]:
             _post_replace_min_id.pop(k, None)
         for k in [c for c in _db_loaded_channels if c not in live]:
             _db_loaded_channels.discard(k)
         for k in [c for c in _history_locks if c not in live]:
             _lk = _history_locks.get(k)
-            if _lk is not None and not _lk.locked():
+            if _lk is not None and _lock_evictable(_lk):
                 _history_locks.pop(k, None)
 
     return len(expired_history) + len(expired_metadata)
@@ -191,18 +218,18 @@ def _enforce_cache_size_limit() -> int:
                 _history_cache.pop(k, None)
                 # Drop the companion per-channel maps for the evicted channel so
                 # they don't grow unbounded relative to the cache they shadow.
-                # _cache_generations: re-reads start fresh at 0; an in-flight
-                #   load that snapshotted a non-zero gen just re-reads (safe).
+                # _cache_generations is NOT popped — see _cleanup_expired_cache:
+                #   resetting a generation to the implicit 0 defeats the
+                #   stale-load guard for gen-0 snapshots.
                 # _post_replace_min_id / _db_loaded_channels: rebuilt on the next
                 #   force-replace / DB load respectively.
-                _cache_generations.pop(k, None)
                 _post_replace_min_id.pop(k, None)
                 _db_loaded_channels.discard(k)
-                # Only drop the lock when it is not currently held — a held lock
-                # is in active use by a save/edit and must survive (mirrors the
-                # bounded-lock-dict pattern in long_term_memory/memory_consolidator).
+                # Only drop the lock when it is neither held nor awaited — a
+                # held lock is in active use by a save/edit and a lock with a
+                # pending waiter is mid-handoff (see _lock_evictable).
                 _lk = _history_locks.get(k)
-                if _lk is not None and not _lk.locked():
+                if _lk is not None and _lock_evictable(_lk):
                     _history_locks.pop(k, None)
                 removed += 1
 
@@ -1105,10 +1132,15 @@ async def _load_history_json(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
 
             history_item = {"role": role, "parts": parts}
 
-            if "timestamp" in item:
-                history_item["timestamp"] = item["timestamp"]
-            if "message_id" in item:
-                history_item["message_id"] = item["message_id"]
+            # Carry user_id too — _save_history_json dumps in-memory items
+            # verbatim (which include it), and dropping it here meant the
+            # JSON→DB migration save wrote every row with user_id=NULL,
+            # permanently stripping per-user attribution even though the JSON
+            # file still held the real ids (the DB loader deliberately keeps
+            # it "so the round trip is lossless" — keep this path in lockstep).
+            for k in ("timestamp", "message_id", "user_id"):
+                if k in item:
+                    history_item[k] = item[k]
 
             history.append(history_item)
 

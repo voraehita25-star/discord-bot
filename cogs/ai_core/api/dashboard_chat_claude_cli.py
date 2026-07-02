@@ -177,6 +177,15 @@ _THINKING_STREAM_TIMEOUT = max(300, _env_int("DASHBOARD_STREAM_TIMEOUT_THINKING"
 # session map on disk and orphaning the .jsonl file the user just touched.
 _PERSIST_TASKS: set[asyncio.Task[None]] = set()
 
+# Tail of the persist chain: each new sidecar write awaits the previous one
+# before touching disk. Without this, two ``asyncio.to_thread`` writers run on
+# different pool workers and their ``tmp.replace()`` calls can land in either
+# order — an OLDER snapshot overwriting a NEWER one (e.g. two conversations'
+# _track_session persists finishing near-simultaneously), leaving a stale
+# session id on disk across a restart. ``delete_session_file`` fences with
+# gather for the same reason; this serializes the general track→track case.
+_LAST_PERSIST_TASK: asyncio.Task[None] | None = None
+
 # The bot's own repo tree. Derived once so the default write-roots resolution
 # can subtract it — the documented "repo and .env excluded" write-mode
 # guarantee must hold even when the repo is cloned under Documents/Desktop/
@@ -628,7 +637,19 @@ def _save_persisted_sessions() -> None:
         except Exception:
             logger.exception("Failed to save Claude CLI session map")
 
-    task = loop.create_task(asyncio.to_thread(_write_snapshot, snapshot))
+    global _LAST_PERSIST_TASK
+    prev_task = _LAST_PERSIST_TASK
+
+    async def _chained_write() -> None:
+        # Serialize sidecar writes so replace() ordering matches dispatch
+        # ordering (see _LAST_PERSIST_TASK). asyncio.wait never propagates
+        # the previous task's exception/cancellation into this one.
+        if prev_task is not None and not prev_task.done():
+            await asyncio.wait([prev_task])
+        await asyncio.to_thread(_write_snapshot, snapshot)
+
+    task = loop.create_task(_chained_write())
+    _LAST_PERSIST_TASK = task
     _PERSIST_TASKS.add(task)
     task.add_done_callback(_PERSIST_TASKS.discard)
 
@@ -1808,7 +1829,11 @@ def _build_claude_argv(
         # the bot IPC. Bare-allow-listed so they run without an interactive
         # permission prompt (there's no TTY under -p).
         chat_tools.extend(ai_tool_names)
-    argv.extend(["--allowedTools", " ".join(chat_tools)])
+    # Skip the flag entirely when no tool is allow-listed (plain-text turn
+    # with web tools off and no AI tools): a literal `--allowedTools ""` is
+    # tolerated by today's CLI but is fragile against argv-parsing changes.
+    if chat_tools:
+        argv.extend(["--allowedTools", " ".join(chat_tools)])
     if allow_read_for_images:
         # --add-dir declares the upload temp roots as working dirs so attachments
         # read without a prompt; uploads live in per-conversation subdirs beneath
@@ -2427,8 +2452,14 @@ async def _run_claude_subprocess(
     ttft_ms = (first_text_ts - t_write) * 1000 if first_text_ts is not None else -1
     cache_read = cache_creation = -1
     if isinstance(final_usage, dict):
-        cache_read = final_usage.get("cache_read_input_tokens", -1)
-        cache_creation = final_usage.get("cache_creation_input_tokens", -1)
+        # None-check (not a .get default): the CLI result JSON can carry these
+        # keys with an explicit null, which .get(k, -1) would pass through as
+        # None and log `cache_read=None`. A real 0 must survive (0 = no cache
+        # hit, -1 = not reported), so `or -1` would be wrong too.
+        _cr = final_usage.get("cache_read_input_tokens")
+        _cc = final_usage.get("cache_creation_input_tokens")
+        cache_read = -1 if _cr is None else _cr
+        cache_creation = -1 if _cc is None else _cc
     # session/resumed make concurrent conversations' lines correlatable from
     # bot.log (8-char prefix keeps lines tidy; full ids already appear on the
     # error paths, so no new disclosure class).
@@ -2506,7 +2537,13 @@ async def handle_chat_message_claude_cli(
     # the interactive "Allow?" prompt the chat UI can't surface. Read once here
     # and thread it through every _build_claude_argv call on the main chat path
     # (the /edit path intentionally stays text-only and never sets it).
-    write_enabled = _dashboard_cli_write_enabled()
+    # AND-resolve the roots up front: when the env flag is on but no write root
+    # resolves (bad DASHBOARD_CLI_WRITE_DIRS, missing Desktop/Documents/
+    # Downloads), _build_claude_argv silently degrades to the read-only path —
+    # so the "✍️ Write" badge and the system-prompt web gating below must key
+    # on the RESOLVED state, not the raw flag, or the UI advertises write mode
+    # that this turn does not actually have.
+    write_enabled = _dashboard_cli_write_enabled() and bool(_dashboard_cli_write_dirs())
     thinking_enabled = bool(data.get("thinking_enabled"))
     images_raw = data.get("images") or []
     documents_raw = data.get("documents") or []
@@ -2803,13 +2840,28 @@ async def handle_chat_message_claude_cli(
     if doc_paths:
         mode_info.append(f"📎 {len(doc_paths)} doc(s)")
     mode_label = " • ".join(mode_info)
-    await ws.send_json(
-        {
-            "type": "stream_start",
-            "mode": mode_label,
-            "conversation_id": conversation_id,
-        }
-    )
+    try:
+        await ws.send_json(
+            {
+                "type": "stream_start",
+                "mode": mode_label,
+                "conversation_id": conversation_id,
+            }
+        )
+    except BaseException:
+        # Client vanished before the turn started (tab closed while the
+        # attachments uploaded). This send sits BEFORE the try/finally that
+        # owns attachment cleanup, so without this handler the just-written
+        # temp files under dashboard_cli_images/<conv>/ and
+        # dashboard_cli_docs/<conv>/ leak until a FUTURE attachment turn in
+        # the same conversation sweeps them — i.e. forever, for an abandoned
+        # conversation. Unlink this turn's files synchronously (metadata-only
+        # ops; also safe under CancelledError where awaiting is unreliable),
+        # then propagate — the turn is aborted either way.
+        for _attach in (*image_paths, *doc_paths):
+            with contextlib.suppress(OSError):
+                _attach.unlink(missing_ok=True)
+        raise
 
     full_response = ""
     full_thinking = ""
@@ -2920,18 +2972,21 @@ async def handle_chat_message_claude_cli(
         if lock is not None:
             await lock.acquire()
             lock_acquired = True
-            # Re-read the session id now that we hold the lock. A concurrent
-            # first turn for this same (previously session-less) conversation
-            # may have established a session while we waited; the read at the
-            # top of this function happened BEFORE the lock, so without this
-            # re-check we'd spawn a SECOND fresh session, orphan the first
-            # one's session file, and overwrite its id in _CONVERSATION_SESSIONS.
-            # Resume the established session instead (with a minimal prompt).
-            if conversation_id and not is_resumed:
+            # Re-read the session id now that we hold the lock — UNCONDITIONALLY.
+            # The read at the top of this function happened BEFORE the lock, so
+            # while we waited a concurrent turn may have (a) established a
+            # session for a previously session-less conversation, (b) resumed
+            # and thereby FORKED the session to a new id (every --resume yields
+            # a new id and the old transcript is unlinked — resuming the
+            # superseded id then deterministically fails, and the stale-retry
+            # would reset_session() the LIVE session), or (c) reset the session
+            # to None. Adopt whatever is current and rebuild argv/prompt so the
+            # subprocess targets the live session state.
+            if conversation_id:
                 _latest_session = _CONVERSATION_SESSIONS.get(conversation_id)
-                if _latest_session:
+                if _latest_session != session_id:
                     session_id = _latest_session
-                    is_resumed = True
+                    is_resumed = bool(session_id)
                     argv = _build_claude_argv(
                         claude_exe,
                         session_id=session_id,
@@ -2949,7 +3004,7 @@ async def handle_chat_message_claude_cli(
                         current_message=content,
                         image_paths=image_paths,
                         doc_paths=doc_paths,
-                        is_resumed_session=True,
+                        is_resumed_session=is_resumed,
                         persona_in_system=persona_in_system,
                     )
         try:

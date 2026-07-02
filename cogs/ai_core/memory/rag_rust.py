@@ -7,6 +7,7 @@ Provides fallback to pure Python implementation if Rust extension is not availab
 from __future__ import annotations
 
 import importlib
+import itertools
 import json
 import logging
 import math
@@ -17,6 +18,9 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Per-process atomic counter for save()'s temp filenames — see save().
+_SAVE_TMP_COUNTER = itertools.count()
 
 # Try to import Rust extension dynamically to avoid Pylance warnings
 RUST_AVAILABLE = False
@@ -297,7 +301,15 @@ class RagEngineWrapper:
                 entries_snapshot = list(self._entries.values())
             # Atomic write: write to sibling tmp file, fsync, then replace.
             # Prevents corruption if the process crashes mid-write.
-            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            # Per-call unique temp name (pid + atomic counter): the previous
+            # fixed '<path>.tmp' let two concurrent save() calls on the same
+            # path interleave writes into ONE shared tmp file — the first
+            # replace() published the interleaved garbage and the loser raised
+            # FileNotFoundError. Same race the Rust backend fixed
+            # (lib.rs:412-430); keeps the fallback in lockstep.
+            tmp_path = path.with_suffix(
+                path.suffix + f".tmp.{os.getpid()}.{next(_SAVE_TMP_COUNTER)}"
+            )
             try:
                 with tmp_path.open("w", encoding="utf-8") as f:
                     json.dump(entries_snapshot, f, ensure_ascii=False, indent=2)
@@ -358,6 +370,25 @@ class RagEngineWrapper:
                             entry.get("id"),
                             len(embedding) if isinstance(embedding, list) else "missing",
                             self.dimension,
+                        )
+                        continue
+                    # Reject non-numeric / non-finite embedding VALUES, matching
+                    # the Rust load() guard (lib.rs:592-598). json.load parses
+                    # NaN/Infinity tokens by default, and a NaN component makes
+                    # _python_search's score NaN — ``score >= threshold`` is
+                    # False for NaN, so the entry would be silently
+                    # unsearchable (no exception fires, so the per-entry debug
+                    # skip never triggers), and a later save() re-serializes
+                    # the NaN into a file the Rust backend then rejects
+                    # WHOLESALE. add() already blocks these values; load() was
+                    # the one ingestion gap.
+                    if not all(
+                        isinstance(v, (int, float)) and math.isfinite(v) for v in embedding
+                    ):
+                        logger.warning(
+                            "Skipping RAG entry %r: embedding contains non-numeric or "
+                            "non-finite values",
+                            entry.get("id"),
                         )
                         continue
                     # Reject negative/non-finite importance on load, matching the

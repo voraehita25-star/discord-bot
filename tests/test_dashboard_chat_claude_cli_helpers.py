@@ -487,12 +487,13 @@ class TestBuildClaudeArgv:
         return argv[argv.index("--allowedTools") + 1]
 
     def test_web_tools_disabled_by_default(self):
+        # With web tools off and no AI tools, NOTHING is allow-listed — the
+        # flag is omitted entirely (an empty `--allowedTools ""` argument was
+        # fragile against CLI argv-parsing changes).
         argv = cli._build_claude_argv(
             "/usr/bin/claude", session_id=None, allow_read_for_images=False
         )
-        tools = self._allowed_tools(argv)
-        assert "WebSearch" not in tools
-        assert "WebFetch" not in tools
+        assert "--allowedTools" not in argv
 
     def test_web_tools_enabled_no_read_adds_both(self):
         argv = cli._build_claude_argv(

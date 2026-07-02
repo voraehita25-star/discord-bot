@@ -29,7 +29,7 @@ import time
 import uuid
 from collections import deque
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from aiohttp import WSMsgType, web
 from google import genai
@@ -112,6 +112,46 @@ from .dashboard_handlers import (
 
 logger = logging.getLogger(__name__)
 
+
+class _ScopedErrorWs:
+    """Transparent WebSocketResponse wrapper that tags outgoing error frames.
+
+    Management handlers (conversation list/star/rename/…, tags, document
+    memory, profile, provider/endpoint ops) reply with plain
+    ``{"type": "error", ...}`` frames. The dashboard client needs to tell those
+    apart from CHAT-turn errors: an unscoped error tears down any in-flight
+    chat stream (re-enables the composer, discards the eventual stream_end),
+    so a failed background sidebar/settings operation used to kill a live
+    response. Wrapping the ws per-dispatch injects ``scope=<wire msg type>`` —
+    the same value the rate limiter already uses — without touching dozens of
+    handler send sites. Frames that already carry a scope (the ai-history
+    handlers) and non-error frames pass through untouched.
+    """
+
+    __slots__ = ("_scope", "_ws")
+
+    def __init__(self, ws: WebSocketResponse, scope: str) -> None:
+        self._ws = ws
+        self._scope = scope
+
+    async def send_json(self, data: Any, *args: Any, **kwargs: Any) -> None:
+        if isinstance(data, dict) and data.get("type") == "error" and "scope" not in data:
+            data = {**data, "scope": self._scope}
+        await self._ws.send_json(data, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._ws, name)
+
+
+def _scoped_error_ws(ws: WebSocketResponse, scope: str) -> WebSocketResponse:
+    """Wrap ``ws`` for a management dispatch (see _ScopedErrorWs).
+
+    The cast keeps handler signatures honest (they only ever call
+    ``send_json``/read-only attrs, all forwarded by the wrapper).
+    """
+    return cast("WebSocketResponse", _ScopedErrorWs(ws, scope))
+
+
 # ============================================================================
 # WebSocket Dashboard Server
 # ============================================================================
@@ -138,16 +178,18 @@ class DashboardWebSocketServer:
             "load_conversation",
             "get_profile",
             # Dispatch routes incoming type "list_tags" (not "list_all_tags")
-            # to handle_list_all_tags. The exempt key has to match the
-            # incoming wire string or every tag-picker render burns rate
-            # budget the design intended to be free.
+            # to handle_list_all_tags. NOTE: currently an ORPHANED endpoint —
+            # no shipped frontend code sends "list_tags" (the tag picker only
+            # sends add_tag/remove_tag); kept wired + exempt for a future
+            # tag-picker suggestion list.
             "list_tags",
             "list_conversation_documents",
             # AI-history viewer: only the channel-list summary (one cheap
             # GROUP BY) is exempt. "load_ai_history" is NOT — it is the
             # heaviest read op (up to 2000 full-content rows fetched, then
             # serialized synchronously on the event loop the Discord bot
-            # shares), so it stays under the 30/min budget like the write ops
+            # shares), so it stays under the RATE_LIMIT_MESSAGES_PER_MINUTE
+            # budget (currently 120/min) like the write ops
             # ("edit_ai_history_message" / "delete_ai_history_message" /
             # "restore_ai_history_message").
             "list_ai_channels",
@@ -251,6 +293,14 @@ class DashboardWebSocketServer:
         # rest of init completes leaves a dangling listener forever — every
         # restart compounds the leak.
         self._failover_listener_registered = False
+        # True only when THIS instance constructed the Anthropic client
+        # directly (CLAUDE_API_KEY fallback branches). The failover manager's
+        # pooled client is shared — logic.py's Discord path holds the same
+        # object — and the manager's ownership contract forbids closing it
+        # (api_failover: closing "would defeat the whole point of pooling and
+        # break any in-flight messages.create referencing it"). stop() gates
+        # its close on this flag.
+        self._claude_client_owned = False
         if _api_disabled:
             logger.info(
                 "🚫 Dashboard WS: Anthropic SDK client disabled "
@@ -272,11 +322,13 @@ class DashboardWebSocketServer:
                     import anthropic
 
                     self.claude_client = anthropic.AsyncAnthropic(api_key=CLAUDE_API_KEY)
+                    self._claude_client_owned = True
         elif CLAUDE_API_KEY:
             try:
                 import anthropic
 
                 self.claude_client = anthropic.AsyncAnthropic(api_key=CLAUDE_API_KEY)
+                self._claude_client_owned = True
                 logger.info("🟣 Dashboard WS: Claude client initialized")
             except ImportError:
                 logger.warning("⚠️ Dashboard WS: anthropic package not installed")
@@ -386,9 +438,21 @@ class DashboardWebSocketServer:
             # port is filtered/dropping (not just refused). Run it off the
             # event loop via run_in_executor so the up-to-1s wait never stalls
             # the loop the Discord bot shares.
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            # Family must match the host: dashboard_config accepts "::1" as a
+            # valid localhost bind, and connect_ex on an AF_INET socket raises
+            # socket.gaierror for an IPv6 literal (name-resolution errors
+            # RAISE; only connect errors come back as codes) — which start()'s
+            # broad except turned into "dashboard failed to start" before the
+            # bind was even attempted.
+            family = socket.AF_INET6 if ":" in WS_HOST else socket.AF_INET
+            with socket.socket(family, socket.SOCK_STREAM) as sock:
                 sock.settimeout(1)
-                return sock.connect_ex((WS_HOST, WS_PORT))
+                try:
+                    return sock.connect_ex((WS_HOST, WS_PORT))
+                except OSError:
+                    # Unresolvable/unprobeable host (e.g. gaierror) — treat as
+                    # "not in use" and let the real bind report the truth.
+                    return 1
 
         loop = asyncio.get_running_loop()
 
@@ -479,8 +543,13 @@ class DashboardWebSocketServer:
         self.clients.clear()
 
         # Close the Anthropic SDK client to release its underlying httpx
-        # connection pool (otherwise reload leaves sockets open).
-        if self.claude_client is not None:
+        # connection pool (otherwise reload leaves sockets open) — but ONLY
+        # when this instance owns it. The failover manager's pooled client is
+        # the SAME object logic.py uses for Discord replies; closing it here
+        # (graceful_shutdown stops the dashboard FIRST) killed in-flight
+        # Discord streams with "client has been closed" and left the
+        # manager's cache holding a dead client.
+        if self.claude_client is not None and self._claude_client_owned:
             try:
                 close_coro = getattr(self.claude_client, "close", None)
                 if close_coro is not None:
@@ -489,6 +558,8 @@ class DashboardWebSocketServer:
                         await asyncio.wait_for(result, timeout=2.0)
             except Exception:
                 logger.debug("Failed to close Claude client cleanly", exc_info=True)
+        elif self.claude_client is not None:
+            logger.debug("Skipping close of failover-manager-owned Claude client")
 
         # Close the Gemini SDK client to release its underlying httpx
         # connection pool (mirrors the Claude close above).
@@ -918,6 +989,18 @@ class DashboardWebSocketServer:
                             continue
                         msg_id = str(uuid.uuid4())[:8]
                         msg_type = data.get("type")
+                        if not isinstance(msg_type, str):
+                            # An unhashable JSON "type" (array/object) raised
+                            # TypeError on the RATE_EXEMPT set lookup below,
+                            # escaping the JSON-only inner except to the outer
+                            # handler and tearing down the WHOLE connection —
+                            # cancelling the client's in-flight AI tasks. A
+                            # hashable non-string just took the unknown-type
+                            # path; normalize both to a clean error frame.
+                            await ws.send_json(
+                                {"type": "error", "message": "Invalid message format"}
+                            )
+                            continue
 
                         # Rate limiting per client — exempts the read-only
                         # message types defined at class level.
@@ -1096,8 +1179,15 @@ class DashboardWebSocketServer:
         """Handle incoming WebSocket messages."""
         msg_type = data.get("type")
 
+        # Management operations (everything that is NOT a chat turn / chat-pane
+        # message mutation / AI-history op) get their error frames tagged with
+        # scope=<wire msg type> via _scoped_error_ws. The client uses the scope
+        # to show a toast WITHOUT running its chat-stream teardown — a failed
+        # sidebar/settings operation while a response streams must not kill the
+        # live stream (chat-manager.ts CHAT_ERROR_SCOPES). Matches the rate
+        # limiter, which already tags rejections with the same value.
         if msg_type == "new_conversation":
-            await self.handle_new_conversation(ws, data)
+            await self.handle_new_conversation(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "message":
             # Redundant backstop: the read-loop gate already caps not-done
             # tasks at MAX_INFLIGHT_PER_CLIENT before spawning, so at most that
@@ -1122,17 +1212,17 @@ class DashboardWebSocketServer:
                     0, self._client_inflight.get(client_id, 1) - 1
                 )
         elif msg_type == "list_conversations":
-            await self.handle_list_conversations(ws)
+            await self.handle_list_conversations(_scoped_error_ws(ws, msg_type))
         elif msg_type == "load_conversation":
-            await self.handle_load_conversation(ws, data)
+            await self.handle_load_conversation(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "delete_conversation":
-            await self.handle_delete_conversation(ws, data)
+            await self.handle_delete_conversation(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "star_conversation":
-            await self.handle_star_conversation(ws, data)
+            await self.handle_star_conversation(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "rename_conversation":
-            await self.handle_rename_conversation(ws, data)
+            await self.handle_rename_conversation(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "export_conversation":
-            await self.handle_export_conversation(ws, data)
+            await self.handle_export_conversation(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "edit_message":
             await handle_edit_message(ws, data)
         elif msg_type == "ai_edit_message":
@@ -1171,27 +1261,27 @@ class DashboardWebSocketServer:
             # like edit/delete (NOT in RATE_EXEMPT_MESSAGE_TYPES).
             await handle_restore_ai_history_message(ws, data)
         elif msg_type == "pin_message":
-            await handle_pin_message(ws, data)
+            await handle_pin_message(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "like_message":
-            await handle_like_message(ws, data)
+            await handle_like_message(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "add_tag":
-            await handle_add_conversation_tag(ws, data)
+            await handle_add_conversation_tag(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "remove_tag":
-            await handle_remove_conversation_tag(ws, data)
+            await handle_remove_conversation_tag(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "list_tags":
-            await handle_list_all_tags(ws, data)
+            await handle_list_all_tags(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "list_conversation_documents":
-            await handle_list_conversation_documents(ws, data)
+            await handle_list_conversation_documents(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "delete_document_memory":
-            await handle_delete_document_memory(ws, data)
+            await handle_delete_document_memory(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "get_document_memory_content":
-            await handle_get_document_memory_content(ws, data)
+            await handle_get_document_memory_content(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "update_document_memory":
-            await handle_update_document_memory(ws, data)
+            await handle_update_document_memory(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "get_profile":
-            await self.handle_get_profile(ws)
+            await self.handle_get_profile(_scoped_error_ws(ws, msg_type))
         elif msg_type == "save_profile":
-            await self.handle_save_profile(ws, data)
+            await self.handle_save_profile(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "auth":
             # Re-auth or late auth via message — already handled at connect deadline,
             # but allow re-validation for token rotation.
@@ -1232,13 +1322,13 @@ class DashboardWebSocketServer:
                 self._client_auth_failures.pop(client_id, None)
                 logger.debug("✅ Client %s re-authenticated via message", client_id)
         elif msg_type == "update_provider":
-            await self.handle_update_provider(ws, data)
+            await self.handle_update_provider(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "get_api_endpoints":
-            await self.handle_get_api_endpoints(ws)
+            await self.handle_get_api_endpoints(_scoped_error_ws(ws, msg_type))
         elif msg_type == "switch_api_endpoint":
-            await self.handle_switch_api_endpoint(ws, data)
+            await self.handle_switch_api_endpoint(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "health_check_endpoint":
-            await self.handle_health_check_endpoint(ws, data)
+            await self.handle_health_check_endpoint(_scoped_error_ws(ws, msg_type), data)
         elif msg_type == "ping":
             await ws.send_json({"type": "pong"})
         else:
@@ -1250,8 +1340,25 @@ class DashboardWebSocketServer:
         thinking_enabled = data.get("thinking_enabled", False)
         ai_provider = data.get("ai_provider", DEFAULT_AI_PROVIDER)
 
-        if role_preset not in DASHBOARD_ROLE_PRESETS:
+        # isinstance first: an unhashable role_preset (JSON array/object)
+        # would raise TypeError on the dict membership test and tear down the
+        # whole connection instead of falling back to the default preset.
+        if not isinstance(role_preset, str) or role_preset not in DASHBOARD_ROLE_PRESETS:
             role_preset = "general"
+
+        # Validate the provider like handle_update_provider does — but fall
+        # back to the default instead of rejecting. A stale client value (e.g.
+        # "gemini" persisted in localStorage before the server switched to
+        # CLAUDE_BACKEND=cli, where VALID_AI_PROVIDERS narrows to {"claude"})
+        # used to be persisted verbatim, creating a conversation whose every
+        # subsequent message frame is rejected with INVALID_PROVIDER.
+        if not isinstance(ai_provider, str) or ai_provider not in VALID_AI_PROVIDERS:
+            logger.warning(
+                "new_conversation carried invalid ai_provider %r — falling back to %r",
+                ai_provider,
+                DEFAULT_AI_PROVIDER,
+            )
+            ai_provider = DEFAULT_AI_PROVIDER
 
         preset = DASHBOARD_ROLE_PRESETS[role_preset]
         conversation_id = str(uuid.uuid4())
@@ -1296,7 +1403,10 @@ class DashboardWebSocketServer:
         CLAUDE_BACKEND=cli (uses Claude Code subscription instead of API key).
         """
         ai_provider = data.get("ai_provider", DEFAULT_AI_PROVIDER)
-        if ai_provider not in VALID_AI_PROVIDERS:
+        # isinstance first: an unhashable JSON value (array/object) would raise
+        # TypeError on the frozenset membership test — killing the background
+        # task (or tearing down the connection) instead of a clean error frame.
+        if not isinstance(ai_provider, str) or ai_provider not in VALID_AI_PROVIDERS:
             await ws.send_json(
                 {
                     "type": "error",
@@ -1407,7 +1517,10 @@ class DashboardWebSocketServer:
         Routes to Gemini or Claude handler based on ai_provider field.
         """
         ai_provider = data.get("ai_provider", DEFAULT_AI_PROVIDER)
-        if ai_provider not in VALID_AI_PROVIDERS:
+        # isinstance first: an unhashable JSON value (array/object) would raise
+        # TypeError on the frozenset membership test — killing the background
+        # task (or tearing down the connection) instead of a clean error frame.
+        if not isinstance(ai_provider, str) or ai_provider not in VALID_AI_PROVIDERS:
             await ws.send_json(
                 {
                     "type": "error",
@@ -1531,7 +1644,10 @@ class DashboardWebSocketServer:
         # a future provider gets added (or ``API_AI_DISABLED`` narrows
         # the set to claude-only), the literal here would silently
         # accept a now-invalid provider name.
-        if ai_provider not in VALID_AI_PROVIDERS:
+        # isinstance first: an unhashable JSON value (array/object) would raise
+        # TypeError on the frozenset membership test — killing the background
+        # task (or tearing down the connection) instead of a clean error frame.
+        if not isinstance(ai_provider, str) or ai_provider not in VALID_AI_PROVIDERS:
             await ws.send_json(
                 {
                     "type": "error",

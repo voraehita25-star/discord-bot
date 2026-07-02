@@ -16,11 +16,11 @@ $U=$env:USERPROFILE; $env:PATH="$U\.local\node;$U\.local\go\bin;$U\go\bin;$U\.ca
 ## Verify each stack
 - **Python** — prepend the venv, then use the wrapper (NEVER raw `pytest -v`, it can hang):
   ```powershell
-  $env:PATH="$PWD\.venv\Scripts;$env:PATH"; .\scripts\run_tests.ps1        # green baseline: ~5,044 passed, 2 skipped (see README / docs/CODE_AUDIT_GUIDE.md for canonical figures)
+  $env:PATH="$PWD\.venv\Scripts;$env:PATH"; .\scripts\run_tests.ps1        # green baseline: ~5,415 passed, 2 skipped (2026-07; see README / docs/CODE_AUDIT_GUIDE.md for canonical figures)
   .venv\Scripts\ruff.exe check .          # and: ruff format --check . (note: many files predate the 100-col config — only fix files you touched)
   ```
   A `socket.gaierror: getaddrinfo failed` line in the pytest log is sandbox no-network noise, not a failure.
-- **TypeScript** (`cd native_dashboard`): `npm run typecheck` (strict tsc) + `npm test` (vitest — baseline 294 passed). `npx --no-install playwright test --list` lists e2e (baseline 72 in 8 files; `--list` won't hang, a full run might).
+- **TypeScript** (`cd native_dashboard`): `npm run typecheck` (strict tsc) + `npm test` (vitest — baseline ~467 passed, 2026-07). `npx --no-install playwright test --list` lists e2e (baseline ~90 in 9 files). A FULL e2e run works too (~30s) — put the SYSTEM python (`C:\Users\ME\AppData\Local\Programs\Python\Python314`) on PATH first; the venv path's space breaks the http.server webServer.
 - **Rust** — needs the MSVC env (installed without build tools). Run inside vcvars:
   ```
   cmd /c "set PATH=%USERPROFILE%\.cargo\bin;%PATH% && call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && set PYO3_PYTHON=<repo>\.venv\Scripts\python.exe && cargo check --manifest-path rust_extensions\Cargo.toml --all && cargo check --manifest-path native_dashboard\Cargo.toml"

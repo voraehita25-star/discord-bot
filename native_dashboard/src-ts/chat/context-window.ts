@@ -148,6 +148,9 @@ export class ContextWindowIndicator {
         // class to actually reveal it; reset() re-adds it.
         indicator.classList.remove('hidden');
         indicator.style.display = 'flex';
+        // Keep the progressbar semantics in sync (index.html carries
+        // role="progressbar" + aria-valuemin/max on the indicator).
+        indicator.setAttribute('aria-valuenow', pct.toFixed(0));
         fill.style.width = `${pct}%`;
         fill.classList.remove('usage-moderate', 'usage-high');
         if (pct >= 80) fill.classList.add('usage-high');
@@ -164,6 +167,7 @@ export class ContextWindowIndicator {
         if (indicator) {
             indicator.classList.add('hidden');
             indicator.style.display = 'none';
+            indicator.setAttribute('aria-valuenow', '0');
         }
     }
 

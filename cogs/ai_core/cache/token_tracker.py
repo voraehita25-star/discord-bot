@@ -343,9 +343,17 @@ class TokenTracker:
                     self._usage_cache[f"guild:{usage.guild_id}"].append(usage)
                 loaded += 1
 
-            # Trim each key to the cap in case the DB had more than
-            # MAX_RECORDS_PER_KEY rows for one user.
+            # Sort each rebuilt list chronologically BEFORE trimming: the
+            # prune above leaves [old records] + [kept unpersisted records
+            # NEWER than max_db_ts] and the DB replay then APPENDS strictly
+            # older rows behind them, so tail != newest. A plain [-CAP:]
+            # slice on that order dropped exactly the newest unpersisted
+            # records the max_db_ts guard exists to keep (and left
+            # record_usage's identical tail-trims evicting newest-first until
+            # the wedge aged out).
             for key in self._usage_cache:
+                if len(self._usage_cache[key]) > 1:
+                    self._usage_cache[key].sort(key=lambda u: _ensure_aware(u.timestamp))
                 if len(self._usage_cache[key]) > self.MAX_RECORDS_PER_KEY:
                     self._usage_cache[key] = self._usage_cache[key][-self.MAX_RECORDS_PER_KEY :]
 

@@ -131,6 +131,20 @@ def _save_unrestricted_channels(channels_snapshot: list[int] | None = None) -> b
 unrestricted_channels = _load_unrestricted_channels()
 
 
+def get_unrestricted_channels() -> frozenset[int]:
+    """Snapshot of the explicitly-unrestricted channel ids (thread-safe).
+
+    Callers must use this instead of iterating the module's raw set:
+    ``set_unrestricted`` mutates that set from worker threads
+    (``asyncio.to_thread`` in ai_cog), so lock-free iteration on the event
+    loop can raise ``RuntimeError: Set changed size during iteration`` or
+    read a torn view. The returned frozenset is an immutable point-in-time
+    copy, safe to iterate anywhere.
+    """
+    with _unrestricted_lock:
+        return frozenset(unrestricted_channels)
+
+
 def is_unrestricted(channel_id: int) -> bool:
     """Check if a channel is in unrestricted mode.
 

@@ -744,9 +744,38 @@ describe('handleMessage — history-scoped error frames', () => {
         expect(cm.isStreaming).toBe(false);
         expect(cm.streamingConversationId).toBeNull();
         expect(document.getElementById('streaming-message')).toBeNull();
-        // Trailing resilience kept on the unscoped path: the editor is
-        // unstuck there too (harmless for chat, vital pre-`scope` clients).
-        expect(saveBtn.disabled).toBe(false);
+        // The unscoped path no longer touches the history editor: every
+        // genuine history rejection is scoped (handlers tag scope:'ai_history',
+        // the rate limiter echoes the wire type), so the in-flight edit stays
+        // pending until ITS OWN scoped rejection/ack arrives — an unrelated
+        // chat error must not drop its undo candidate.
+        expect(saveBtn.disabled).toBe(true);
+    });
+
+    it.each([
+        'rename_conversation',
+        'delete_conversation',
+        'star_conversation',
+        'list_conversations',
+        'save_profile',
+    ])('management scope %s surfaces as toast-only — no chat-stream teardown', async (scope) => {
+        const { cm, saveBtn } = await mountChatWithInFlightHistoryEdit();
+        cm.currentConversation = { ...STREAM_CONV };
+        cm.handleMessage({ type: 'stream_start' });
+        expect(cm.isStreaming).toBe(true);
+
+        cm.handleMessage({
+            type: 'error', scope,
+            code: 'INTERNAL_ERROR', message: 'Failed',
+        });
+
+        // Chat streaming state is fully preserved…
+        expect(cm.isStreaming).toBe(true);
+        expect(cm.streamingConversationId).toBe('c1');
+        expect(document.getElementById('streaming-message')).not.toBeNull();
+        // …and the history editor is left alone too (its undo candidate must
+        // survive an unrelated management failure).
+        expect(saveBtn.disabled).toBe(true);
     });
 });
 
@@ -789,15 +818,28 @@ describe('handleMessage — error-code forwarding to HistoryManager.onError', ()
         expect(onError).toHaveBeenCalledWith(undefined);
     });
 
-    it('forwards the code on the UNSCOPED error path too (trailing resilience call)', () => {
+    it('does NOT forward unscoped errors (chat errors carry codes too and would drop undo candidates)', () => {
+        const { cm, onError } = mountWithOnErrorSpy();
+        // NO_BACKEND_AVAILABLE / INVALID_PROVIDER are unscoped CHAT errors
+        // that carry a code; forwarding them made HistoryManager.onError
+        // treat them as history rejections and null pendingUndoCandidate.
+        cm.handleMessage({
+            type: 'error',
+            code: 'NO_BACKEND_AVAILABLE',
+            message: 'No backend available',
+        });
+        expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('does not forward management-scoped errors either', () => {
         const { cm, onError } = mountWithOnErrorSpy();
         cm.handleMessage({
             type: 'error',
-            code: 'MSG_NOT_FOUND',
-            message: 'Message not found',
+            scope: 'rename_conversation',
+            code: 'INVALID_ID',
+            message: 'Invalid conversation ID format',
         });
-        expect(onError).toHaveBeenCalledTimes(1);
-        expect(onError).toHaveBeenCalledWith('MSG_NOT_FOUND');
+        expect(onError).not.toHaveBeenCalled();
     });
 });
 

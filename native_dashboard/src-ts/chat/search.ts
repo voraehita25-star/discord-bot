@@ -222,6 +222,13 @@ function wrapMatches(root: HTMLElement, query: string): WrapResult {
             if (!parent) return NodeFilter.FILTER_REJECT;
             const tag = parent.tagName;
             if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK') return NodeFilter.FILTER_REJECT;
+            // Collapsed thinking sections (max-height:0 + overflow:hidden)
+            // keep their text nodes in the DOM. Matching inside them counted
+            // and "highlighted" invisible hits: the counter said "1 / 3" while
+            // Enter-stepping scrolled to a zero-height container with nothing
+            // visible. Skip them; matches there stay findable by expanding
+            // the section and searching again.
+            if (parent.closest('.thinking-content.collapsed')) return NodeFilter.FILTER_REJECT;
             // Pre-filter to skip nodes that can't possibly hit, so the scan
             // doesn't compile a regex per text node on a huge history. NOTE:
             // this uses toLowerCase().includes() while the wrapping pass below

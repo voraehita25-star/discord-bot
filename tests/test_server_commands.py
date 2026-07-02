@@ -1835,7 +1835,14 @@ class TestAddRoleFull:
         assert "บอทยังไม่พร้อมใช้งาน" in str(origin.send.call_args)
 
     @pytest.mark.asyncio
-    async def test_add_role_member_higher_than_bot(self):
+    async def test_add_role_member_higher_than_bot_still_succeeds(self):
+        """Discord does NOT gate role add on the target member's top role.
+
+        The actor-vs-target hierarchy rule applies only to kick/ban/nickname
+        edits; adding a below-bot role to a member ranked ABOVE the bot is a
+        valid, routine operation (e.g. muting a moderator). A previous guard
+        falsely refused it — this pins the corrected behavior.
+        """
         from cogs.ai_core.commands.server_commands import cmd_add_role
 
         role = MagicMock(spec=discord.Role)
@@ -1845,7 +1852,8 @@ class TestAddRoleFull:
         member = MagicMock(spec=discord.Member)
         member.display_name = "U"
         member.top_role = MagicMock()
-        member.top_role.position = 20  # higher than bot
+        member.top_role.position = 20  # higher than bot — must NOT block
+        member.add_roles = AsyncMock()
         bot = MagicMock()
         bot.top_role = MagicMock()
         bot.top_role.position = 10
@@ -1858,7 +1866,8 @@ class TestAddRoleFull:
 
         with patch("cogs.ai_core.commands.server_commands.find_member", return_value=member):
             await cmd_add_role(guild, origin, None, ["U", "R"])
-        assert "สูงกว่าหรือเทียบเท่า" in str(origin.send.call_args)
+        member.add_roles.assert_awaited_once_with(role)
+        assert "เรียบร้อยแล้ว" in str(origin.send.call_args)
 
     @pytest.mark.asyncio
     async def test_add_role_forbidden(self):
@@ -2028,7 +2037,10 @@ class TestRemoveRoleFull:
         assert "ไม่สามารถลบยศ" in str(origin.send.call_args)
 
     @pytest.mark.asyncio
-    async def test_remove_role_member_higher_than_bot(self):
+    async def test_remove_role_member_higher_than_bot_still_succeeds(self):
+        """Mirror of the add-role case: the target's top role must not block
+        removing a below-bot role — Discord only gates on the role being
+        modified (see cmd_add_role's hierarchy note)."""
         from cogs.ai_core.commands.server_commands import cmd_remove_role
 
         role = MagicMock(spec=discord.Role)
@@ -2038,7 +2050,8 @@ class TestRemoveRoleFull:
         member = MagicMock(spec=discord.Member)
         member.display_name = "U"
         member.top_role = MagicMock()
-        member.top_role.position = 50
+        member.top_role.position = 50  # higher than bot — must NOT block
+        member.remove_roles = AsyncMock()
         bot = MagicMock()
         bot.top_role = MagicMock()
         bot.top_role.position = 10
@@ -2051,7 +2064,8 @@ class TestRemoveRoleFull:
 
         with patch("cogs.ai_core.commands.server_commands.find_member", return_value=member):
             await cmd_remove_role(guild, origin, None, ["U", "R"])
-        assert "สูงกว่าหรือเทียบเท่า" in str(origin.send.call_args)
+        member.remove_roles.assert_awaited_once_with(role)
+        assert "เรียบร้อยแล้ว" in str(origin.send.call_args)
 
     @pytest.mark.asyncio
     async def test_remove_role_forbidden(self):

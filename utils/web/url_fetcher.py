@@ -178,6 +178,81 @@ MAX_CONTENT_LENGTH = 4500
 # Maximum response body size (bytes) to prevent memory exhaustion
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5 MB
 
+
+async def _read_capped(content: aiohttp.StreamReader, cap: int) -> bytes:
+    """Read the body until ``cap`` bytes are exceeded or EOF (returns ≤ cap+1).
+
+    aiohttp's ``StreamReader.read(n)`` reads UP TO n bytes — it returns as
+    soon as the internal buffer is non-empty (often a single ~64 KiB
+    flow-control window; verified in the installed aiohttp 3.14.1
+    streams.py), so a single ``read(cap + 1)`` call silently truncated any
+    body larger than one buffered window AND made the >cap rejection branch
+    unreachable for bodies served without Content-Length. Loop until the cap
+    is breached (one extra byte distinguishes overflow from exactly-at-cap)
+    or the stream ends.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while total <= cap:
+        chunk = await content.read(cap + 1 - total)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
+
+
+def _extract_html_text(html: str, url: str) -> tuple[str, str]:
+    """Parse HTML and extract (title, cleaned main text). Sync — run via
+    ``asyncio.to_thread``: BS4 tree construction plus a full-tree
+    ``get_text`` on a body near the 5 MB cap is seconds of pure-Python work,
+    and running it inline froze the entire event loop (all guilds) for that
+    window — logic.py triggers up to two of these per user message."""
+    # Prefer ``lxml`` for speed, fall back to the stdlib ``html.parser`` if
+    # lxml isn't installed — without the fallback, FeatureNotFound bubbled up
+    # as an opaque error and the whole fetch failed.
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except FeatureNotFound:
+        soup = BeautifulSoup(html, "html.parser")
+
+    # ``get_text(strip=True)`` on a present-but-empty <title></title> returns
+    # "" — fall back to the URL whenever the extracted title is falsy.
+    title_tag = soup.find("title")
+    title = title_tag.get_text(strip=True) if title_tag else ""
+    title = title or url
+
+    # Remove script, style, nav, footer elements
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+        tag.decompose()
+
+    # Try to find main content containers first
+    main_content = None
+    for selector in [
+        "article",
+        "main",
+        '[role="main"]',
+        ".content",
+        "#content",
+        ".post-content",
+    ]:
+        element = soup.select_one(selector)
+        if element:
+            main_content = element.get_text(separator="\n", strip=True)
+            break
+
+    # Fallback to body
+    if not main_content:
+        body = soup.find("body")
+        if body:
+            main_content = body.get_text(separator="\n", strip=True)
+        else:
+            main_content = soup.get_text(separator="\n", strip=True)
+
+    # Clean up whitespace
+    lines = [line.strip() for line in main_content.split("\n") if line.strip()]
+    return title, "\n".join(lines)
+
 # Request timeout in seconds (from centralized constants)
 REQUEST_TIMEOUT = HTTP_REQUEST_TIMEOUT
 
@@ -502,7 +577,6 @@ Default Branch: {data.get("default_branch", "main")}
                                 allow_redirects=False,
                             ) as readme_resp:
                                 if readme_resp.status == 200:
-                                    readme_text = await readme_resp.text()
                                     # Guard the slice — if ``content`` is
                                     # already >= MAX_CONTENT_LENGTH the
                                     # subtraction goes negative and Python's
@@ -510,6 +584,19 @@ Default Branch: {data.get("default_branch", "main")}
                                     # of returning empty. ``max(0, ...)``
                                     # gives the empty-slice semantics we want.
                                     remaining = max(0, MAX_CONTENT_LENGTH - len(content))
+                                    # Cap the RAW read: the /readme endpoint
+                                    # with Accept: raw serves files up to
+                                    # 100 MB, and ``.text()`` buffered the
+                                    # whole body (bytes + decoded str ≈ 2x)
+                                    # before the slice could trim it — a
+                                    # repeatable tens-of-MB memory spike from
+                                    # a single crafted repo link. remaining*4
+                                    # covers the UTF-8 worst case.
+                                    readme_raw = await _read_capped(
+                                        readme_resp.content,
+                                        min(MAX_RESPONSE_SIZE, remaining * 4),
+                                    )
+                                    readme_text = readme_raw.decode("utf-8", errors="replace")
                                     content += f"\n--- README ---\n{readme_text[:remaining]}"
 
                             result_content = content[:MAX_CONTENT_LENGTH]
@@ -600,7 +687,7 @@ Default Branch: {data.get("default_branch", "main")}
             # the limit is distinguishable from one exactly at it — when the
             # server sent no/incorrect Content-Length, reject rather than
             # silently parse a truncated half-document.
-            raw_bytes = await final_response.content.read(MAX_RESPONSE_SIZE + 1)
+            raw_bytes = await _read_capped(final_response.content, MAX_RESPONSE_SIZE)
             if len(raw_bytes) > MAX_RESPONSE_SIZE:
                 logger.warning(
                     "URL content exceeded %d bytes (streamed, no/!Content-Length): %s",
@@ -640,56 +727,8 @@ Default Branch: {data.get("default_branch", "main")}
                 # Fallback to latin-1 which accepts all byte values
                 html = raw_bytes.decode("latin-1", errors="replace")
 
-            # Parse HTML. Prefer ``lxml`` for speed, fall back to the
-            # stdlib ``html.parser`` if lxml isn't installed in the
-            # deployment env. Without the fallback, ``FeatureNotFound``
-            # bubbled up as an opaque error and the whole URL fetch
-            # failed instead of degrading to slower-but-working parsing.
-            try:
-                soup = BeautifulSoup(html, "lxml")
-            except FeatureNotFound:
-                soup = BeautifulSoup(html, "html.parser")
-
-            # Get title. ``get_text(strip=True)`` on a present-but-empty
-            # ``<title></title>`` returns ``""`` which the previous code
-            # accepted — leaving the embed with an empty title. Fall back
-            # to the URL whenever the extracted title is falsy.
-            title_tag = soup.find("title")
-            title = title_tag.get_text(strip=True) if title_tag else ""
-            title = title or url
-
-            # Remove script, style, nav, footer elements
-            for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
-                tag.decompose()
-
-            # Try to find main content
-            main_content = None
-
-            # Look for main content containers
-            for selector in [
-                "article",
-                "main",
-                '[role="main"]',
-                ".content",
-                "#content",
-                ".post-content",
-            ]:
-                element = soup.select_one(selector)
-                if element:
-                    main_content = element.get_text(separator="\n", strip=True)
-                    break
-
-            # Fallback to body
-            if not main_content:
-                body = soup.find("body")
-                if body:
-                    main_content = body.get_text(separator="\n", strip=True)
-                else:
-                    main_content = soup.get_text(separator="\n", strip=True)
-
-            # Clean up whitespace
-            lines = [line.strip() for line in main_content.split("\n") if line.strip()]
-            cleaned_content = "\n".join(lines)
+            # Parse + extract OFF the event loop — see _extract_html_text.
+            title, cleaned_content = await asyncio.to_thread(_extract_html_text, html, url)
 
             # Truncate if too long
             if len(cleaned_content) > MAX_CONTENT_LENGTH:

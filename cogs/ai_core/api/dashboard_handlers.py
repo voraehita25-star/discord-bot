@@ -37,6 +37,20 @@ MAX_EDIT_CONTENT_LENGTH = 200_000
 # serialization stall negligible.
 MAX_HISTORY_RESPONSE_CHARS = 20_000_000
 
+
+def _dumps_utf8(obj: Any) -> str:
+    """json.dumps with ensure_ascii=False for the big-payload sends.
+
+    aiohttp's default ``json.dumps`` escapes every non-ASCII char into a
+    6-char ``\\uXXXX`` sequence, so a Thai-heavy payload that passes the
+    20M-char budget above could still serialize to >50M chars on the wire and
+    be silently dropped by the client (ws-client.ts measures the raw frame
+    text against MAX_MESSAGE_LENGTH). With ensure_ascii=False the frame length
+    stays ≈ the budgeted char count (WebSocket text frames are UTF-8 anyway),
+    and as a bonus Thai history payloads shrink ~6x.
+    """
+    return json.dumps(obj, ensure_ascii=False)
+
 # Unicode bidirectional override marks that ``str.isprintable`` returns
 # True for (U+200E/U+200F LRM/RLM, U+202A-U+202E LRE/RLE/PDF/LRO/RLO,
 # U+2066-U+2069 LRI/RLI/FSI/PDI). When rendered in a conversation title
@@ -111,10 +125,22 @@ def _get_regen_lock(key: str) -> asyncio.Lock:
         # insertion-ordered in CPython 3.7+, so ``next(iter(...))``
         # gives us the LRU candidate. Skip eviction if its lock is
         # held — releasing a held lock by GC would orphan waiters.
+        # ``.locked()`` alone is NOT enough: right after release() there is
+        # a window where locked() is False but a woken waiter hasn't resumed
+        # yet — evicting then orphans that waiter and a later setdefault
+        # mints a second lock for the same conversation, letting two edit
+        # bodies run concurrently. Reuse the CLI module's waiter probe
+        # (lazy import, matching this module's other imports from it).
         if len(_REGEN_LOCKS) >= _REGEN_LOCKS_MAX:
+            from .dashboard_chat_claude_cli import _lock_has_pending_waiters
+
             for candidate_key in list(_REGEN_LOCKS.keys()):
                 candidate = _REGEN_LOCKS.get(candidate_key)
-                if candidate is not None and not candidate.locked():
+                if (
+                    candidate is not None
+                    and not candidate.locked()
+                    and not _lock_has_pending_waiters(candidate)
+                ):
                     _REGEN_LOCKS.pop(candidate_key, None)
                     break
         lock = _REGEN_LOCKS.setdefault(key, asyncio.Lock())
@@ -207,6 +233,14 @@ async def handle_load_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
         truncated = False
         for msg in reversed(messages):
             size = len(msg.get("content") or "") + len(msg.get("thinking") or "")
+            # Base64 image data-URLs ride along in the same frame and dominate
+            # the wire size for image-heavy conversations (10MB decoded ≈ 13.3M
+            # chars encoded, per message) — they MUST count against the budget
+            # or the frame silently exceeds the client's 50MB drop cap and the
+            # conversation permanently fails to open.
+            for _img in msg.get("images") or []:
+                if isinstance(_img, str):
+                    size += len(_img)
             if budgeted and budget - size < 0:
                 truncated = True
                 break
@@ -239,7 +273,7 @@ async def handle_load_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
         }
         if truncated:
             payload["truncated"] = True
-        await ws.send_json(payload)
+        await ws.send_json(payload, dumps=_dumps_utf8)
     except Exception:
         logger.exception("WebSocket handler error")
         await ws.send_json(
@@ -463,7 +497,8 @@ async def handle_export_conversation(ws: WebSocketResponse, data: dict[str, Any]
                 "id": conversation_id,
                 "format": export_format,
                 "data": export_data,
-            }
+            },
+            dumps=_dumps_utf8,
         )
     except Exception:
         logger.exception("WebSocket handler error")
@@ -1539,6 +1574,20 @@ async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> No
             # (NFKC + control-char strip + prompt-injection filter) so the value
             # can't carry injection directives into the model context.
             sanitized_prefs = _sanitize_profile_field(raw_prefs, max_length=500)
+            # Mirror the dict branch's all-values-dropped guard: a NON-empty
+            # string the sanitizer reduced to nothing would flow as None into
+            # save_dashboard_user_profile and overwrite the stored preferences
+            # with NULL under a success ack. An explicitly empty string is a
+            # legitimate clear and falls through.
+            if raw_prefs and not sanitized_prefs:
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "INVALID_ARG",
+                        "message": "preferences contains no usable values",
+                    }
+                )
+                return
         elif isinstance(raw_prefs, dict):
             # Defensive path: sanitize each known value type, then serialise to a
             # JSON string (the column is TEXT — a raw dict can't be bound).
@@ -1915,7 +1964,7 @@ async def handle_load_ai_history(ws: WebSocketResponse, data: dict[str, Any]) ->
             # The frontend stops offering "Load all" when the server itself
             # truncated — a bigger limit could not deliver more rows.
             payload["truncated"] = True
-        await ws.send_json(payload)
+        await ws.send_json(payload, dumps=_dumps_utf8)
     except Exception:
         logger.exception("WebSocket handler error")
         await ws.send_json(

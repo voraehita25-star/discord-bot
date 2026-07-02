@@ -484,8 +484,10 @@ export class HistoryManager {
         // the pending mutation (re-enable Save / the delete button, keep any
         // typed text). Re-sending afterwards is idempotent. Deliberately
         // CODELESS: a reconnect is transient, so an orphaned undo keeps its
-        // stack entry for a retry.
-        this.onError();
+        // stack entry for a retry. Calls unstickMutation() DIRECTLY (not
+        // onError): onError's failed-load recovery would clear the queued
+        // pendingChannelLoad this method is about to flush.
+        this.unstickMutation();
         if (this.pendingChannelsList) {
             this.pendingChannelsList = false;
             this.callbacks.send({ type: 'list_ai_channels' });
@@ -519,6 +521,37 @@ export class HistoryManager {
      * mutation and keep the user's text.
      */
     onError(code?: string): void {
+        if (!this.editInFlight) {
+            // No mutation in flight — but a channel load may be. A load
+            // answered by an error envelope (INVALID_ID / DB_UNAVAILABLE /
+            // INTERNAL_ERROR from handle_load_ai_history, or the WS rate
+            // limiter rejecting load_ai_history) previously left the pane on
+            // the loading spinner forever: nothing cleared `loading` /
+            // `pendingChannelLoadId`, which also kept edit/delete/undo gated
+            // and made refresh() skip the message-pane reload. The only
+            // recovery was the undiscoverable re-click of the channel row.
+            // (onConnected() bypasses this branch via unstickMutation() so a
+            // reconnect never cancels the queued offline load it flushes.)
+            if (this.pendingChannelLoadId !== null) {
+                this.pendingChannelLoadId = null;
+                this.pendingChannelLoad = null;
+                this.loading = false;
+                const container = document.getElementById('ai-history-messages');
+                if (container) {
+                    container.innerHTML =
+                        '<p class="no-data">Load failed — click the channel to retry.</p>';
+                }
+                this.renderLoadAll();
+                this.renderUndo();
+            }
+            return;
+        }
+        this.unstickMutation(code);
+    }
+
+    /** Unstick a pending edit/delete mutation (see onError). Extracted so
+     *  onConnected() can run it without onError's failed-load recovery. */
+    private unstickMutation(code?: string): void {
         if (!this.editInFlight) return;
         this.editInFlight = false;
         // A real history rejection (it carries a rejection code) can no longer

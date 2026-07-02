@@ -352,7 +352,12 @@ class _AiToolsIpc:
                 return "Failed to save memory (storage error).", True
             return f"Remembered: {content}", False
         # recall_memory
-        query = str(args.get("query", "")).strip().lower()
+        # Non-string query (models emit explicit JSON null for optional
+        # params) must mean "unfiltered recall" — str(None) is the literal
+        # "None", which became a real substring filter and wrongly reported
+        # "No stored facts match 'none'" even when facts exist.
+        raw_query = args.get("query")
+        query = raw_query.strip().lower() if isinstance(raw_query, str) else ""
         facts = await long_term_memory.get_user_facts(user_id)
         if not facts:
             return "No stored facts for this user yet.", False

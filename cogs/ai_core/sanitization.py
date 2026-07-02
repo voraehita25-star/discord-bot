@@ -111,13 +111,17 @@ def sanitize_message_content(content: str, max_length: int = 2000) -> str:
     content = escape_mentions(content)
 
     # Limit length (after sanitization to preserve escape sequences).
-    # Walk back from the slice point to the last non-combining
-    # codepoint so a Thai cluster (base + tone marks) doesn't get split
+    # Walk back from the slice point to the last non-mark codepoint so a
+    # Thai cluster (base + vowel/tone marks) doesn't get split
     # mid-character — slicing inside the cluster renders as a stray
-    # combining mark on the ``...`` ellipsis. ``unicodedata.combining``
-    # returns 0 for the base char, non-zero for combining marks above
-    # it; rewind until we land on a base. Cap the rewind so a degenerate
-    # input full of combining marks doesn't truncate to nothing.
+    # combining mark on the ``...`` ellipsis. NOTE: the predicate is the
+    # general category (Mn/Mc/Me), NOT ``unicodedata.combining()`` — the
+    # most common Thai marks (MAI HAN-AKAT U+0E31, SARA I..UEE
+    # U+0E34-0E37, MAITAIKHU U+0E47, THANTHAKHAT U+0E4C) are category Mn
+    # with canonical combining class 0, so ``combining()`` returns 0 for
+    # them and the rewind never fired (verified on this venv). Cap the
+    # rewind so a degenerate input full of marks doesn't truncate to
+    # nothing.
     if len(content) > max_length:
         # Clamp the slice point so a pathologically small max_length (< 3)
         # can't make ``cut`` go 0/negative — a negative ``cut`` would slice
@@ -127,7 +131,7 @@ def sanitize_message_content(content: str, max_length: int = 2000) -> str:
             # Degenerate max_length: nothing fits before the ellipsis.
             return "..."
         rewind_limit = max(0, cut - 16)
-        while cut > rewind_limit and unicodedata.combining(content[cut]):
+        while cut > rewind_limit and unicodedata.category(content[cut]) in ("Mn", "Mc", "Me"):
             cut -= 1
         content = content[:cut] + "..."
     return content

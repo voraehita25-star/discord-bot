@@ -149,7 +149,13 @@ class FactExtractor:
             ImportanceLevel.CRITICAL,
         ),
         (
-            r"(?:ชื่อ(?:ของ)?(?:ผม|ฉัน|เรา)(?:คือ|คือว่า)?)\s*(.+?)(?:\s|$)",
+            # Longest-first alternation: regex alternation is ordered, and
+            # "คือว่า" starts with "คือ" — with (?:คือ|คือว่า)? the short
+            # branch always won and nothing downstream ever failed, so the
+            # engine never backtracked into the longer one.
+            # "ชื่อของผมคือว่าสมชาย" therefore captured "ว่าสมชาย" — the
+            # filler "ว่า" glued onto a stored CRITICAL identity fact.
+            r"(?:ชื่อ(?:ของ)?(?:ผม|ฉัน|เรา)(?:คือว่า|คือ)?)\s*(.+?)(?:\s|$)",
             FactCategory.IDENTITY,
             ImportanceLevel.CRITICAL,
         ),

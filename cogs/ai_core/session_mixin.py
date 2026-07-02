@@ -149,18 +149,34 @@ class SessionMixin:
                 history = await load_history(self.bot, channel_id)
                 metadata = await load_metadata(self.bot, channel_id)
 
-            self.chats[channel_id] = {
-                "history": history,
-                "system_instruction": system_instruction,
-                "thinking_enabled": metadata.get("thinking_enabled", True),
-                # Flag whether history came from THE DATABASE so save_history
-                # can refuse to dump the full in-memory history if a later DB
-                # read returns empty. Must be False for JSON-fallback loads —
-                # otherwise the refusal guard permanently blocked both the
-                # JSON→DB migration and persistence of every new message in
-                # legacy JSON channels.
-                "_db_loaded": bool(history) and last_load_was_db(channel_id),
-            }
+            # Re-check membership AFTER the awaits above: callers without the
+            # per-channel processing lock (!thinking, !resend, toggle_thinking)
+            # can race a locked process_chat through this creation path, and
+            # both would see the channel missing. Overwriting the dict the
+            # other task registered orphans it — that task's turn appends land
+            # in the orphan, the canonical session silently misses the
+            # exchange, and a later force-save DELETE+reinsert can durably
+            # wipe the missing turn from the DB. Keep the first-registered
+            # dict and fall through to the common tail below.
+            if channel_id not in self.chats:
+                self.chats[channel_id] = {
+                    "history": history,
+                    "system_instruction": system_instruction,
+                    # RP server force-enables thinking. This rule previously
+                    # lived only in the cached-session branch, so the FIRST
+                    # turn after a restart/eviction ran without extended
+                    # thinking whenever '!thinking off' had been persisted.
+                    "thinking_enabled": (
+                        True if guild_id == GUILD_ID_RP else metadata.get("thinking_enabled", True)
+                    ),
+                    # Flag whether history came from THE DATABASE so save_history
+                    # can refuse to dump the full in-memory history if a later DB
+                    # read returns empty. Must be False for JSON-fallback loads —
+                    # otherwise the refusal guard permanently blocked both the
+                    # JSON→DB migration and persistence of every new message in
+                    # legacy JSON channels.
+                    "_db_loaded": bool(history) and last_load_was_db(channel_id),
+                }
         else:
             # Cached session exists - verify system_instruction is correct for guild
             cached_instruction = self.chats[channel_id].get("system_instruction", "")
@@ -375,9 +391,15 @@ class SessionMixin:
         chat_data = await self.get_chat_session(channel_id, guild_id)
         if chat_data:
             chat_data["thinking_enabled"] = enabled
-            # Re-save session to persist changes
-            await save_history(self.bot, channel_id, chat_data)
-            return True
+            # Persist the change and PROPAGATE the outcome: save_history
+            # returns False on DB errors and on its safety-guard refusal
+            # paths (its docstring says callers must check), in which case
+            # the persisted flag still holds the OLD value and the toggle
+            # silently reverts on the next restart without a successful
+            # follow-up save. The in-memory flag is set either way (the
+            # current session honors the toggle); the caller surfaces the
+            # persistence failure instead of a false success embed.
+            return bool(await save_history(self.bot, channel_id, chat_data))
         return False
 
     def toggle_streaming(self, channel_id: int, enabled: bool) -> bool:

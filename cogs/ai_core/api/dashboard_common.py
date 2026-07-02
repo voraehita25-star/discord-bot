@@ -222,6 +222,16 @@ class LeadingTimestampStripper:
             self._buffer = ""
             self._done = True
             return out
+        # '[' seen but the chars after it can no longer form a timestamp
+        # (the year is 4 digits) \u2014 e.g. a reply legitimately starting with
+        # "[Note] ...". Flush now instead of stalling the first visible
+        # token until _MAX_PROBE chars accumulate.
+        year_part = lstripped[1:5]
+        if year_part and not year_part.isdigit():
+            out = self._buffer
+            self._buffer = ""
+            self._done = True
+            return out
         # Haven't seen enough yet \u2014 keep buffering unless we've waited too long.
         if len(self._buffer) >= self._MAX_PROBE:
             out = self._buffer
@@ -472,12 +482,18 @@ async def build_user_context(
                         # can tell the user which files weren't visible.
                         dropped_filenames.append(filename)
                         continue
+                    # Defang BEFORE measuring against the budget: the defang
+                    # pass INSERTS "[user-text] " into every line matching a
+                    # role marker, so a doc built of short "ai:"/"user:" lines
+                    # can expand ~3x. Truncating first let a snippet sliced to
+                    # the 400K budget inject >1M chars post-defang — exactly
+                    # the untrusted input the hard cap exists to bound.
+                    text = _defang_document_segment(text)
                     snippet = (
                         text
                         if len(text) <= remaining
                         else text[:remaining] + "\n[... truncated in prompt]"
                     )
-                    snippet = _defang_document_segment(snippet)
                     doc_sections.append(f"## {filename}\n{snippet}")
                     running_total += len(snippet)
                 if doc_sections:

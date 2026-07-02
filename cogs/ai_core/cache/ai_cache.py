@@ -711,6 +711,15 @@ class L2SqliteCache:
                         intent=intent,
                         normalized_message=norm_msg,
                         hits=hits,
+                        # Rebuild the adaptive TTL from the persisted hits
+                        # (same formula as _update_adaptive_ttl). Defaulting
+                        # to 1.0 made every warmed entry older than the BASE
+                        # TTL expired-on-arrival: _is_expired() runs BEFORE
+                        # _update_adaptive_ttl() on every get(), so the
+                        # high-hit 8-24h-old entries this hits-DESC warm-up
+                        # preferentially loads were guaranteed misses that
+                        # squatted in L1 until the hourly cleanup.
+                        ttl_multiplier=min(3.0, 1.0 + (hits // 5) * 0.2),
                     )
                     entries.append((key, entry))
                 return entries

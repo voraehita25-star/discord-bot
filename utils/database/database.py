@@ -1230,9 +1230,19 @@ class Database:
                 try:
                     await asyncio.wait_for(conn.execute("SELECT 1"), timeout=5)
                 except Exception:
-                    # Connection is stale, close and create a new one
+                    # Connection is stale, close and create a new one. The
+                    # close MUST be bounded too: aiosqlite serializes every
+                    # operation — close() included — onto the connection's
+                    # single worker thread, so if that thread is wedged inside
+                    # the probe's sqlite call (the exact stall the 5s probe
+                    # timeout targets), an unbounded ``await conn.close()``
+                    # queues behind it forever — holding this caller's
+                    # semaphore slot (and, via get_write_connection, the
+                    # GLOBAL write lock) indefinitely. On timeout, abandon the
+                    # handle: its worker thread dies with the process, and the
+                    # counter decrement below keeps pool accounting honest.
                     try:
-                        await conn.close()
+                        await asyncio.wait_for(conn.close(), timeout=5)
                     except Exception:
                         pass
                     self._connection_count -= (
@@ -1479,16 +1489,23 @@ class Database:
         """
         logger.warning("🔄 Reinitializing database connection pool...")
 
-        # Wait for existing connections to close (with timeout)
+        # Wait for IN-FLIGHT requests to finish (with timeout). This must
+        # test _inflight_count, not _connection_count: the latter counts all
+        # OPEN handles including idle pooled ones (it only decrements on the
+        # close paths, never on pool return), so after the first query it
+        # stays >= 1 forever and every recovery slept the full 10s — and
+        # then logged a misleading "still active" warning — even when nothing
+        # was in flight. The class maintains _inflight_count for exactly this
+        # purpose.
         max_wait = 10  # seconds
         waited: float = 0
-        while self._connection_count > 0 and waited < max_wait:
+        while self._inflight_count > 0 and waited < max_wait:
             await asyncio.sleep(0.5)
             waited += 0.5
 
-        if self._connection_count > 0:
+        if self._inflight_count > 0:
             logger.warning(
-                "⚠️ %d connections still active during reinitialization", self._connection_count
+                "⚠️ %d requests still in flight during reinitialization", self._inflight_count
             )
 
         # Drain and close all pooled connections to prevent stale connections

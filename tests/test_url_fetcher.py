@@ -725,7 +725,11 @@ def _make_resp(status=200, headers=None, body=b"", encoding="utf-8", url="http:/
     resp.headers = headers or {}
     resp.url = yarl.URL(url)
     content = MagicMock()
-    content.read = AsyncMock(return_value=body)
+    # The production reader (_read_capped) LOOPS until EOF because aiohttp's
+    # read(n) is a short-read API — the mock must therefore terminate with
+    # b"" like a real stream; a fixed return_value would replay the body
+    # forever and every fetch would trip the size cap.
+    content.read = AsyncMock(side_effect=[body, b"", b""])
     resp.content = content
     resp.get_encoding = MagicMock(return_value=encoding)
     resp.close = MagicMock()
@@ -744,6 +748,12 @@ def _make_cm_resp(status=200, headers=None, body=b"", json_data=None):
     resp.headers = headers or {}
     resp.json = AsyncMock(return_value=json_data or {})
     resp.text = AsyncMock(return_value=body.decode("utf-8", "replace"))
+    # The README branch now streams via content.read() with a hard cap
+    # (the /readme raw endpoint serves up to 100 MB; .text() buffered it
+    # all) — mirror a real stream: body once, then EOF.
+    content = MagicMock()
+    content.read = AsyncMock(side_effect=[body, b"", b""])
+    resp.content = content
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=resp)
     cm.__aexit__ = AsyncMock(return_value=False)

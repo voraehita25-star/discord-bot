@@ -471,6 +471,9 @@ async def detect_search_intent(
         True if web search is needed, False otherwise.
     """
     try:
+        # Pick up any endpoint switch since the caller cached its client —
+        # the cached object may already be closed by the failover manager.
+        client = _failover_current_client(client)
         # Wrap the user message in a fenced block to make it harder for
         # injected instructions inside the message to escape the quoted region
         # and override the classification rules below. We replace several
@@ -530,7 +533,11 @@ Reply ONE word: SEARCH or NO_SEARCH"""
 
         return needs_search
 
-    except (ValueError, TypeError, anthropic.APIError, RuntimeError, TimeoutError):
+    except (ValueError, TypeError, anthropic.APIError, RuntimeError, TimeoutError, OSError):
+        # OSError: the SDK surfaces raw network-stack failures (DNS, connection
+        # refused, socket reset) unwrapped — see api_failover._should_failover.
+        # Without it a socket reset crashed the classifier instead of degrading
+        # to "no search" like every other error here.
         logger.exception("🔎 Search intent detection FAILED")
         return False  # Default to no search on error (a stall degrades to no search)
 
@@ -695,6 +702,21 @@ def _failover_current_client(default: anthropic.AsyncAnthropic) -> anthropic.Asy
     return default
 
 
+def _empty_response_error(message: str) -> Exception:
+    """Build the failover-worthy sentinel for a 200-but-empty response.
+
+    Lazy import mirrors the other failover helpers (no module-level import
+    → no cycle); falls back to RuntimeError when failover is unavailable,
+    which _should_failover ignores — same net behavior as before.
+    """
+    try:
+        from .api_failover import EmptyResponseError
+
+        return EmptyResponseError(message)
+    except Exception:
+        return RuntimeError(message)
+
+
 async def call_claude_api_streaming(
     client: anthropic.AsyncAnthropic,
     target_model: str,
@@ -767,6 +789,13 @@ async def call_claude_api_streaming(
         return "", "", []
 
     while stream_attempt <= _CLAUDE_MAX_STREAM_RETRIES:
+        # Re-resolve the active client on EVERY attempt, not only after a
+        # switch recorded inside this call: another request, a health probe,
+        # or a manual dashboard switch may have popped (and, 130s later,
+        # CLOSED) the caller's cached client while it sat in
+        # ChatManager.self.client — retrying on that object mis-charges the
+        # new endpoint's health and can never succeed.
+        client = _failover_current_client(client)
         current_model_text = ""
         current_chunks_received = 0
         last_update_time = 0.0
@@ -867,7 +896,7 @@ async def call_claude_api_streaming(
                 if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
                     gemini_circuit.record_failure()
                 if await _failover_record_failure(
-                    RuntimeError("Claude streaming returned empty content")
+                    _empty_response_error("Claude streaming returned empty content")
                 ):
                     client = _failover_current_client(client)
                 # Keep placeholder_msg alive: this branch falls through to the
@@ -1084,6 +1113,11 @@ async def call_claude_api(
             logger.info("⏹️ API call cancelled for channel %s", channel_id)
             return "", "", []
 
+        # Re-resolve the active client on EVERY attempt (see the streaming
+        # loop for the full rationale): the caller's cached client may have
+        # been popped and closed by an endpoint switch outside this call.
+        client = _failover_current_client(client)
+
         try:
             # Check circuit breaker
             if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit and not gemini_circuit.can_execute():
@@ -1204,6 +1238,12 @@ async def call_claude_api(
                     gemini_circuit.record_failure()
                 if ERROR_RECOVERY_AVAILABLE and service_monitor:
                     service_monitor.record_failure("claude_api", "empty_response")
+                # Also feed the failover manager (the circuit/service monitor
+                # alone never switch endpoints) with the dedicated sentinel so
+                # a persistently-empty endpoint actually drives a switch.
+                await _failover_record_failure(
+                    _empty_response_error("Claude content retries exhausted (empty response)")
+                )
                 break
 
         except anthropic.RateLimitError as e:

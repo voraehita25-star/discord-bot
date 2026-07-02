@@ -17,7 +17,7 @@ class FakeWS:
     def __init__(self):
         self.sent: list[dict] = []
 
-    async def send_json(self, data: dict) -> None:
+    async def send_json(self, data: dict, **kwargs) -> None:  # kwargs: aiohttp accepts dumps=
         self.sent.append(data)
 
     def last(self) -> dict:

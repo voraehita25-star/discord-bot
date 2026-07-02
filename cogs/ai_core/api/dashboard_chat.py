@@ -393,10 +393,13 @@ async def handle_chat_message(
     # only (see resolve_unrestricted_system_text); CLAUDE2.md's Claude-specific
     # mechanics don't map onto Gemini.
     unrestricted_injection = ""
-    allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").lower() in (
+    # Parse identically to the Claude/CLI backends (.strip() + "on") so the same
+    # env value enables unrestricted mode regardless of which backend is active.
+    allow_unrestricted = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").strip().lower() in (
         "1",
         "true",
         "yes",
+        "on",
     )
     effective_unrestricted = unrestricted_mode and allow_unrestricted
     if unrestricted_mode and not allow_unrestricted:
@@ -919,6 +922,21 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                     mode=mode_str,
                 )
 
+                # Provider routing is per-message: the user can flip the
+                # dashboard back to Claude on the very next turn, and the CLI
+                # backend would --resume its cached session — which never saw
+                # this Gemini exchange — silently dropping these turns from
+                # Claude's context with nothing detecting the divergence.
+                # Wipe the persisted CLI session so the next Claude turn
+                # rebuilds from the (complete) DB history, same as the AI-edit
+                # and manual edit/delete paths already do.
+                try:
+                    from .dashboard_chat_claude_cli import delete_session_file
+
+                    await delete_session_file(conversation_id)
+                except Exception:
+                    logger.exception("Failed to reset CLI session after Gemini turn")
+
                 # Auto-set title from first user message
                 conv = await db.get_dashboard_conversation(conversation_id)
                 if conv and (not conv.get("title") or conv.get("title") == "New Conversation"):
@@ -1233,8 +1251,11 @@ async def handle_ai_edit_message(
         # Update the message in DB. Pass conversation_id so the UPDATE only
         # matches when the row is in the conversation the AI was editing —
         # prevents an attacker (or a bug) from coercing this path into
-        # rewriting messages in a different conversation.
-        if full_response:
+        # rewriting messages in a different conversation. Also refuse to write
+        # empty/whitespace-only content (mirrors the Claude twin) so a
+        # degenerate model reply can't blank the stored message.
+        final_content = full_response
+        if full_response and full_response.strip():
             try:
                 db = _get_db()
                 await db.update_dashboard_message(
@@ -1254,12 +1275,21 @@ async def handle_ai_edit_message(
                     await delete_session_file(conversation_id)
                 except Exception:
                     logger.exception("Failed to reset CLI session after AI edit")
+        else:
+            if full_response:
+                logger.warning(
+                    "AI edit produced whitespace-only content; keeping original message %s",
+                    target_message_id_int,
+                )
+            # Keep the DB row intact AND echo the original back so the client
+            # doesn't blank the bubble (it renders full_response unconditionally).
+            final_content = original_content
 
         await ws.send_json(
             {
                 "type": "stream_end",
                 "conversation_id": conversation_id,
-                "full_response": full_response,
+                "full_response": final_content,
                 "chunks_count": chunks_count,
                 "is_edit": True,
                 "target_message_id": target_message_id_int,

@@ -408,13 +408,6 @@
     <path d="M5 9 12 16l7-7"/>
   </symbol>
 
-  <!-- i-broadcast — megaphone (announcements/channels alt) -->
-  <symbol id="i-broadcast" viewBox="0 0 24 24">
-    <path d="M4 10v4a1 1 0 0 0 1 1h3l8 4V5L8 9H5a1 1 0 0 0-1 1Z"/>
-    <path d="M8 15v4a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-3"/>
-    <path d="M19 9a4 4 0 0 1 0 6"/>
-  </symbol>
-
 </defs></svg>
     <!-- Toast Container — a persistent polite live region (must exist at load
          to reliably announce dynamically-added toasts to screen readers). -->
@@ -623,7 +616,11 @@
                                     </div>
                                 </div>
                                 <span class="chat-connection-status" id="chat-connection-status" role="status" aria-live="polite"></span>
-                                <div class="context-window-indicator hidden" id="context-window-indicator" title="Context Window Usage">
+                                <!-- progressbar semantics: context-window.ts keeps aria-valuenow
+                                     in sync with the fill % so AT users can read the meter. -->
+                                <div class="context-window-indicator hidden" id="context-window-indicator" title="Context Window Usage"
+                                     role="progressbar" aria-label="Context window usage"
+                                     aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
                                     <div class="context-bar-container">
                                         <div class="context-bar-fill" id="context-bar-fill"></div>
                                     </div>
@@ -659,10 +656,11 @@
                             <!-- Messages Area -->
                             <div class="chat-messages-wrapper">
                                 <!-- Conversation tags bar (#22) — populated by renderConversationTags() -->
-                                <div class="chat-tags-bar" id="chat-tags" aria-label="Conversation tags"></div>
+                                <!-- role="group": aria-label on a bare div is ignored by AT -->
+                                <div class="chat-tags-bar" id="chat-tags" role="group" aria-label="Conversation tags"></div>
                                 <!-- In-conversation search bar (Ctrl+F) -->
                                 <div class="chat-search-bar hidden" id="chat-search-bar" role="search">
-                                    <input type="text" id="chat-search-input" placeholder="Search in conversation…" aria-label="Search in conversation">
+                                    <input type="search" id="chat-search-input" placeholder="Search in conversation…" aria-label="Search in conversation">
                                     <span class="chat-search-count" id="chat-search-count">0 / 0</span>
                                     <button class="btn btn-icon" id="chat-search-prev" title="Previous match" aria-label="Previous match"><svg class="ic" aria-hidden="true"><use href="#i-chevron-up"/></svg></button>
                                     <button class="btn btn-icon" id="chat-search-next" title="Next match" aria-label="Next match"><svg class="ic" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
@@ -989,7 +987,9 @@
                     <h2><svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg> AI Appearance</h2>
                     <p class="settings-hint">Customize how the AI looks in chat.</p>
                     <div class="setting-row">
-                        <label>AI Avatar</label>
+                        <!-- span, not <label>: associated with no control (the file input is
+                             hidden and the buttons are self-labeled) — matches the Theme row -->
+                        <span class="setting-label">AI Avatar</span>
                         <div class="setting-control avatar-control">
                             <div class="avatar-preview ai-avatar-preview" id="ai-avatar-preview">
                                 <!-- 1x1 transparent dataURI prevents the browser's broken-image
@@ -1018,7 +1018,7 @@
                     <h2><svg class="ic" aria-hidden="true"><use href="#i-user"/></svg> Profile</h2>
                     <p class="settings-hint">This information helps AI understand and remember you better.</p>
                     <div class="setting-row">
-                        <label>Profile Picture</label>
+                        <span class="setting-label">Profile Picture</span>
                         <div class="setting-control avatar-control">
                             <div class="avatar-preview" id="avatar-preview">
                                 <img id="avatar-image" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Avatar">
@@ -1158,6 +1158,9 @@
                         <div class="shortcut-item">
                             <kbd>Ctrl + Enter</kbd> <span>Send Message (in Chat)</span>
                         </div>
+                        <div class="shortcut-item">
+                            <kbd>Ctrl + F</kbd> <span>Search in Conversation</span>
+                        </div>
                     </div>
                 </div>
 
@@ -1167,7 +1170,8 @@
                     <p>Version 3.4.14 - Enhanced Edition</p>
                     <p>Built with Tauri + Rust + TypeScript</p>
                     <div class="features-list">
-                        <h4>Features:</h4>
+                        <!-- h3 (was h4): keeps the heading outline contiguous under the card's h2 -->
+                        <h3>Features:</h3>
                         <ul>
                             <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> Toast Notifications</li>
                             <li><svg class="ic" aria-hidden="true"><use href="#i-check"/></svg> Real-time Charts</li>
@@ -1208,6 +1212,7 @@
                     <div class="shortcut-item"><kbd>Ctrl + R</kbd><span>Refresh All Data</span></div>
                     <div class="shortcut-item"><kbd>Ctrl + T</kbd><span>Toggle Theme</span></div>
                     <div class="shortcut-item"><kbd>Ctrl + Enter</kbd><span>Send Message (in Chat)</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl + F</kbd><span>Search in Conversation</span></div>
                     <div class="shortcut-item"><kbd>?</kbd><span>Show this help</span></div>
                     <div class="shortcut-item"><kbd>Esc</kbd><span>Close modal / cancel</span></div>
                 </div>
