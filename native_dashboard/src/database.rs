@@ -386,30 +386,38 @@ impl DatabaseService {
                 // SHOULD never be NULL, but a single malformed/legacy row that
                 // violates that would make a bare `row.get(N)?` return Err and
                 // abort the ENTIRE conversation list (the collect-loop below
-                // propagates the first row error). Fall back to a default so one
-                // bad row degrades to a blank field instead of blanking the
-                // whole list — consistent with the thinking_enabled/is_starred/
-                // created_at/message_count columns already handled this way. The
-                // genuinely nullable columns (title/updated_at/ai_provider) stay
-                // `?`, which already maps SQL NULL -> None without erroring.
+                // used to propagate the first row error). Fall back to a default
+                // so one bad row degrades to a blank field instead of blanking
+                // the whole list. The nullable columns (title/updated_at/
+                // ai_provider) map SQL NULL -> None via Option, and
+                // `.unwrap_or(None)` additionally degrades a WRONG-TYPED value
+                // (SQLite dynamic typing permits e.g. an INTEGER in `title`) to
+                // None instead of erroring the row.
                 Ok(DashboardConversation {
                     id: row.get::<_, String>(0).unwrap_or_default(),
-                    title: row.get(1)?,
+                    title: row.get(1).unwrap_or(None),
                     role_preset: row.get::<_, String>(2).unwrap_or_default(),
                     thinking_enabled: row.get::<_, i64>(3).unwrap_or(0) != 0,
                     is_starred: row.get::<_, i64>(4).unwrap_or(0) != 0,
                     created_at: row.get::<_, String>(5).unwrap_or_default(),
-                    updated_at: row.get(6)?,
-                    ai_provider: row.get(7)?,
+                    updated_at: row.get(6).unwrap_or(None),
+                    ai_provider: row.get(7).unwrap_or(None),
                     message_count: row.get::<_, i64>(8).unwrap_or(0),
                 })
             })
             .map_err(|e| format!("Failed to query dashboard conversations: {}", e))?;
 
+        // Skip (and log) a row that still errors at the rusqlite layer instead
+        // of failing the whole list — one corrupted row must not blank the
+        // conversation sidebar. Matches the get_recent_channels/get_top_users
+        // degrade-not-abort policy.
         for row in rows {
-            conversations.push(
-                row.map_err(|e| format!("Failed to read dashboard conversation row: {}", e))?,
-            );
+            match row {
+                Ok(c) => conversations.push(c),
+                Err(e) => {
+                    eprintln!("WARNING: skipping malformed dashboard conversation row: {}", e);
+                }
+            }
         }
 
         Ok(conversations)
@@ -449,13 +457,13 @@ impl DatabaseService {
             // single NULL/malformed non-nullable column turn into a hard error.
             Ok(DashboardConversation {
                 id: row.get::<_, String>(0).unwrap_or_default(),
-                title: row.get(1)?,
+                title: row.get(1).unwrap_or(None),
                 role_preset: row.get::<_, String>(2).unwrap_or_default(),
                 thinking_enabled: row.get::<_, i64>(3).unwrap_or(0) != 0,
                 is_starred: row.get::<_, i64>(4).unwrap_or(0) != 0,
                 created_at: row.get::<_, String>(5).unwrap_or_default(),
-                updated_at: row.get(6)?,
-                ai_provider: row.get(7)?,
+                updated_at: row.get(6).unwrap_or(None),
+                ai_provider: row.get(7).unwrap_or(None),
                 message_count: row.get::<_, i64>(8).unwrap_or(0),
             })
         }) {
@@ -504,15 +512,23 @@ impl DatabaseService {
                     content: row.get::<_, String>(2).unwrap_or_default(),
                     created_at: row.get::<_, String>(3).unwrap_or_default(),
                     images,
-                    thinking: row.get(5)?,
-                    mode: row.get(6)?,
+                    // Nullable columns: `.unwrap_or(None)` also degrades a
+                    // wrong-typed value to None instead of erroring the row.
+                    thinking: row.get(5).unwrap_or(None),
+                    mode: row.get(6).unwrap_or(None),
                 })
             })
             .map_err(|e| format!("Failed to query dashboard messages: {}", e))?;
 
+        // Degrade-not-abort (mirrors the conversation-list loop): one corrupted
+        // message row is skipped with a warning instead of erroring the whole
+        // conversation detail out of the UI.
         let mut messages = Vec::new();
         for row in rows {
-            messages.push(row.map_err(|e| format!("Failed to read dashboard message row: {}", e))?);
+            match row {
+                Ok(m) => messages.push(m),
+                Err(e) => eprintln!("WARNING: skipping malformed dashboard message row: {}", e),
+            }
         }
 
         Ok(Some(DashboardConversationDetail {

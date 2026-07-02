@@ -156,9 +156,12 @@ test.describe('Dashboard UI deep inspection', () => {
         await input.fill('test message');
         await expect(input).toHaveValue('test message');
 
-        // Verify isStreaming guard works on rapid double-Enter
+        // Verify the isStreaming contract is exposed and idle. chatManager must
+        // EXIST (fixture contract) and the flag must be literally false —
+        // toBeFalsy() also passed on undefined, i.e. with no chatManager at all.
+        // (The actual double-send race is exercised by C3 in dashboard-smoke.)
         const before = await page.evaluate(() => (window as unknown as { chatManager?: { isStreaming: boolean } }).chatManager?.isStreaming);
-        expect(before).toBeFalsy();
+        expect(before).toBe(false);
 
         // Conversation list should at least render its container
         const convList = page.locator('#conversation-list');
@@ -174,6 +177,25 @@ test.describe('Dashboard UI deep inspection', () => {
 
     test('avatar crop modal: open, ESC closes, no listener leak', async ({ page }) => {
         attachLogging(page, 'avatar-crop');
+        // Count document-level 'keydown' listener registrations so the
+        // "no listener leak" claim below is actually falsifiable — the old
+        // version only asserted the modal ends hidden, which passes identically
+        // WITH a leak (5 stacked handlers each remove the same .active class).
+        await page.addInitScript(() => {
+            let keydownCount = 0;
+            (window as unknown as { __docKeydownCount: () => number }).__docKeydownCount =
+                () => keydownCount;
+            const origAdd = document.addEventListener.bind(document);
+            const origRemove = document.removeEventListener.bind(document);
+            document.addEventListener = ((type: string, ...rest: unknown[]) => {
+                if (type === 'keydown') keydownCount++;
+                return (origAdd as (...a: unknown[]) => unknown)(type, ...rest);
+            }) as typeof document.addEventListener;
+            document.removeEventListener = ((type: string, ...rest: unknown[]) => {
+                if (type === 'keydown') keydownCount--;
+                return (origRemove as (...a: unknown[]) => unknown)(type, ...rest);
+            }) as typeof document.removeEventListener;
+        });
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
 
@@ -196,15 +218,21 @@ test.describe('Dashboard UI deep inspection', () => {
         await page.waitForTimeout(200);
         await expect(modal).toBeHidden();
 
-        // Re-open + close 5 times. If the document keydown / mouse listeners
-        // leaked across opens, each cycle would stack handlers — verify by
-        // counting active modal class transitions cleanly.
+        // Re-open + close 5 times and assert the NET document keydown listener
+        // count doesn't grow — a per-open addEventListener without the matching
+        // removeEventListener would add +1 per cycle here (the instrumentation
+        // is installed by the addInitScript above, before any page script ran).
+        const baseline = await page.evaluate(() =>
+            (window as unknown as { __docKeydownCount: () => number }).__docKeydownCount());
         for (let i = 0; i < 5; i++) {
             await openModal();
             await page.keyboard.press('Escape');
             await page.waitForTimeout(50);
         }
         await expect(modal).toBeHidden();
+        const after = await page.evaluate(() =>
+            (window as unknown as { __docKeydownCount: () => number }).__docKeydownCount());
+        expect(after, 'document keydown listeners leaked across modal open/close cycles').toBe(baseline);
     });
 
     test('responsive: no horizontal scroll at 1280, 1024, 800', async ({ page }) => {

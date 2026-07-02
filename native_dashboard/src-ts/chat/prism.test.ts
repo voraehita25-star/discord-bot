@@ -206,7 +206,7 @@ describe('loadPrismLanguage — SRI on lazily injected <script> (B8/OPP-06)', ()
     it('sets integrity on every injected dependency script too', async () => {
         // typescript → javascript → clike: each injected bundle must be pinned.
         await loadPrismLanguage('typescript');
-        const scripts = appendSpy!.mock.calls.map(c => c[0] as HTMLScriptElement);
+        const scripts = appendSpy!.mock.calls.map((c: unknown[]) => c[0] as HTMLScriptElement);
         expect(scripts.length).toBeGreaterThanOrEqual(2);
         for (const s of scripts) {
             expect(s.integrity).toMatch(/^sha384-/);

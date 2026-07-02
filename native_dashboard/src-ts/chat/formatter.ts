@@ -262,7 +262,7 @@ function formatMessageUncached(content: string): string {
     // [a-zA-Z0-9_-] so it can't break out of the class= / <span> attribute.
     const codeBlocks: string[] = [];
     const codePlaceholder = '\x01CODE_BLOCK_';
-    content = content.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+    content = content.replace(/```([\w+#.-]*)\n([\s\S]*?)```/g, (_match, lang, code) => {
         const idx = codeBlocks.length;
         const safeLang = String(lang || '').replace(/[^a-zA-Z0-9_-]/g, '');
         const langLabel = safeLang || 'code';
@@ -369,13 +369,17 @@ function formatMessageUncached(content: string): string {
     // `"`/`<`/`>` in the URL is already an entity and can't break the attribute.
     html = applyLinks(html);
 
-    // Headings (# to ######) — must be at start of line.
-    html = html.replace(/^#{6}\s+(.+)$/gm, '<h6 class="md-heading">$1</h6>');
-    html = html.replace(/^#{5}\s+(.+)$/gm, '<h5 class="md-heading">$1</h5>');
-    html = html.replace(/^#{4}\s+(.+)$/gm, '<h4 class="md-heading">$1</h4>');
-    html = html.replace(/^#{3}\s+(.+)$/gm, '<h3 class="md-heading">$1</h3>');
-    html = html.replace(/^#{2}\s+(.+)$/gm, '<h2 class="md-heading">$1</h2>');
-    html = html.replace(/^#{1}\s+(.+)$/gm, '<h1 class="md-heading">$1</h1>');
+    // Headings (# to ######) — must be at start of line. Use [ \t]+ (not \s+)
+    // between the marker and the text: \s matches a newline, so a bare "##" line
+    // would let \s+ span the line break and promote the FOLLOWING line into a
+    // heading (CommonMark treats a lone "#" line as an empty heading, not a
+    // promotion). Requiring horizontal whitespace keeps the marker on its line.
+    html = html.replace(/^#{6}[ \t]+(.+)$/gm, '<h6 class="md-heading">$1</h6>');
+    html = html.replace(/^#{5}[ \t]+(.+)$/gm, '<h5 class="md-heading">$1</h5>');
+    html = html.replace(/^#{4}[ \t]+(.+)$/gm, '<h4 class="md-heading">$1</h4>');
+    html = html.replace(/^#{3}[ \t]+(.+)$/gm, '<h3 class="md-heading">$1</h3>');
+    html = html.replace(/^#{2}[ \t]+(.+)$/gm, '<h2 class="md-heading">$1</h2>');
+    html = html.replace(/^#{1}[ \t]+(.+)$/gm, '<h1 class="md-heading">$1</h1>');
     // Horizontal rule (--- or ___ or *** on its own line).
     html = html.replace(/^(?:---+|___+|\*\*\*+)\s*$/gm, '<hr class="md-hr">');
     // Blockquotes (> at start of line — already &gt; after escapeHtml).

@@ -63,14 +63,12 @@ html[data-theme="light"] .btn:hover {
     box-shadow: var(--shadow-sm);
 }
 
-html[data-theme="light"] .btn-primary {
-    background: linear-gradient(135deg, #16a34a, #22c55e);
-}
-
-html[data-theme="light"] .btn-primary:hover {
-    background: linear-gradient(135deg, #15803d, #16a34a);
-}
-
+/* NOTE: the light-theme .btn-primary rest + hover fill is owned by the
+   brand-gradient rule further down (search "unify the primary CTA with the
+   brand gradient"). The one-off green rules that used to live here were stale —
+   the resting fill was overridden by that later teal rule, but the green :hover
+   (higher specificity) still won and flashed off-brand green on hover. Removed
+   so hover falls through to the teal brand grad + brightness. */
 html[data-theme="light"] .btn-danger {
     background: linear-gradient(135deg, #dc2626, #ef4444);
 }
@@ -85,6 +83,17 @@ html[data-theme="light"] .btn-warning {
 
 html[data-theme="light"] .btn-warning:hover {
     background: linear-gradient(135deg, #c2410c, #ea580c);
+}
+
+/* Destructive / warning CTAs keep white ink on their saturated red/orange
+   fills. The generic light `.btn { color: var(--text-primary) }` above (same
+   specificity, earlier in source) would otherwise paint near-black text —
+   #081522 on #dc2626 is 3.8:1 and on the #b91c1c hover only 2.8:1, both
+   sub-AA — right where the user hovers a delete/stop action. White on these
+   stops is ≥4.5:1. */
+html[data-theme="light"] .btn-danger,
+html[data-theme="light"] .btn-warning {
+    color: #fff;
 }
 
 html[data-theme="light"] .btn-secondary {
@@ -284,8 +293,12 @@ body {
     top: -48px;
     z-index: 1000;
     padding: 8px 16px;
-    background: var(--accent-purple, #a855f7);
-    color: #fff;
+    /* Cyan accent + page-bg ink reads AA in BOTH themes (dark: #060910 on
+       #3df5ff ≈ 15:1; light: #e9f1f7 on #075f73 ≈ 7:1). The previous white-on-
+       --accent-purple was 2.47:1 in dark theme (azure #6aa6ff) — a WCAG 1.4.3
+       fail on the very first focusable control on the page. */
+    background: var(--accent-cyan, #3df5ff);
+    color: var(--bg-primary, #060910);
     border-radius: 8px;
     text-decoration: none;
     font-weight: 600;
@@ -812,6 +825,17 @@ h2 {
 .api-health-result .healthy { color: #22c55e; }
 .api-health-result .unhealthy { color: #ef4444; }
 
+/* Light theme: the endpoint chips + health panel hardcode a dark-navy wash
+   (rgba(20,10,40,.6)) sized for the carbon dark surface. On the white
+   Blueprint card that composites to a muddy grey and drops .ep-status text
+   (var(--text-secondary)) to ~1.9:1. Repoint to the token surface so the chips
+   read as light cards and the status text clears AA. */
+html[data-theme="light"] .api-endpoint-item,
+html[data-theme="light"] .api-health-result {
+    background: var(--surface-2);
+    border-color: var(--border-color);
+}
+
 /* Renamed from a duplicate `fadeIn` at line ~811 — the second definition was
  * overriding the global page fade-in (line 513) so every page entry animated
  * with the wrong direction. Keep this one local to .api-health-result. */
@@ -903,6 +927,13 @@ h2 {
 
 .log-line.info {
     color: var(--accent-green);
+}
+
+/* Light theme: --accent-green (#0a8a55) on the light log surface (~#f4faf6)
+   computes 4.15:1 — just under the 4.5:1 AA floor for 13px mono text, and INFO
+   is the most common severity. #087a4b clears AA (~4.9:1) on that surface. */
+html[data-theme="light"] .log-line.info {
+    color: #087a4b;
 }
 
 /* Live Indicator */
@@ -2775,6 +2806,41 @@ margin-bottom: 8px;
     min-width: auto;
 }
 
+/* History-page find strip (Ctrl+F on AI History) — injected by
+   history-manager.ts buildFindBar() with zero markup in index.html. Mirrors
+   the chat find bar above so the two Ctrl+F affordances read identically;
+   previously these classes had no rules anywhere and the bar rendered as an
+   unstyled block of misaligned controls. */
+.history-search-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
+    flex-wrap: nowrap;
+}
+
+.history-search-bar input {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 10px;
+    font-size: 14px;
+}
+
+.history-search-bar .history-search-count {
+    font-size: 12px;
+    color: var(--text-secondary);
+    min-width: 50px;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.history-search-bar .btn-icon {
+    padding: 4px 8px;
+    min-width: auto;
+}
+
 /* Highlighted search matches inside chat messages */
 mark.chat-search-hit {
     background: rgba(255, 215, 0, 0.35);
@@ -4454,7 +4520,6 @@ html[data-theme="light"] .is-loading {
 .api-failover-card::before,
 .chart-card::before,
 .settings-card::before,
-.memory-card::before,
 .modal-content::before,
 .toast::before {
     content: '';
@@ -4475,7 +4540,6 @@ html[data-theme="light"] .quick-actions::before,
 html[data-theme="light"] .api-failover-card::before,
 html[data-theme="light"] .chart-card::before,
 html[data-theme="light"] .settings-card::before,
-html[data-theme="light"] .memory-card::before,
 html[data-theme="light"] .modal-content::before,
 html[data-theme="light"] .toast::before {
     opacity: 0.025;
@@ -4491,7 +4555,6 @@ html[data-theme="light"] .toast::before {
 .api-failover-card,
 .chart-card,
 .settings-card,
-.memory-card,
 .toast {
     position: relative;
     overflow: hidden;
@@ -4514,7 +4577,6 @@ html[data-theme="light"] .toast::before {
 .api-failover-card > *,
 .chart-card > *,
 .settings-card > *,
-.memory-card > *,
 .modal-content > *,
 .toast > * {
     position: relative;
@@ -4861,7 +4923,7 @@ html[data-theme="light"] body {
 /* ---- Typography hierarchy ---- */
 h1 { color: var(--text-primary); font-weight: 800; letter-spacing: -0.02em; }
 h2 { color: var(--text-primary); font-weight: 700; letter-spacing: -0.01em; }
-.page-header p, .page-subtitle, .subtitle { color: var(--text-tertiary); }
+.page-header p { color: var(--text-tertiary); }
 
 /* ---- Sidebar ---- */
 .sidebar {
@@ -5036,7 +5098,10 @@ h2 { color: var(--text-primary); font-weight: 700; letter-spacing: -0.01em; }
 .btn-icon:hover:not(:disabled) { background: rgba(178, 150, 255, 0.18); color: var(--text-primary); }
 
 /* ---- Inputs ---- */
-.setting-input, .setting-select, .conversation-filter, #log-filter,
+/* .conversation-filter excluded on purpose: it is a wrapper <div> around the
+   chat-sidebar search input (see its own rules near .chat-search-bar), and
+   treating it as a field drew a double frame around that input. */
+.setting-input, .setting-select, #log-filter,
 input[type="text"], input[type="search"], input[type="number"], textarea, select {
     background: var(--surface-2);
     border: 1px solid var(--border-color);
@@ -5045,10 +5110,10 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     transition: border-color .18s var(--ease), box-shadow .18s var(--ease), background .18s var(--ease);
 }
 
-.setting-input::placeholder, .conversation-filter::placeholder, #log-filter::placeholder,
+.setting-input::placeholder, #log-filter::placeholder,
 input::placeholder, textarea::placeholder { color: var(--text-tertiary); }
 
-.setting-input:focus, .setting-select:focus, .conversation-filter:focus, #log-filter:focus,
+.setting-input:focus, .setting-select:focus, #log-filter:focus,
 input:focus, textarea:focus, select:focus {
     outline: none;
     border-color: var(--border-focus);
@@ -5080,7 +5145,11 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
 }
 
 /* ---- Selection ---- */
-::selection { background: var(--cyan-300); color: #fff; }
+/* Don't force white selected text: --cyan-300 is a translucent wash that
+   composites LIGHT over the white light-theme surfaces, so white-on-that was
+   ~1.6:1 (illegible). Dropping the color lets selected text keep its own
+   (theme-appropriate) color, which stays readable over the tint in both themes. */
+::selection { background: var(--cyan-300); }
 
 /* ---- Respect reduced motion ---- */
 @media (prefers-reduced-motion: reduce) {
@@ -5241,4 +5310,4 @@ html[data-theme="light"] textarea { background: rgba(255, 255, 255, 0.85); }
 
 /* — Empty states: glowing hero glyph — */
 .empty-state h2, .empty-state h3 { letter-spacing: -0.02em; }
-.empty-state img, .empty-state svg, .empty-icon { filter: drop-shadow(0 8px 26px var(--glow-purple)); }
+.empty-state img, .empty-state svg { filter: drop-shadow(0 8px 26px var(--glow-purple)); }

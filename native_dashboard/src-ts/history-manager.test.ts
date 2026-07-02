@@ -374,6 +374,29 @@ function loadOneMessage(hm: import('./history-manager.js').HistoryManager): void
 }
 
 describe('edit flow', () => {
+    it('openChannel is blocked while an edit is open and UNSAVED, allowed once the save ack is in flight', () => {
+        const { hm, send } = mountHistory();
+        loadOneMessage(hm);
+        (document.querySelector('.history-edit-btn') as HTMLElement).click();
+        (document.querySelector('.edit-textarea') as HTMLTextAreaElement).value = 'typed but not saved';
+        send.mockClear();
+        // Unsaved editor open → the switch is refused (typed text protected):
+        // no load frame goes out and the textarea survives with its content.
+        hm.openChannel(CHANNEL_B);
+        expect(send).not.toHaveBeenCalled();
+        expect((document.querySelector('.edit-textarea') as HTMLTextAreaElement).value)
+            .toBe('typed but not saved');
+        // Click Save (ack in flight) → switching away is the supported flow
+        // again (the ack is keyed by channel+id — see the undo-scoping test).
+        (document.querySelector('.edit-save-btn') as HTMLElement).click();
+        send.mockClear();
+        hm.openChannel(CHANNEL_B);
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'load_ai_history',
+            channel_id: CHANNEL_B,
+        }));
+    });
+
     it('edit button swaps content for a textarea pre-filled with the original', () => {
         const { hm } = mountHistory();
         loadOneMessage(hm);

@@ -102,6 +102,9 @@ let refreshInterval: number | null = null;
 let logsRefreshInterval: number | null = null;
 let logsAutoScrollEnabled = true;
 let lastLogSignature: string | null = null;
+// True after the failure toast for the CURRENT get_logs failure streak has
+// been shown; reset on the next successful load (1s poll — see loadLogs).
+let logsLoadFailedToastShown = false;
 
 // Chart data history
 const memoryHistory: ChartDataPoint[] = [];
@@ -1023,7 +1026,10 @@ function switchPage(page: string): void {
     }
 
     if (page === 'database') loadDbStats();
-    if (page === 'settings') loadSettingsUI();
+    if (page === 'settings') {
+        loadSettingsUI();
+        void populatePathsCard();
+    }
     if (page === 'chat' && chatManager) {
         // Reconnect if disconnected
         if (!chatManager.connected) {
@@ -1185,6 +1191,35 @@ async function updateStatus(): Promise<void> {
 // success immediately resets the streak + clears the cue (recovery); failures
 // only surface the cue once we've missed STATUS_FAIL_THRESHOLD ticks in a row,
 // so a single transient IPC blip never flashes a scary banner.
+// Fill the Settings > Paths card with the REAL resolved paths from the backend
+// (get_base_path / get_logs_path / get_data_path) instead of the hardcoded
+// relative defaults baked into index.html — dev vs installed layouts resolve
+// differently, and the static strings were never verified against the running
+// backend. Cached after the first success; retried on the next settings visit
+// if the backend was unavailable. textContent only — no HTML interpolation.
+let pathsCardPopulated = false;
+async function populatePathsCard(): Promise<void> {
+    if (pathsCardPopulated) return;
+    const botScript = document.getElementById('info-bot-script');
+    const logFile = document.getElementById('info-log-file');
+    const database = document.getElementById('info-database');
+    if (!botScript && !logFile && !database) return;
+    try {
+        const [base, logsDir, dataDir] = await Promise.all([
+            invoke<string>('get_base_path'),
+            invoke<string>('get_logs_path'),
+            invoke<string>('get_data_path'),
+        ]);
+        if (botScript && base) botScript.textContent = `${base}\\bot.py`;
+        if (logFile && logsDir) logFile.textContent = `${logsDir}\\bot.log`;
+        if (database && dataDir) database.textContent = `${dataDir}\\bot_database.db`;
+        pathsCardPopulated = true;
+    } catch (error) {
+        // Backend unreachable — keep the static defaults and retry next visit.
+        console.warn('Failed to resolve paths card:', error);
+    }
+}
+
 function noteStatusTick(ok: boolean): void {
     if (ok) {
         if (statusFailStreak !== 0) {
@@ -1479,6 +1514,8 @@ let lastLogFilter: string | null = null;
 async function loadLogs(): Promise<void> {
     try {
         const logs = await invoke<string[]>('get_logs', { count: 200 });
+        // Fetch succeeded — arm the failure toast for the next streak.
+        logsLoadFailedToastShown = false;
         const container = document.getElementById('log-content');
         const filterElement = document.getElementById('log-filter') as HTMLSelectElement | null;
         const filter = filterElement?.value || 'all';
@@ -1546,7 +1583,15 @@ async function loadLogs(): Promise<void> {
         }
     } catch (error) {
         console.error('Failed to load logs:', error);
-        showToast('Failed to load logs', { type: 'error' });
+        // The logs page polls every second — toast only on the FIRST failure of
+        // a streak (reset on success below), or a persistent backend error
+        // stacks an identical assertive toast every tick (screen readers get a
+        // role=alert announcement per second). Mirrors the statusFailStreak
+        // single-cue pattern used by updateStatus.
+        if (!logsLoadFailedToastShown) {
+            logsLoadFailedToastShown = true;
+            showToast('Failed to load logs', { type: 'error' });
+        }
     }
 }
 
@@ -1591,7 +1636,13 @@ document.addEventListener('visibilitychange', () => {
 function applyAutoScrollButtonState(): void {
     const btn = document.getElementById('btn-auto-scroll');
     if (btn) {
-        btn.textContent = logsAutoScrollEnabled ? 'Pause' : 'Resume';
+        // Rebuild innerHTML (icon + label) instead of assigning textContent,
+        // which strips the <svg> and leaves a text-only button inconsistent with
+        // the icon'd Clear/Refresh buttons beside it. Stop icon when auto-scroll
+        // is live (the action pauses it), play icon when paused (the action
+        // resumes). icon() emits an inert, aria-hidden sprite reference.
+        btn.innerHTML = icon(logsAutoScrollEnabled ? 'stop' : 'play') +
+            (logsAutoScrollEnabled ? ' Pause' : ' Resume');
         btn.classList.toggle('paused', !logsAutoScrollEnabled);
     }
 }
@@ -2425,14 +2476,28 @@ function renderApiFailoverUI(data: Record<string, unknown>): void {
             <div class="ep-stats">Requests: ${totalRequests} | Fail rate: ${failureRate.toFixed(1)}%</div>
         `;
 
-        // Click to switch
+        // Click / keyboard to switch. The item is a custom control built from a
+        // <div>, so it needs role=button + tabindex + an Enter/Space key handler
+        // to be operable without a mouse (WCAG 2.1.1 Keyboard, Level A); there is
+        // no other UI path to switch endpoints. Space is preventDefault'd so it
+        // activates the control instead of scrolling the panel.
         if (!ep.active) {
-            item.style.cursor = 'pointer';
-            item.title = `คลิกเพื่อสลับไปใช้ ${epType}`;
-            item.addEventListener('click', () => {
+            const doSwitch = (): void => {
                 if (chatManager?.connected) {
                     chatManager.send({ type: 'switch_api_endpoint', endpoint: ep.type });
                     showToast(`Switching to ${epType}...`, { type: 'info', duration: 2000 });
+                }
+            };
+            item.style.cursor = 'pointer';
+            item.title = `คลิกเพื่อสลับไปใช้ ${epType}`;
+            item.setAttribute('role', 'button');
+            item.setAttribute('tabindex', '0');
+            item.setAttribute('aria-label', `Switch to ${epType}`);
+            item.addEventListener('click', doSwitch);
+            item.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+                    e.preventDefault();
+                    doSwitch();
                 }
             });
         }

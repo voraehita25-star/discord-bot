@@ -23,6 +23,9 @@ export class ChatSearch {
     private currentIdx: number = -1;
     private bound: boolean = false;
     private previousFocus: HTMLElement | null = null;
+    // Pending input-debounce timer. A class field (not a setup() closure var)
+    // so close() can cancel it — see the comment there.
+    private inputDebounce: number | null = null;
     private readonly getContainer: GetContainer;
 
     constructor(getContainer: GetContainer) {
@@ -54,6 +57,14 @@ export class ChatSearch {
         const bar = document.getElementById('chat-search-bar');
         if (!bar) return;
         bar.classList.add('hidden');
+        // Cancel a pending input debounce: typing then closing within 120ms
+        // would otherwise fire perform() AFTER the bar is hidden — re-painting
+        // <mark> highlights across the chat and scroll-jumping to a match the
+        // user can no longer see or clear.
+        if (this.inputDebounce !== null) {
+            clearTimeout(this.inputDebounce);
+            this.inputDebounce = null;
+        }
         this.clearHighlights();
         this.matches = [];
         this.currentIdx = -1;
@@ -70,12 +81,11 @@ export class ChatSearch {
         const bar = document.getElementById('chat-search-bar');
         if (!input || !bar || bar.dataset.searchBound || this.bound) return;
 
-        let debounce: number | null = null;
         input.addEventListener('input', () => {
-            if (debounce !== null) clearTimeout(debounce);
-            debounce = window.setTimeout(() => {
+            if (this.inputDebounce !== null) clearTimeout(this.inputDebounce);
+            this.inputDebounce = window.setTimeout(() => {
                 this.perform(input.value);
-                debounce = null;
+                this.inputDebounce = null;
             }, 120);
         });
         input.addEventListener('keydown', (e) => {

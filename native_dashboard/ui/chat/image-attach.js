@@ -162,6 +162,16 @@ export class ImageAttachManager {
                         documents.attach(file);
                     }
                 });
+                // Files that matched neither route were previously dropped with
+                // ZERO feedback (the OS picker lets the user override the accept
+                // filter via "All Files"). Mirror the drop path's rejection toast
+                // so the picker flow isn't a silent failure.
+                const unsupported = picked.filter(f => !f.type.startsWith('image/') && !(documents && isDocumentFile(f)));
+                if (unsupported.length > 0) {
+                    showToast(documents
+                        ? 'Unsupported file type (images, PDFs, and text files only)'
+                        : 'Only image files can be attached', { type: 'warning' });
+                }
             }
             // Reset input so the same file can be selected again.
             fileInput.value = '';

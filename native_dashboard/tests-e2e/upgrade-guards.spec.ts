@@ -207,3 +207,28 @@ test('[a11y-light] no axe color-contrast violations across pages in LIGHT theme'
     }
     expect(violations, `light-theme color-contrast violations:\n${violations.join('\n')}`).toEqual([]);
 });
+
+test('[a11y-dark] no axe color-contrast violations across pages in DARK theme (the default)', async ({ page }) => {
+    // Dark is this app's canonical surface (playwright.config pins
+    // colorScheme:'dark'), yet only LIGHT theme had a color-contrast axe run —
+    // a dark-theme contrast regression could ship with every gate green. Same
+    // loop as [a11y-light] above, no theme forcing: the default IS dark.
+    await page.evaluate(() => {
+        const o = document.getElementById('chat-not-running-overlay'); if (o) o.style.display = 'none';
+        const e = document.getElementById('chat-empty'); if (e) e.classList.add('hidden');
+        const c = document.getElementById('chat-container'); if (c) { c.classList.remove('hidden'); (c as HTMLElement).style.display = 'flex'; }
+    });
+    const pages = ['status', 'chat', 'logs', 'database', 'settings', 'history'];
+    const violations: string[] = [];
+    for (const p of pages) {
+        await page.evaluate((pg) => (window as unknown as { showPage: (s: string) => void }).showPage(pg), p);
+        await page.waitForTimeout(120);
+        const results = await new AxeBuilder({ page }).withRules(['color-contrast']).analyze();
+        for (const v of results.violations) {
+            for (const n of v.nodes) {
+                violations.push(`${p}: ${n.target.join(' ')} — ${n.html.slice(0, 70)}`);
+            }
+        }
+    }
+    expect(violations, `dark-theme color-contrast violations:\n${violations.join('\n')}`).toEqual([]);
+});

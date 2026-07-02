@@ -31,6 +31,9 @@ export class ConversationModals {
     private pendingDeleteId: string | null = null;
     private pendingRenameId: string | null = null;
     private escapeHandler: ((e: KeyboardEvent) => void) | null = null;
+    // Element focused before a modal opened, restored on close (WCAG 2.4.3) —
+    // otherwise keyboard/AT users are stranded wherever the modal left them.
+    private previousFocus: HTMLElement | null = null;
 
     constructor(private readonly cb: ConversationModalsCallbacks) {}
 
@@ -58,8 +61,14 @@ export class ConversationModals {
     showDelete(id: string): void {
         if (this.cb.isStreaming()) return;
         this.pendingDeleteId = id;
+        this.previousFocus = document.activeElement as HTMLElement | null;
         const modal = document.getElementById('delete-confirm-modal');
         modal?.classList.add('active');
+        // Move focus into the dialog (WCAG 2.4.3): it's aria-modal, so leaving
+        // focus on the now-inert trash-can trigger behind it strands keyboard/AT
+        // users. Focus Cancel (not Delete) so a reflexive Enter dismisses rather
+        // than performs the irreversible delete — mirrors showRename's focus move.
+        (document.getElementById('delete-cancel') as HTMLElement | null)?.focus();
         this.attachEscape(() => this.closeDelete());
     }
 
@@ -77,6 +86,16 @@ export class ConversationModals {
         document.getElementById('delete-confirm-modal')?.classList.remove('active');
         this.pendingDeleteId = null;
         this.detachEscape();
+        this.restoreFocus();
+    }
+
+    /** Return focus to whatever had it before the modal opened (if it's still
+     * in the document — the conversation row may have been deleted/re-rendered). */
+    private restoreFocus(): void {
+        if (this.previousFocus && document.body.contains(this.previousFocus)) {
+            this.previousFocus.focus();
+        }
+        this.previousFocus = null;
     }
 
     // ---------- Rename ----------
@@ -90,6 +109,7 @@ export class ConversationModals {
         const modal = document.getElementById('rename-modal');
         const input = document.getElementById('rename-input') as HTMLInputElement | null;
         if (modal && input) {
+            this.previousFocus = document.activeElement as HTMLElement | null;
             input.value = conv?.title || '';
             modal.classList.add('active');
             input.focus();
@@ -119,5 +139,6 @@ export class ConversationModals {
         document.getElementById('rename-modal')?.classList.remove('active');
         this.pendingRenameId = null;
         this.detachEscape();
+        this.restoreFocus();
     }
 }
