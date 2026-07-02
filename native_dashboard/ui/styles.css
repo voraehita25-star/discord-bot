@@ -193,12 +193,16 @@ html[data-theme="light"] kbd {
     box-shadow: var(--shadow-glow);
 }
 
-/* Toast Notification System */
+/* Toast Notification System.
+   NOTE: z-index + transform are aligned with the authoritative orbital.css
+   values (var(--z-toast)=1100, translateX(110%)) — orbital overrides them
+   anyway, but the old literals here (10000 / 120%) misled anyone reasoning
+   about z-index stacking or the slide distance from this file alone. */
 #toast-container {
     position: fixed;
     top: 20px;
     right: 20px;
-    z-index: 10000;
+    z-index: var(--z-toast);
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -215,7 +219,7 @@ html[data-theme="light"] kbd {
     border: 1px solid var(--border-color);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     backdrop-filter: blur(10px);
-    transform: translateX(120%);
+    transform: translateX(110%);
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     opacity: 0;
 }
@@ -226,7 +230,7 @@ html[data-theme="light"] kbd {
 }
 
 .toast-hiding {
-    transform: translateX(120%);
+    transform: translateX(110%);
     opacity: 0;
 }
 
@@ -791,14 +795,17 @@ h2 {
     color: #22d3ee;
 }
 
+/* Status colors via theme tokens: the old literals (#22c55e/#ef4444) were
+   dark-theme greens/reds that dropped below AA on the light Blueprint
+   surfaces (~2.2:1 / ~3.5:1 at this size); the tokens restate per theme. */
 .api-endpoint-item .ep-badge.healthy {
     background: rgba(34, 197, 94, 0.2);
-    color: #22c55e;
+    color: var(--accent-green);
 }
 
 .api-endpoint-item .ep-badge.unhealthy-badge {
     background: rgba(239, 68, 68, 0.2);
-    color: #ef4444;
+    color: var(--accent-red);
 }
 
 .api-endpoint-item .ep-stats {
@@ -822,8 +829,8 @@ h2 {
     animation: fadeInDown 0.3s ease;
 }
 
-.api-health-result .healthy { color: #22c55e; }
-.api-health-result .unhealthy { color: #ef4444; }
+.api-health-result .healthy { color: var(--accent-green); }
+.api-health-result .unhealthy { color: var(--accent-red); }
 
 /* Light theme: the endpoint chips + health panel hardcode a dark-navy wash
    (rgba(20,10,40,.6)) sized for the carbon dark surface. On the white
@@ -887,20 +894,10 @@ html[data-theme="light"] .api-health-result {
      * the wrong container. The parent already handles scrolling. */
 }
 
-/* Virtual Scroll Container */
-.virtual-scroll-inner {
-    min-height: 100%;
-}
-
-.virtual-scroll-content {
-    width: 100%;
-}
-
-.log-empty {
-    padding: 20px;
-    text-align: center;
-    color: var(--text-secondary);
-}
+/* (Dead virtual-scroll rules removed: .virtual-scroll-inner /
+   .virtual-scroll-content / .log-empty were orphans of the retired log
+   virtual-scroll implementation — nothing in src-ts or index.html carries
+   those classes.) */
 
 .log-line {
     padding: 3px 8px;
@@ -1286,7 +1283,11 @@ html[data-theme="light"] .log-line.info {
     border-bottom: none;
 }
 
-.setting-row label {
+/* .setting-label: the same look for row captions that are NOT <label>s —
+   rows whose "label" is associated with no control (avatar rows, Theme row)
+   use <span class="setting-label"> for honest semantics. */
+.setting-row label,
+.setting-row .setting-label {
     color: var(--text-secondary);
     font-size: 14px;
 }
@@ -1564,7 +1565,9 @@ html[data-theme="light"] .log-line.info {
     border-top: 1px solid var(--border-color);
 }
 
-.features-list h4 {
+/* h3 (was h4): the About card heading is an h2, so its sub-heading must be
+   h3 — the h2→h4 jump broke the screen-reader heading outline. Same look. */
+.features-list h3 {
     color: var(--text-secondary);
     font-size: 14px;
     margin-bottom: 12px;
@@ -1707,12 +1710,8 @@ html[data-theme="light"] .log-line.info {
     max-width: 400px;
 }
 
-.chat-not-running-overlay .overlay-icon {
-    font-size: 4rem;
-    display: block;
-    margin-bottom: 1rem;
-    opacity: 0.5;
-}
+/* (.overlay-icon rule removed — the overlay was refactored to the shared
+   .empty-state recipe and nothing emits that class anymore.) */
 
 .chat-not-running-overlay h2 {
     color: var(--text-primary);
@@ -2011,8 +2010,11 @@ html[data-theme="light"] .log-line.info {
 
 .select-provider-inline,
 .select-provider {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    /* Token surfaces (were raw white-alpha): rgba(255,255,255,.05) over the
+       light theme's white chat header composites to pure white, so the
+       provider <select> lost its fill/border affordance entirely there. */
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
     color: var(--text-primary);
     padding: 6px 10px;
     border-radius: 8px;
@@ -2046,7 +2048,8 @@ html[data-theme="light"] .log-line.info {
     cursor: pointer;
     padding: 8px 12px;
     border-radius: 8px;
-    background: rgba(255, 255, 255, 0.05);
+    /* Token surface (was raw white-alpha — invisible on the light theme). */
+    background: var(--surface-2);
     transition: all 0.2s ease;
 }
 
@@ -2123,17 +2126,10 @@ html[data-theme="light"] .log-line.info {
     margin-bottom: 8px;
 }
 
-/* Chat loading spinner */
-.chat-loading {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    color: var(--text-secondary);
-}
-
+/* Loading spinner (history-manager's loading pane). @keyframes spin is ALSO
+   used by .thinking-header:not(.collapsible)::after — keep it even if the
+   spinner ever goes. (Dead .chat-loading / .load-more-* rules removed: no TS,
+   compiled JS, or HTML ever creates those classes.) */
 .loading-spinner {
     width: 32px;
     height: 32px;
@@ -2145,29 +2141,6 @@ html[data-theme="light"] .log-line.info {
 
 @keyframes spin {
     to { transform: rotate(360deg); }
-}
-
-/* Load more messages button */
-.load-more-wrapper {
-    display: flex;
-    justify-content: center;
-    padding: 8px 0 16px;
-}
-
-.load-more-btn {
-    background: var(--bg-tertiary, #2a2a3e);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 6px 16px;
-    font-size: 13px;
-    cursor: pointer;
-    transition: background 0.2s, color 0.2s;
-}
-
-.load-more-btn:hover {
-    background: var(--surface-3);
-    color: var(--text-primary);
 }
 
 /* Message Bubbles */
@@ -2241,10 +2214,10 @@ html[data-theme="light"] .log-line.info {
     color: var(--text-primary);
 }
 
-.chat-message.assistant .message-name {
-    color: var(--accent-cyan);
-}
-
+/* One grouped rule (were two byte-identical ones — a leftover from before the
+   ORBITAL token aliasing collapsed --accent-pink onto cyan). orbital.css still
+   differentiates: assistant stays cyan, user goes --accent-green there. */
+.chat-message.assistant .message-name,
 .chat-message.user .message-name {
     color: var(--accent-cyan);
 }
@@ -2265,7 +2238,11 @@ html[data-theme="light"] .log-line.info {
     transition: opacity 0.2s ease;
 }
 
-.message-wrapper:hover .message-actions {
+.message-wrapper:hover .message-actions,
+/* Keyboard parity: tabbing onto copy/edit/delete/pin/like raises the row the
+   same way hover does (the history pane already had this via
+   .history-msg-actions:focus-within — the chat pane was missed). */
+.message-wrapper:focus-within .message-actions {
     opacity: 1;
 }
 
@@ -2554,15 +2531,8 @@ margin-bottom: 8px;
     box-shadow: 0 0 16px var(--glow-pink);
 }
 
-.typing-cursor {
-    animation: blink 0.8s infinite;
-    color: var(--accent-cyan);
-}
-
-@keyframes blink {
-    0%, 50% { opacity: 1; }
-    51%, 100% { opacity: 0; }
-}
+/* (Dead .typing-cursor + its private @keyframes blink removed — the streaming
+   caret was replaced by .typing-indicator-dots and nothing referenced them.) */
 
 /* Code in messages */
 .message-content pre {
@@ -3500,7 +3470,16 @@ html[data-theme="light"] .role-card:hover {
 }
 
 .chat-input-options .checkbox-label input {
-    display: none;
+    /* Visually hidden but FOCUSABLE (mirrors .toggle-switch input):
+       display:none removed the Search/Unrestricted checkboxes from the tab
+       order and the accessibility tree entirely, so keyboard-only users could
+       neither reach nor toggle them. The focus ring is redirected to the
+       visible .checkbox-icon in orbital.css's FOCUS block (WCAG 2.4.7). */
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    margin: 0;
 }
 
 .chat-input-options .checkbox-label input:checked + .checkbox-icon {
@@ -3572,6 +3551,12 @@ html[data-theme="light"] .role-card:hover {
     display: flex;
     align-items: center;
     justify-content: center;
+}
+
+/* Hover parity with the visually-identical document-chip X button
+   (.attached-doc-preview .remove-doc:hover) sitting in the same attach row. */
+.attached-image-preview .remove-image:hover {
+    transform: scale(1.08);
 }
 
 /* Attached documents (PDF, text, code) — pill preview with icon + filename */
@@ -5190,40 +5175,12 @@ html[data-theme="light"],
     --hairline: linear-gradient(135deg, rgba(9, 124, 150, 0.40), rgba(91, 214, 236, 0.28) 50%, rgba(3, 102, 114, 0.16));
 }
 
-/* — Atmosphere: richer animated aurora mesh (enhances the existing drift) — */
-body::before {
-    inset: -15%;
-    opacity: 0.72;
-    background:
-        radial-gradient(40% 50% at 12% 4%, rgba(168, 110, 255, 0.30), transparent 60%),
-        radial-gradient(36% 44% at 88% 8%, rgba(255, 110, 184, 0.22), transparent 60%),
-        radial-gradient(46% 56% at 80% 96%, rgba(120, 86, 240, 0.24), transparent 62%),
-        radial-gradient(34% 40% at 26% 90%, rgba(91, 214, 236, 0.12), transparent 60%);
-}
-
-html[data-theme="light"] body::before {
-    /* [B2] aurora mesh stops were anime purple/pink/violet; repointed to the
-       teal/azure Blueprint family. */
-    opacity: 0.5;
-    background:
-        radial-gradient(40% 50% at 12% 4%, rgba(9, 124, 150, 0.10), transparent 60%),
-        radial-gradient(36% 44% at 88% 8%, rgba(91, 214, 236, 0.08), transparent 60%),
-        radial-gradient(46% 56% at 80% 96%, rgba(3, 102, 114, 0.08), transparent 62%);
-}
-
-/* — Film grain for premium texture (above atmosphere, below content) — */
-body::after {
-    content: '';
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    pointer-events: none;
-    opacity: 0.05;
-    mix-blend-mode: soft-light;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
-html[data-theme="light"] body::after { opacity: 0.035; mix-blend-mode: multiply; }
+/* (DEAD Sakura-Midnight atmosphere blocks removed: body::before aurora-mesh +
+   body::after film-grain were fully out-cascaded by orbital.css, which
+   redefines both pseudo-elements — technical grid + scanlines — at identical
+   specificity later in source order, including their light-theme variants.
+   Unlike the annotated :root token blocks above they carried no DEAD marker,
+   so edits here silently did nothing.) */
 
 /* keep interactive content above the atmosphere layers */
 .app, .sidebar, .content { position: relative; z-index: 1; }
@@ -5288,15 +5245,19 @@ html[data-theme="light"] .stat-value { color: var(--text-primary); text-shadow: 
     width: 3px;
 }
 
-/* — Glass inputs — */
-.setting-input, .setting-select, .conversation-filter, #log-filter, textarea {
+/* — Glass inputs —
+   .conversation-filter deliberately NOT here (matches the exclusion note in
+   the focus block above + orbital.css): it is a wrapper <div> AROUND the
+   chat-sidebar search input — painting the wrapper as a field drew a
+   double-frame band around that input, in an off-palette navy to boot. */
+.setting-input, .setting-select, #log-filter, textarea {
     background: rgba(20, 14, 40, 0.5);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
 }
 
 html[data-theme="light"] .setting-input, html[data-theme="light"] .setting-select,
-html[data-theme="light"] .conversation-filter, html[data-theme="light"] #log-filter,
+html[data-theme="light"] #log-filter,
 html[data-theme="light"] textarea { background: rgba(255, 255, 255, 0.85); }
 
 /* — Logo: refined glass chip with gradient hairline — */

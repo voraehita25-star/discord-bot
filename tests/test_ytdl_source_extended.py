@@ -172,19 +172,23 @@ class TestDefaultSearch:
 
 
 class TestUserAgent:
-    """Tests for user agent setting."""
+    """Tests for the User-Agent header.
 
-    def test_user_agent_exists(self):
-        """Test user_agent is set."""
+    The embedded YoutubeDL API has no 'user_agent' param (that spelling is
+    the --user-agent CLI flag only, silently ignored in params) — the real
+    param is http_headers['User-Agent']. These pin the corrected form.
+    """
+
+    def test_user_agent_header_exists(self):
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert "user_agent" in ytdl_opts_hq
+        assert "user_agent" not in ytdl_opts_hq  # dead CLI-only key must stay gone
+        assert "User-Agent" in ytdl_opts_hq.get("http_headers", {})
 
     def test_user_agent_contains_chrome(self):
-        """Test user_agent mentions Chrome."""
         from utils.media.ytdl_source import ytdl_opts_hq
 
-        assert "Chrome" in ytdl_opts_hq.get("user_agent", "")
+        assert "Chrome" in ytdl_opts_hq.get("http_headers", {}).get("User-Agent", "")
 
 
 class TestSearchSourceQueryBuilding:

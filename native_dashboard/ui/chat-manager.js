@@ -27,6 +27,22 @@ const HISTORY_ERROR_SCOPES = new Set([
     'delete_ai_history_message',
     'restore_ai_history_message',
 ]);
+// Wire msg types whose failure means an in-flight (or just-attempted) chat
+// turn died — their error frames MUST run the chat-stream teardown (re-enable
+// the composer, clear stream buffers). Every OTHER scoped error is a
+// management operation (sidebar star/rename/delete/export, tags, files modal,
+// profile, provider/endpoint ops — the backend router tags their frames with
+// scope = the wire msg type, and its rate limiter echoes the same value):
+// those must surface as a toast WITHOUT touching chat state, otherwise a
+// failed background operation kills a live stream and the streamErrored guard
+// then discards its stream_end, losing the completed answer until reload.
+// Unscoped errors keep the teardown (chat backends emit theirs without scope).
+const CHAT_ERROR_SCOPES = new Set([
+    'message',
+    'ai_edit_message',
+    'edit_message',
+    'delete_message',
+]);
 function chatFileIconFor(kind, name) {
     const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
     if (ext === 'pdf')
@@ -438,6 +454,12 @@ export class ChatManager {
                     console.error('Invalid conversation_created data:', data);
                     break;
                 }
+                // Invalidate any in-flight load: without this, a late
+                // conversation_loaded frame for a conversation clicked just
+                // BEFORE creating this one passes the stale-frame guard
+                // (pendingConversationLoadId still names it) and swaps the
+                // view back, replacing the freshly created conversation.
+                this.pendingConversationLoadId = null;
                 this.messages = [];
                 this.showChatContainer();
                 this.updateChatHeader();
@@ -872,6 +894,15 @@ export class ChatManager {
                     this.historyManager?.onError(typeof data.code === 'string' ? data.code : undefined);
                     break;
                 }
+                if (typeof data.scope === 'string' && !CHAT_ERROR_SCOPES.has(data.scope)) {
+                    // Management-operation failure (see CHAT_ERROR_SCOPES):
+                    // toast + log only — leave the in-flight chat stream, the
+                    // composer state and the history editor alone.
+                    console.error(`Server error (${data.scope}):`, errorMsg);
+                    errorLogger.log('AI_SERVER_ERROR', errorMsg, JSON.stringify(data));
+                    showToast(errorMsg, { type: 'error' });
+                    break;
+                }
                 console.error('Server error:', errorMsg);
                 errorLogger.log('AI_SERVER_ERROR', errorMsg, JSON.stringify(data));
                 showToast(errorMsg, { type: 'error' });
@@ -900,11 +931,15 @@ export class ChatManager {
                     this.editStreamContent = '';
                     this.renderMessages(); // Restore original message content
                 }
-                // A rejected history edit (e.g. MSG_NOT_FOUND) arrives as a
-                // plain error frame — unstick the history editor's Save
-                // button, forwarding the code (same contract as the scoped
-                // path above) so permanent rejections drop their undo entry.
-                this.historyManager?.onError(typeof data.code === 'string' ? data.code : undefined);
+                // NOTE: unscoped errors are deliberately NOT forwarded to
+                // historyManager.onError anymore. Every genuine AI-History
+                // rejection carries a scope (the five handlers tag
+                // scope:'ai_history'; the rate limiter echoes the wire type)
+                // and is routed above. Forwarding unscoped CHAT errors here
+                // (NO_BACKEND_AVAILABLE, INVALID_PROVIDER…) wrongly nulled the
+                // history editor's pendingUndoCandidate — their `code` made
+                // onError treat them as history rejections — silently making
+                // the just-saved history edit non-undoable.
                 break;
             }
             case 'pong':
@@ -1087,10 +1122,14 @@ export class ChatManager {
         // resolves ids/value at fire time, so switching within the 400ms
         // window wrote the NEW conversation's restored draft (or '') under
         // the OLD conversation's key, silently destroying that draft.
+        // Flush unconditionally (no same-id check): re-clicking the OPEN
+        // conversation also runs restoreDraft(id) below, and text typed since
+        // the last 400ms debounce fire was never persisted — skipping the
+        // flush let restoreDraft overwrite the composer with the stale draft.
         if (this.draftSaveTimer !== null) {
             clearTimeout(this.draftSaveTimer);
             this.draftSaveTimer = null;
-            if (this.currentConversation && this.currentConversation.id !== id) {
+            if (this.currentConversation) {
                 const el = document.getElementById('chat-input');
                 if (el)
                     this.saveDraft(this.currentConversation.id, el.value);
@@ -1389,14 +1428,17 @@ export class ChatManager {
             // the optimistic path, so a failed send used to destroy the
             // user's message entirely (only a toast remained). Keeping the
             // draft lets the user resend after a reconnect even if they
-            // navigate away from the failed bubble.
+            // navigate away from the failed bubble. Restore what the USER
+            // typed (rawContent) — on an attachment-only send, `content` is
+            // the synthetic "[attached file(s)…]" placeholder, which used to
+            // persist as a draft and could be resent as literal text.
             if (input) {
-                input.value = content;
+                input.value = rawContent;
                 this.autoResizeInput();
                 input.focus();
             }
             if (this.currentConversation) {
-                this.saveDraft(this.currentConversation.id, content);
+                this.saveDraft(this.currentConversation.id, rawContent);
             }
             return;
         }
@@ -3129,7 +3171,17 @@ export class ChatManager {
         });
         // AI provider selector in chat header
         document.getElementById('chat-ai-provider')?.addEventListener('change', (e) => {
-            this.aiProvider = e.target.value;
+            const selected = e.target.value;
+            // Validate against the server-advertised allowlist like every
+            // other provider write-site (createConversation, the 'connected'
+            // handler) — a stale/injected <option> value must not go onto the
+            // wire or into localStorage.
+            if (!this.availableProviders.includes(selected)) {
+                showToast(`Unknown AI provider: ${selected}`, { type: 'error' });
+                e.target.value = this.aiProvider;
+                return;
+            }
+            this.aiProvider = selected;
             localStorage.setItem('dashboard_ai_provider', this.aiProvider);
             if (this.currentConversation) {
                 this.send({

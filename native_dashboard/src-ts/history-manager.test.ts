@@ -2113,6 +2113,43 @@ describe('message viewer semantics + states', () => {
         expect(container.textContent).toContain('done');
     });
 
+    it('a load answered by an error frame clears the spinner and renders a retry hint', () => {
+        const { hm, send } = mountHistory();
+        hm.openChannel(CHANNEL_A); // load in flight
+        const container = document.getElementById('ai-history-messages')!;
+        expect(container.querySelector('.loading-spinner')).not.toBeNull();
+        // Backend answers with a scoped error envelope (INTERNAL_ERROR /
+        // DB_UNAVAILABLE / rate-limited load) — forwarded by ChatManager as
+        // onError(code). The spinner must clear and the pane must say how to
+        // retry, instead of sitting on "Loading messages…" forever with
+        // edit/delete/undo gated behind the never-resolving pending load.
+        hm.onError('INTERNAL_ERROR');
+        expect(container.querySelector('.loading-spinner')).toBeNull();
+        expect(container.textContent).toContain('Load failed');
+        // The pending-load gate is released: re-clicking the channel retries.
+        send.mockClear();
+        hm.openChannel(CHANNEL_A);
+        expect(send).toHaveBeenCalledWith({
+            type: 'load_ai_history',
+            channel_id: CHANNEL_A,
+            limit: 200,
+        });
+    });
+
+    it('a reconnect (onConnected) does NOT cancel a queued offline load', () => {
+        const { hm, send, isConnected } = mountHistory();
+        isConnected.mockReturnValue(false);
+        hm.openChannel(CHANNEL_A); // queued, not sent
+        isConnected.mockReturnValue(true);
+        send.mockClear();
+        hm.onConnected(); // must flush the queue, not run failed-load recovery
+        expect(send).toHaveBeenCalledWith({
+            type: 'load_ai_history',
+            channel_id: CHANNEL_A,
+            limit: 200,
+        });
+    });
+
     it('shows an iconographic empty state for a channel with no messages', () => {
         const { hm } = mountHistory();
         hm.openChannel(CHANNEL_A);

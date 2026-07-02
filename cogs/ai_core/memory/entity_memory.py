@@ -71,7 +71,16 @@ class EntityFacts:
         known_data = {k: v for k, v in data.items() if k in known_fields}
         custom_data = {k: v for k, v in data.items() if k not in known_fields}
         if custom_data:
-            known_data["custom"] = {**known_data.get("custom", {}), **custom_data}
+            # Coerce a non-dict ``custom`` BEFORE the merge — the coercion
+            # loop below runs after this line, so it never protected it: a
+            # poisoned custom ("junk-string") plus ANY unknown key raised
+            # TypeError ('str' object is not a mapping) here and dropped the
+            # row's valid fields with it (the same poisoned custom WITHOUT
+            # unknown keys was coerced fine).
+            base_custom = known_data.get("custom")
+            if not isinstance(base_custom, dict):
+                base_custom = {}
+            known_data["custom"] = {**base_custom, **custom_data}
         # Coerce dict-typed fields so a poisoned/malformed extraction (these
         # originate from untyped AI-extracted JSON persisted to SQLite) can't
         # store a non-empty string/list here — a non-dict would survive to

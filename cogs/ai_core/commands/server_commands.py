@@ -662,25 +662,15 @@ async def cmd_add_role(
                 allowed_mentions=_NO_MENTIONS,
             )
             return
-        # Discord also requires the bot's top role to be above the TARGET
-        # member's top role for any role-modification op (not just the role
-        # being added). Without this check, ``add_roles`` raises 403 at
-        # runtime even though our role-vs-bot check above passed. We use
-        # ``getattr`` with explicit ints to defend against ``member.top_role``
-        # being absent on partial fetches; an unparseable position falls
-        # through and the API call's 403 surfaces below as before.
-        member_top_pos = getattr(getattr(member, "top_role", None), "position", None)
-        bot_top_pos = getattr(bot_top_role, "position", None)
-        if (
-            isinstance(member_top_pos, int)
-            and isinstance(bot_top_pos, int)
-            and member_top_pos >= bot_top_pos
-        ):
-            await origin_channel.send(
-                f"❌ ไม่สามารถมอบยศให้ **{member.display_name}** ได้ (ยศของผู้ใช้สูงกว่าหรือเทียบเท่ายศของบอท)",
-                allowed_mentions=_NO_MENTIONS,
-            )
-            return
+        # NOTE: Discord does NOT gate role add/remove on the TARGET member's
+        # top role — the actor-vs-target hierarchy rule applies only to
+        # kick/ban/nickname edits (docs.discord.com/developers/topics/
+        # permissions). Adding a role requires MANAGE_ROLES plus the role
+        # BEING MODIFIED below the bot's top role, which the check above
+        # already enforces. A previous guard here compared against
+        # member.top_role and falsely refused valid operations (e.g. adding
+        # a low 'Muted' role to a moderator ranked above the bot) — removed;
+        # any genuine 403 still surfaces via the except below.
         try:
             await member.add_roles(role)
             logger.info("➕ AI Added Role %s to %s", role.name, member.display_name)
@@ -785,19 +775,10 @@ async def cmd_remove_role(
                 allowed_mentions=_NO_MENTIONS,
             )
             return
-        # Same target-vs-bot hierarchy guard as cmd_add_role.
-        member_top_pos = getattr(getattr(member, "top_role", None), "position", None)
-        bot_top_pos = getattr(bot_top_role, "position", None)
-        if (
-            isinstance(member_top_pos, int)
-            and isinstance(bot_top_pos, int)
-            and member_top_pos >= bot_top_pos
-        ):
-            await origin_channel.send(
-                f"❌ ไม่สามารถลบยศจาก **{member.display_name}** ได้ (ยศของผู้ใช้สูงกว่าหรือเทียบเท่ายศของบอท)",
-                allowed_mentions=_NO_MENTIONS,
-            )
-            return
+        # NOTE: no target-vs-bot hierarchy guard here — see cmd_add_role.
+        # Discord gates role removal only on MANAGE_ROLES + the role being
+        # modified sitting below the bot's top role (checked above); the
+        # target member's own top role is irrelevant for this operation.
         try:
             await member.remove_roles(role)
             logger.info("➖ AI Removed Role %s from %s", role_name, user_name)
@@ -882,7 +863,15 @@ async def cmd_set_channel_perm(
                 allowed_mentions=_NO_MENTIONS,
             )
             return
-        channel = discord.utils.get(guild.channels, name=channel_name)
+        # Exact-case first, then the case-insensitive match found above.
+        # Voice channels and categories keep their case (only text channels
+        # are forced lowercase), so exact-case-only resolution falsely
+        # reported "channel not found" for the very channel the ambiguity
+        # scan just counted (e.g. 'gaming room' vs 'Gaming Room') — mirror
+        # cmd_delete_channel and the role block below.
+        channel = discord.utils.get(guild.channels, name=channel_name) or (
+            same_name[0] if same_name else None
+        )
     if not channel:
         await origin_channel.send(f"❌ ไม่พบช่อง: **{channel_name}**", allowed_mentions=_NO_MENTIONS)
         return

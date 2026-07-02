@@ -19,9 +19,14 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
 
-# Precompiled regex patterns
+# Precompiled regex patterns — MUST mirror the canonical copies in
+# cogs/ai_core/logic.py (the production path runs those; only unit tests run
+# these). PATTERN_SPACED had drifted to r'^>\s+…' (a dead strict-subset of
+# PATTERN_QUOTE, which runs first), so an indented blockquote like
+# '  > "Hello"' was stripped in production but untouched here — tests were
+# pinning divergent behavior.
 PATTERN_QUOTE = re.compile(r'^>\s*(["\'])', re.MULTILINE)
-PATTERN_SPACED = re.compile(r'^>\s+(["\'])', re.MULTILINE)
+PATTERN_SPACED = re.compile(r'^\s*>\s*(["\'])', re.MULTILINE)
 PATTERN_CHANNEL_ID = re.compile(r"\b(\d{17,20})\b")
 
 # Keywords for history requests

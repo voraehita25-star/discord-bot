@@ -101,11 +101,21 @@ class TestLeadingTimestampStripper:
         assert s.feed("23:17:33+07:00]") == ""
         assert s.feed("body") == "body"
 
-    def test_flush_returns_buffered_when_partial(self):
+    def test_nontimestamp_bracket_prefix_flushes_immediately(self):
+        # "[partial" can never become a timestamp (year must be 4 digits), so
+        # feed() flushes it right away instead of stalling the first visible
+        # token until _MAX_PROBE chars accumulate.
         s = LeadingTimestampStripper()
-        s.feed("[partial")
+        assert s.feed("[partial") == "[partial"
+        assert s.flush() == ""
+
+    def test_flush_returns_buffered_when_partial_timestamp(self):
+        # A still-viable prefix ("[2026" — all digits so far) keeps buffering;
+        # end-of-stream flush returns it untouched.
+        s = LeadingTimestampStripper()
+        assert s.feed("[2026-0") == ""
         out = s.flush()
-        assert "[partial" in out
+        assert "[2026-0" in out
 
     def test_flush_returns_empty_when_done(self):
         s = LeadingTimestampStripper()

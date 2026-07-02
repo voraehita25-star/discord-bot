@@ -307,15 +307,20 @@ from .dashboard_config import (
 )
 
 # Models that use adaptive thinking (``thinking: {type: "adaptive"}``) rather than
-# the deprecated manual ``budget_tokens`` form. Opus 4.7+ (incl. 4.8) REJECT
-# ``budget_tokens`` with a 400, so matching them here is essential. Older
-# extended-thinking-only models (Opus 4.5/4.1, Sonnet 4.5) fall through to the
-# budget_tokens branch for backward compatibility.
+# the deprecated manual ``budget_tokens`` form. Opus 4.7+ (incl. 4.8), Sonnet 5,
+# and the Fable/Mythos 5 family REJECT ``budget_tokens`` with a 400, so matching
+# them here is essential. Older extended-thinking-only models (Opus 4.5/4.1,
+# Sonnet 4.5) fall through to the budget_tokens branch for backward
+# compatibility. NOTE: this is a hardcoded generation allowlist — extend it
+# whenever a new Claude generation ships (same failure mode as the
+# context-meter DEFAULT_1M_MODELS table).
 _ADAPTIVE_THINKING_MODELS: tuple[str, ...] = (
     "opus-4-8",
     "opus-4-7",
     "opus-4-6",
     "sonnet-4-6",
+    "sonnet-5",
+    "fable",
     "mythos",
 )
 
@@ -324,6 +329,24 @@ def _uses_adaptive_thinking(model: str) -> bool:
     """True if the model uses adaptive thinking instead of manual budget_tokens."""
     model_lower = model.lower()
     return any(tag in model_lower for tag in _ADAPTIVE_THINKING_MODELS)
+
+
+def _sdk_model_id(model_id: str) -> str:
+    """Strip a trailing Claude Code context-window tag (e.g. ``[1m]``).
+
+    ``claude-opus-4-8[1m]`` is Claude Code ``/model`` selection syntax only —
+    the Messages API model registry has no bracket-suffixed ids and returns a
+    non-retryable 404 for them (which api_failover also refuses to fail over
+    on, while its health probe uses the bare id and reports healthy — masking
+    the misconfiguration). Opus 4.8 is natively 1M-context on the API, so the
+    bare id is behavior-identical. The CLI backends keep the suffixed form.
+    """
+    return model_id.split("[", 1)[0].strip()
+
+
+# The id actually sent to the Anthropic SDK. CLAUDE_MODEL keeps the raw
+# (possibly bracket-suffixed) value for the CLI backends and UI badges.
+_SDK_MODEL = _sdk_model_id(CLAUDE_MODEL)
 
 
 def _format_model_display(model_id: str) -> str:
@@ -537,14 +560,15 @@ async def handle_chat_message_claude(
             db = _get_db()
             db_msgs = await db.get_dashboard_messages(conversation_id)
             # Drop the current turn's user message precisely (see dashboard_chat.py
-            # for the rationale): exact saved row when the save succeeded, the
-            # pre-existing last user row on regeneration/failover-retry, and
-            # nothing when an attempted save failed (user_msg_id == 0) so a prior
-            # turn isn't silently stripped from context.
+            # for the rationale): filter by id ANYWHERE — these handlers run as
+            # concurrent background tasks, so a near-simultaneous save on the same
+            # conversation can interleave a newer row AFTER ours, making
+            # db_msgs[-1] not our row (the old drop-last shape then kept our row
+            # in history AND re-appended the current turn below, duplicating it).
+            # Nothing is dropped when an attempted save failed (user_msg_id == 0)
+            # so a prior turn isn't silently stripped from context.
             if user_msg_id:
-                hist_msgs = (
-                    db_msgs[:-1] if db_msgs and db_msgs[-1].get("id") == user_msg_id else db_msgs
-                )
+                hist_msgs = [m for m in db_msgs if m.get("id") != user_msg_id]
             elif is_regeneration and db_msgs and db_msgs[-1]["role"] == "user":
                 hist_msgs = db_msgs[:-1]
             else:
@@ -579,7 +603,21 @@ async def handle_chat_message_claude(
                 # the Gemini twin's per-item guard). Skip it.
                 continue
             history_role: ClaudeMessageRole = "user" if msg.get("role") == "user" else "assistant"
-            messages.append(build_claude_message(history_role, str(msg.get("content", ""))))
+            fallback_text = str(msg.get("content", ""))
+            if not fallback_text.strip():
+                # The frontend deliberately supports image/doc-only sends and
+                # echoes them in historyToSend as content:"" — a mid-history
+                # empty message is a non-retryable 400 on the Anthropic API
+                # ("all messages must have non-empty content except for the
+                # optional final assistant message"), which would fail EVERY
+                # send until the empty turn ages out of the 20-message echo
+                # window. The DB path is safe via its timestamp prefix; this
+                # fallback needs its own guard: annotate user rows (keeps the
+                # turn visible to the model) and skip empty assistant rows.
+                if history_role != "user":
+                    continue
+                fallback_text = "[User sent a message with only attachments (no text)]"
+            messages.append(build_claude_message(history_role, fallback_text))
 
     # Build current message content blocks. Images were already validated,
     # decoded, compressed, and turned into Claude blocks by
@@ -766,7 +804,7 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     # Together this caches the full (system + prior history) prefix for ~5 min
     # and bills only the latest user turn at full input price.
     api_kwargs: dict[str, Any] = {
-        "model": CLAUDE_MODEL,
+        "model": _SDK_MODEL,
         "max_tokens": CLAUDE_MAX_TOKENS,
         "system": build_split_cached_system_prompt(
             stable_system_prompt,
@@ -784,11 +822,14 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     # Thinking config:
     # - Opus 4.7+ (incl. 4.8) REJECT `type: "enabled"` with budget_tokens. Use
     #   adaptive thinking instead; effort (above) controls thinking depth.
+    #   display: "summarized" is REQUIRED to surface thinking text — the API
+    #   default on Opus 4.7/4.8/Sonnet 5 is "omitted", which streams thinking
+    #   blocks with EMPTY text, leaving the dashboard's thinking panel blank.
     # - Older models (Opus 4.5, Sonnet 4.5) still accept the enabled+budget_tokens
     #   form, kept for backward compatibility.
     if thinking_enabled:
-        if _uses_adaptive_thinking(CLAUDE_MODEL):
-            api_kwargs["thinking"] = {"type": "adaptive"}
+        if _uses_adaptive_thinking(_SDK_MODEL):
+            api_kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
         elif CLAUDE_MAX_TOKENS > 1024:
             # budget_tokens MUST be strictly < max_tokens (Anthropic 400s
             # otherwise). max(…, 1024) alone could push budget >= max_tokens
@@ -817,6 +858,11 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
         is_thinking = False
         input_tokens = 0
         output_tokens = 0
+        # Output tokens spent by FAILED attempts whose text survives in
+        # full_response (the continuation prefill keeps it) — accumulated at
+        # each retry so stream_end reports the whole delivered response, not
+        # just the final attempt.
+        prior_attempt_output_tokens = 0
         cache_creation_tokens = 0
         cache_read_tokens = 0
         # Strip a leading ``[ISO-timestamp]`` that models sometimes echo from
@@ -952,6 +998,7 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                 input_tokens, \
                 output_tokens
             nonlocal cache_creation_tokens, cache_read_tokens
+            nonlocal prior_attempt_output_tokens
             attempt = 1
             # Save original messages to prevent accumulation on each retry
             original_messages = list(api_kwargs["messages"])
@@ -1023,7 +1070,11 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                     # We already have a large (if truncated) response — deliver it
                     # via the normal stream_end path rather than erroring.
                     return
-                # Reset only counters, keep full_response accumulating
+                # Reset only counters, keep full_response accumulating. Bank
+                # this attempt's output tokens first — its text stays in
+                # full_response via the continuation prefill, so its spend must
+                # survive into the final stream_end accounting.
+                prior_attempt_output_tokens += output_tokens
                 thinking_content = ""
                 chunks_count = 0
                 is_thinking = False
@@ -1158,6 +1209,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                             input_text += block.get("text", "")
             # ~3 chars/token for mixed Thai/English with Claude tokenizer
             input_tokens = max(1, len(input_text) // 3)
+        # Fold in output spent by failed-then-continued attempts (their text is
+        # part of full_response) BEFORE the char/3 estimate fallback, which
+        # should only kick in when nothing was reported at all.
+        output_tokens += prior_attempt_output_tokens
         if not output_tokens:
             out_text = full_response + thinking_content
             output_tokens = max(1, len(out_text) // 3)
@@ -1174,6 +1229,19 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                     thinking=thinking_content if thinking_content else None,
                     mode=mode_str,
                 )
+
+                # SDK turns never touch the CLI session map, so a persisted
+                # --resume session (from earlier CLI turns, surviving via the
+                # sidecar JSON across restarts/backend switches) would replay
+                # a server-side history that lacks this exchange — silent
+                # context loss on the next CLI-backend turn. Wipe it, same as
+                # the AI-edit and Gemini-turn paths.
+                try:
+                    from .dashboard_chat_claude_cli import delete_session_file
+
+                    await delete_session_file(conversation_id)
+                except Exception:
+                    logger.exception("Failed to reset CLI session after SDK turn")
 
                 # Auto-set title from first user message
                 conv = await db.get_dashboard_conversation(conversation_id)
@@ -1484,7 +1552,21 @@ async def handle_ai_edit_message_claude(
             hist = hist[-max_history_messages:]
         for msg in hist:
             role: ClaudeMessageRole = "user" if msg["role"] == "user" else "assistant"
-            messages.append(build_claude_message(role, str(msg.get("content", ""))))
+            # Mirror the main chat handler's DB-history shape (timestamp
+            # prefix + attachment note). Beyond parity, this is load-bearing:
+            # image-only user messages are persisted with content="" and a
+            # bare empty mid-history message is a non-retryable 400 on the
+            # Anthropic API — without the prefix/note, AI-edit failed
+            # PERMANENTLY for every assistant message after an image-only row
+            # (and each attempt also polluted failover health accounting).
+            text = msg.get("content") or ""
+            if msg.get("created_at"):
+                text = f"[{normalize_timestamp_to_bangkok(msg['created_at'])}] {text}"
+            if msg.get("images"):
+                text += f"\n[User had attached {len(msg['images'])} image(s) in this message]"
+            if not text.strip():
+                continue
+            messages.append(build_claude_message(role, text))
 
     messages.append(build_claude_message("user", edit_prompt))
 
@@ -1510,7 +1592,7 @@ async def handle_ai_edit_message_claude(
 
     # Build API kwargs (Hybrid prompt caching: explicit system + auto history).
     api_kwargs: dict[str, Any] = {
-        "model": CLAUDE_MODEL,
+        "model": _SDK_MODEL,
         "max_tokens": CLAUDE_MAX_TOKENS,
         "system": build_split_cached_system_prompt(
             stable_system_prompt,
@@ -1523,8 +1605,10 @@ async def handle_ai_edit_message_claude(
         api_kwargs["output_config"] = {"effort": CLAUDE_EFFORT}
 
     if thinking_enabled:
-        if _uses_adaptive_thinking(CLAUDE_MODEL):
-            api_kwargs["thinking"] = {"type": "adaptive"}
+        if _uses_adaptive_thinking(_SDK_MODEL):
+            # display: "summarized" — see the primary chat handler; the API
+            # default ("omitted") streams thinking blocks with empty text.
+            api_kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
         elif CLAUDE_MAX_TOKENS > 1024:
             # budget_tokens MUST be strictly < max_tokens — see the matching
             # block in the primary chat handler above for the full rationale.
@@ -1739,13 +1823,16 @@ async def handle_ai_edit_message_claude(
                     await delete_session_file(conversation_id)
                 except Exception:
                     logger.exception("Failed to reset CLI session after SDK AI edit")
-        elif full_response:
-            logger.warning(
-                "AI edit produced empty/whitespace content; keeping original message %s",
-                target_message_id_int,
-            )
+        else:
+            if full_response:
+                logger.warning(
+                    "AI edit produced empty/whitespace content; keeping original message %s",
+                    target_message_id_int,
+                )
             # Keep the DB row intact AND echo the original back so the client
             # doesn't blank the bubble (it renders full_response unconditionally).
+            # Covers the produced-nothing case ("") too — previously that sent
+            # full_response="" and blanked the bubble until reload.
             final_content = original_content
 
         await ws.send_json(

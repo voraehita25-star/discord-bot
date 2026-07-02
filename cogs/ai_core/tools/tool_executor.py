@@ -139,15 +139,22 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
                 split_at -= 1
             if split_at <= 0:
                 split_at = limit  # Fallback: force forward progress
-            # Rewind past Thai combining marks AND their base char so a hard cut
-            # never orphans a mark at the next chunk's start. Mirrors
-            # _split_for_discord (logic.py:296); the newline/space branches above
-            # can't land on a combining mark, so only the hard cut needs this.
+            # Rewind so a hard cut never orphans a Thai combining mark at the
+            # next chunk's start. Mirrors _split_for_discord (logic.py) — keep
+            # the two in sync. Case 1: the cut lands ON a mark (the char AT
+            # the cut is combining — including the previously-missed
+            # base|first-mark boundary): step back to the cluster's base so
+            # the whole cluster moves to the next chunk. Case 2 (only when
+            # case 1 didn't fire): the cut lands right AFTER trailing marks —
+            # walk back past the marks AND their base char.
             rewind = split_at
-            while rewind > 1 and ord(text[rewind - 1]) in _THAI_COMBINING:
+            while rewind > 1 and ord(text[rewind]) in _THAI_COMBINING:
                 rewind -= 1
-            if rewind > 1 and rewind < split_at:
-                rewind -= 1
+            if rewind == split_at:
+                while rewind > 1 and ord(text[rewind - 1]) in _THAI_COMBINING:
+                    rewind -= 1
+                if rewind > 1 and rewind < split_at:
+                    rewind -= 1
             split_at = rewind
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
@@ -763,6 +770,13 @@ async def send_as_webhook(bot, channel, name, message):
     Returns:
         The sent message object, or None if failed
     """
+    # When a chunked cached-webhook send fails mid-loop, this carries the
+    # exact UNDELIVERED chunks over to the find/create path below AND to the
+    # function-level except handlers. Initialized BEFORE the try: the early
+    # _send_plain_fallback calls inside the try can raise into those handlers
+    # before the old (mid-try) initialization ran — an unguarded reference
+    # there would have raised NameError.
+    pending_chunks: list[str] | None = None
     try:
         # Sanitize dangerous mentions FIRST (before any send path), delegating
         # to the authoritative escaper so this path can't drift from the main
@@ -793,10 +807,6 @@ async def send_as_webhook(bot, channel, name, message):
         name = name[:80]
         webhook_name = f"AI: {name}"[:80]
         channel_id = channel.id
-
-        # When a chunked cached-webhook send fails mid-loop, this carries the
-        # exact UNDELIVERED chunks over to the find/create path below.
-        pending_chunks: list[str] | None = None
 
         # Try cache first
         webhook = get_cached_webhook(channel_id, webhook_name)
@@ -1016,9 +1026,17 @@ async def send_as_webhook(bot, channel, name, message):
             "No permission to manage webhooks in %s",
             getattr(channel, "name", f"channel:{getattr(channel, 'id', '?')}"),
         )
+        # Resume from the undelivered tail when a chunked cached-webhook send
+        # partially succeeded before the failure (e.g. channel.webhooks()
+        # raised) — re-sending the full message duplicated the chunks that
+        # already reached the channel.
+        if pending_chunks:
+            return await _send_plain_fallback(channel, name, "\n".join(pending_chunks))
         return await _send_plain_fallback(channel, name, message)
     except discord.HTTPException as err:
         logger.error("Failed to send webhook: %s", err)
+        if pending_chunks:
+            return await _send_plain_fallback(channel, name, "\n".join(pending_chunks))
         return await _send_plain_fallback(channel, name, message)
 
 

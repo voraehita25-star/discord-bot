@@ -58,6 +58,13 @@ def _make_ctx(channel_id=987654321, guild_id=111222333):
     ctx.channel.id = channel_id
     ctx.guild.id = guild_id
     ctx.send = AsyncMock()
+    # Prefix invocation by default: hybrid commands gate their slash-only
+    # defer on ``ctx.interaction is not None``, and MagicMock's auto-created
+    # attribute is truthy — which made the defer branch fire with a
+    # non-awaitable mock. Tests exercising the slash path set an
+    # interaction (and an AsyncMock defer) explicitly.
+    ctx.interaction = None
+    ctx.defer = AsyncMock()
     return ctx
 
 
@@ -135,6 +142,10 @@ class TestToggleThinkingCmd:
 
     @pytest.mark.asyncio
     async def test_toggle_failure_session_not_found(self):
+        # toggle_thinking now returns False BOTH when no session exists and
+        # when the in-memory update succeeded but persistence failed
+        # (save_history returned False) — the command surfaces one honest
+        # warning covering both instead of a false success embed.
         cog = _make_cog()
         ctx = _make_ctx()
         cog.chat_manager.toggle_thinking = AsyncMock(return_value=False)
@@ -142,7 +153,9 @@ class TestToggleThinkingCmd:
         await cog.toggle_thinking_cmd.callback(cog, ctx, "on")
 
         ctx.send.assert_awaited_once()
-        assert "Session not found" in ctx.send.call_args.args[0]
+        sent = ctx.send.call_args.args[0]
+        assert "ไม่พบ session" in sent
+        assert "บันทึกลงฐานข้อมูลไม่สำเร็จ" in sent
 
     @pytest.mark.asyncio
     async def test_rp_redirect_uses_output_channel(self):
@@ -1107,7 +1120,10 @@ class TestUnrestrictedModeCmd:
         ctx = _make_ctx()
         with (
             patch("cogs.ai_core.ai_cog.GUARDRAILS_AVAILABLE", True),
-            patch("cogs.ai_core.ai_cog.unrestricted_channels", set()),
+            patch(
+                "cogs.ai_core.ai_cog.get_unrestricted_channels",
+                MagicMock(return_value=frozenset()),
+            ),
             patch("cogs.ai_core.ai_cog.unrestricted_all_enabled", MagicMock(return_value=False)),
         ):
             await cog.unrestricted_mode_cmd.callback(cog, ctx, "status")
@@ -1120,7 +1136,10 @@ class TestUnrestrictedModeCmd:
         ctx = _make_ctx()
         with (
             patch("cogs.ai_core.ai_cog.GUARDRAILS_AVAILABLE", True),
-            patch("cogs.ai_core.ai_cog.unrestricted_channels", set()),
+            patch(
+                "cogs.ai_core.ai_cog.get_unrestricted_channels",
+                MagicMock(return_value=frozenset()),
+            ),
             patch("cogs.ai_core.ai_cog.unrestricted_all_enabled", MagicMock(return_value=True)),
         ):
             await cog.unrestricted_mode_cmd.callback(cog, ctx, "status")
@@ -1133,7 +1152,10 @@ class TestUnrestrictedModeCmd:
         cog.bot.get_channel = MagicMock(side_effect=lambda cid: MagicMock() if cid == 10 else None)
         with (
             patch("cogs.ai_core.ai_cog.GUARDRAILS_AVAILABLE", True),
-            patch("cogs.ai_core.ai_cog.unrestricted_channels", {10, 20}),
+            patch(
+                "cogs.ai_core.ai_cog.get_unrestricted_channels",
+                MagicMock(return_value=frozenset({10, 20})),
+            ),
         ):
             await cog.unrestricted_mode_cmd.callback(cog, ctx, "status")
         embed = ctx.send.call_args.kwargs["embed"]

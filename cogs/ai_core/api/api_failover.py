@@ -140,8 +140,22 @@ _FAILURE_THRESHOLD = 3
 _NON_FAILOVER_CODES = {400, 404, 422, 429}
 
 
+class EmptyResponseError(Exception):
+    """Sentinel for HTTP-200-but-empty responses that must drive failover.
+
+    A proxy that returns 200 with no usable content blocks is a known
+    failure mode that the health probe (count_tokens) doesn't catch.
+    Generic RuntimeError must stay non-failover-worthy (pinned by
+    tests/test_api_failover.py), so the empty-content paths in
+    api_handler record THIS dedicated type instead.
+    """
+
+
 def _should_failover(error: Exception) -> bool:
     """Determine if an error warrants failover to another endpoint."""
+    # The dedicated 200-but-empty sentinel (see EmptyResponseError above).
+    if isinstance(error, EmptyResponseError):
+        return True
     # OSError covers raw network-stack failures (DNS resolution, connection
     # refused, socket reset) that the SDK surfaces directly without wrapping
     # in APIConnectionError. Check before anything else so plain network
@@ -169,7 +183,6 @@ _IMMEDIATE_FAILOVER_CODES = {401, 403}
 class APIFailoverManager:
     """Manages failover between direct and proxy Anthropic API endpoints."""
 
-    HEALTH_CHECK_INTERVAL = 120  # seconds between auto health checks
     RECOVERY_COOLDOWN = 60  # seconds before retrying a failed endpoint
     # ``FAILURE_THRESHOLD`` mirrors the module-level ``_FAILURE_THRESHOLD``
     # consumed by ``EndpointHealth.is_healthy`` — change both together.
@@ -592,10 +605,17 @@ class APIFailoverManager:
             # Mutate the health bucket under the manager lock (see the success
             # path above) so this probe failure can't race record_failure on
             # the real-request path.
+            # Apply the same _should_failover filter record_failure uses: a
+            # rate-limited probe (429) or a proxy that 400/404s count_tokens
+            # while serving messages fine must not advance the trip counter —
+            # three manual dashboard health checks against such an endpoint
+            # used to fail over away from a perfectly healthy active one.
+            probe_should_failover = _should_failover(e)
             async with self._lock:
                 health = self._health.get(target)
                 if health:
-                    health.consecutive_failures += 1
+                    if probe_should_failover:
+                        health.consecutive_failures += 1
                     health.last_failure_time = time.monotonic()
                     health.last_error = redacted
                     # Mirror the failure into the state machine so a
@@ -605,8 +625,14 @@ class APIFailoverManager:
                     # threshold check, so probes that all failed left the
                     # active endpoint stuck even when a healthy fallback
                     # existed. Use the locked path so listener dispatch
-                    # respects the same ordering as real failures.
-                    if health.consecutive_failures >= self.FAILURE_THRESHOLD:
+                    # respects the same ordering as real failures. Gated on
+                    # probe_should_failover for the same reason as the counter
+                    # above (record_failure never switches on non-failover
+                    # errors either, no matter how high the counter is).
+                    if (
+                        probe_should_failover
+                        and health.consecutive_failures >= self.FAILURE_THRESHOLD
+                    ):
                         # Keep a strong reference (added to
                         # ``_pending_close_tasks`` even though it's not a
                         # close — the set acts as a generic "tasks the

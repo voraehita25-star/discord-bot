@@ -225,13 +225,15 @@ class TestUnrestrictedFunctions:
 
 
 class TestUnrestrictedChannels:
-    """Tests for unrestricted_channels."""
+    """Tests for the unrestricted-channels accessor."""
 
-    def test_unrestricted_channels_exists(self):
-        """Test unrestricted_channels exists."""
-        from cogs.ai_core.ai_cog import unrestricted_channels
+    def test_get_unrestricted_channels_exists(self):
+        """ai_cog consumes the thread-safe snapshot accessor, not the raw set
+        (iterating the raw set raced set_unrestricted's worker-thread mutation)."""
+        from cogs.ai_core.ai_cog import get_unrestricted_channels
 
-        assert unrestricted_channels is not None
+        assert callable(get_unrestricted_channels)
+        assert isinstance(get_unrestricted_channels(), frozenset)
 
 
 class TestFeedbackCollector:
@@ -1101,6 +1103,7 @@ class TestChatCommandRegion:
         cog = _make_cog_r1()
         ctx = _ctx_r1(channel_id=100, guild_id=900)
         ctx.interaction = MagicMock()  # มี interaction = ถูกเรียกแบบ slash
+        ctx.interaction.delete_original_response = AsyncMock()
         ctx.defer = AsyncMock()
         ctx.channel = MagicMock(spec=discord.TextChannel)
         ctx.channel.id = 100
@@ -1115,6 +1118,10 @@ class TestChatCommandRegion:
             await cog.chat_command.callback(cog, ctx, message="hi")
 
         ctx.defer.assert_awaited_once()
+        # ทางสำเร็จต้อง resolve interaction ที่ defer ค้างไว้ด้วย (ไม่งั้น
+        # placeholder "thinking…" ค้างจน token หมดอายุแล้วกลายเป็น
+        # "The application did not respond")
+        ctx.interaction.delete_original_response.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_chat_command_prefix_does_not_defer(self):

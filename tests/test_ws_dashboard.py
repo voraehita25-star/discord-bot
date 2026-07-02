@@ -24,7 +24,7 @@ class FakeWS:
         self.sent: list[dict] = []
         self.closed = False
 
-    async def send_json(self, data: dict) -> None:
+    async def send_json(self, data: dict, **kwargs) -> None:  # kwargs: aiohttp accepts dumps=
         self.sent.append(data)
 
     async def close(self) -> None:
@@ -59,7 +59,7 @@ class _HandlerWS:
     async def prepare(self, _request) -> None:
         return None
 
-    async def send_json(self, data: dict) -> None:
+    async def send_json(self, data: dict, **kwargs) -> None:  # kwargs: aiohttp accepts dumps=
         self.sent.append(data)
 
     async def close(self, *, code: int = 1000, message: bytes = b"") -> None:

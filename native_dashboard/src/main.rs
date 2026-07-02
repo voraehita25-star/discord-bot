@@ -963,7 +963,15 @@ fn read_dotenv_value(env_path: &std::path::Path, key: &str) -> Option<String> {
             {
                 &t[1..t.len() - 1]
             } else {
-                t
+                // Unquoted values: strip an inline ` # comment`, matching
+                // python-dotenv (which the bot uses on the SAME file). Without
+                // this, `DASHBOARD_WS_TOKEN=abc  # note` made the dashboard
+                // send "abc  # note" while the bot expected "abc" — an opaque
+                // 401. Quoted values keep their `#` (both parsers agree).
+                match t.find(" #") {
+                    Some(i) => t[..i].trim_end(),
+                    None => t,
+                }
             };
             if !val.is_empty() {
                 return Some(val.to_string());
@@ -1565,6 +1573,24 @@ mod tests {
     fn dotenv_returns_first_match_when_duplicated() {
         let (_tmp, path) = write_env("DUP=first\nDUP=second\n");
         assert_eq!(read_dotenv_value(&path, "DUP"), Some("first".to_string()));
+    }
+
+    #[test]
+    fn dotenv_strips_inline_comment_on_unquoted_value() {
+        // python-dotenv (the bot's parser of the same file) strips ` # ...`
+        // on unquoted values — the dashboard must agree or a commented token
+        // line yields an opaque 401.
+        let (_tmp, path) = write_env("TOKEN=abc  # rotate monthly\n");
+        assert_eq!(read_dotenv_value(&path, "TOKEN"), Some("abc".to_string()));
+    }
+
+    #[test]
+    fn dotenv_keeps_hash_inside_quoted_value() {
+        let (_tmp, path) = write_env("TOKEN=\"abc # not a comment\"\n");
+        assert_eq!(
+            read_dotenv_value(&path, "TOKEN"),
+            Some("abc # not a comment".to_string())
+        );
     }
 
     // ------- sanitize_log_field (audit dash-rust-5: log-injection completeness) -

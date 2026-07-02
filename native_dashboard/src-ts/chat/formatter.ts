@@ -462,18 +462,21 @@ function formatMessageUncached(content: string): string {
     );
 
     // Unordered lists: consecutive lines starting with - or *.
+    // [ \t]+ (not \s+) after the marker, mirroring the heading fix above:
+    // \s+ matches a NEWLINE, so a line containing only "-" swallowed the
+    // following line into a list item ("-\nhello" → <ul><li>-</li>…).
     const listBlocks: string[] = [];
     const listPlaceholder = '\x03LIST_BLOCK_';
-    html = html.replace(/((?:^|\n)(?:[-*]\s+.+(?:\n|$))+)/g, (match) => {
-        const items = match.trim().split('\n').map(line => line.replace(/^[-*]\s+/, '').trim());
+    html = html.replace(/((?:^|\n)(?:[-*][ \t]+.+(?:\n|$))+)/g, (match) => {
+        const items = match.trim().split('\n').map(line => line.replace(/^[-*][ \t]+/, '').trim());
         const i = listBlocks.length;
         listBlocks.push('<ul>' + items.map(item => `<li>${item}</li>`).join('') + '</ul>');
         return `\n${listPlaceholder}${i}\x03\n`;
     });
 
     // Ordered lists: consecutive lines starting with 1. 2. etc.
-    html = html.replace(/((?:^|\n)(?:\d+\.\s+.+(?:\n|$))+)/g, (match) => {
-        const items = match.trim().split('\n').map(line => line.replace(/^\d+\.\s+/, '').trim());
+    html = html.replace(/((?:^|\n)(?:\d+\.[ \t]+.+(?:\n|$))+)/g, (match) => {
+        const items = match.trim().split('\n').map(line => line.replace(/^\d+\.[ \t]+/, '').trim());
         const i = listBlocks.length;
         listBlocks.push('<ol>' + items.map(item => `<li>${item}</li>`).join('') + '</ol>');
         return `\n${listPlaceholder}${i}\x03\n`;
@@ -536,21 +539,22 @@ function formatMessageUncached(content: string): string {
             'merror',
         ],
         ALLOWED_ATTR: [
-            // Table alignment now uses CSS classes (md-ta-*), and KaTeX output is
-            // re-inserted post-sanitisation (trusted, never seen by DOMPurify), so
-            // 'style' is no longer needed here. Dropping it removes an inline-CSS
-            // injection surface from raw AI markdown (e.g. style="background:url(...)").
+            // Table alignment now uses CSS classes (md-ta-*), so 'style' is no
+            // longer needed here. Dropping it removes an inline-CSS injection
+            // surface from raw AI markdown (e.g. style="background:url(...)").
+            // NOTE: KaTeX MathML output IS part of the sanitized input — the
+            // LaTeX placeholders are restored BEFORE purify.sanitize() runs —
+            // which is exactly why the MathML tag/attr whitelist below exists.
             'class', 'alt',
             'title', 'colspan', 'rowspan',
             // <a> link attributes. href is constrained to https by
             // ALLOWED_URI_REGEXP; target/rel are (re)written by the hook so even
             // an AI-supplied target/rel is normalised to _blank/noopener.
             'href', 'target', 'rel',
-            // KaTeX attributes
+            // KaTeX attributes (output:'mathml' — presentation MathML only)
             'mathvariant', 'encoding', 'xmlns', 'display',
             'aria-hidden', 'focusable', 'role',
-            'width', 'height', 'viewBox', 'fill', 'stroke',
-            'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'd',
+            'width', 'height',
         ],
         ADD_ATTR: ['data-img-idx', 'data-code-copy'],
         // Must stay true: it is the ONLY setting that lets our own data-*

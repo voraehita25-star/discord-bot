@@ -347,6 +347,40 @@ class TestSafeSplitMessage:
             assert ord(c[0]) not in _THAI_COMBINING  # no orphaned combining mark
         assert "".join(chunks) == text  # the hard cut loses no content
 
+    def test_no_orphaned_thai_mark_on_base_boundary_cut(self):
+        # Regression: a hard cut landing EXACTLY between a base char and its
+        # FIRST combining mark ('…ก|่…'). The original rewind only inspected
+        # the char BEFORE the cut (the base — not combining), so it never
+        # fired and the mark started the next chunk as a stray ◌-form glyph.
+        from cogs.ai_core.tools.tool_executor import _THAI_COMBINING, _safe_split_message
+
+        text = "a" * 9 + "ก่" + "b" * 10  # cut at 10 lands on the mark
+        chunks = _safe_split_message(text, limit=10)
+        assert len(chunks) > 1
+        for c in chunks:
+            assert c
+            assert ord(c[0]) not in _THAI_COMBINING
+        assert "".join(chunks) == text
+
+    def test_split_for_discord_no_orphaned_mark_both_boundaries(self):
+        # The declared mirror in logic.py must handle both hard-cut shapes:
+        # between two marks (ก่|่) and between base and first mark (ก|่).
+        from cogs.ai_core.logic import _THAI_COMBINING, _split_for_discord
+
+        for text in ("a" * 8 + "ก่่" + "b" * 10, "a" * 9 + "ก่" + "b" * 10):
+            chunks = _split_for_discord(text, limit=10)
+            assert len(chunks) > 1
+            for c in chunks:
+                assert c
+                assert ord(c[0]) not in _THAI_COMBINING
+            assert "".join(chunks) == text
+        # And at the real Discord limit with spaceless Thai filler.
+        text = "x" * 1999 + "กิ" + "y" * 50
+        chunks = _split_for_discord(text)
+        for c in chunks:
+            assert ord(c[0]) not in _THAI_COMBINING
+        assert "".join(chunks) == text
+
 
 class TestModuleExports:
     """Tests for module exports."""

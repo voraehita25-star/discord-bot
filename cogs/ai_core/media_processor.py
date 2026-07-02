@@ -77,13 +77,9 @@ _GIF_ENCODE_EXECUTOR: _futures.ThreadPoolExecutor = _futures.ThreadPoolExecutor(
     thread_name_prefix="gif-encode",
 )
 
-# Tear the pool down on interpreter exit. It's a module-level, non-daemon
-# executor that was never shut down — its worker threads can delay interpreter
-# exit (CPython's atexit joins executor threads) — unlike bot.py's
-# _default_executor which is explicitly torn down on graceful shutdown. Mirror
-# that teardown (wait=False, cancel_futures=True) so shutdown isn't stalled by
-# an in-flight slow GIF encode.
-atexit.register(lambda: _GIF_ENCODE_EXECUTOR.shutdown(wait=False, cancel_futures=True))
+# Teardown registration lives below (after the threading import) via
+# _shutdown_gif_encode_executor — a plain ``atexit.register`` here was
+# provably ineffective; see that function's docstring.
 
 # Throttle concurrent GIF→MP4 conversions to 2 (BELOW the encode-pool width of
 # 4 — see _GIF_ENCODE_EXECUTOR for why the pool keeps the extra headroom). Each
@@ -114,6 +110,46 @@ import threading as _threading
 _GIF_ENCODE_MAX_INFLIGHT = 4  # == _GIF_ENCODE_EXECUTOR max_workers
 _GIF_ENCODE_INFLIGHT = 0
 _GIF_ENCODE_INFLIGHT_LOCK = _threading.Lock()
+
+
+def _shutdown_gif_encode_executor() -> None:
+    """Cancel queued GIF encodes at interpreter exit (best-effort teardown).
+
+    A plain ``atexit.register`` was provably a no-op for this purpose:
+    concurrent.futures registers its own ``_python_exit`` via
+    ``threading._register_atexit``, which runs inside ``threading._shutdown``
+    and JOINS every executor worker thread BEFORE ordinary ``atexit``
+    callbacks fire — the old atexit-based shutdown only ran after any hung
+    encode had already blocked exit for its full duration, and its
+    ``cancel_futures=True`` cancelled nothing (empirically reproduced on this
+    venv's Python 3.14). Registering via ``threading._register_atexit``
+    AFTER the pool exists makes this run before ``_python_exit`` (callbacks
+    run newest-first), so QUEUED encodes are cancelled before workers drain
+    the queue — exit then waits only for encodes already executing.
+
+    Honest scope note: an encode already inside an uninterruptible ffmpeg
+    call still stalls exit until it finishes. Executor workers are
+    non-daemon and the interpreter joins all non-daemon threads during
+    ``threading._shutdown`` regardless of any bookkeeping we do here
+    (detaching from ``_threads_queues`` was tested and does NOT help), so
+    truly aborting an in-flight encode would require terminating the ffmpeg
+    subprocess itself — plumbing that is out of scope. Frames are bounded
+    (<=300, <=1.5MP), which bounds the realistic worst case.
+    """
+    _GIF_ENCODE_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+
+
+try:
+    # Private but stable since 3.9; registered after concurrent.futures'
+    # own hook so it runs first. Untyped/private, hence the ignore — the
+    # except below covers any future removal at runtime.
+    _threading._register_atexit(  # type: ignore[attr-defined]
+        _shutdown_gif_encode_executor
+    )
+except Exception:  # pragma: no cover - private-API drift tolerance
+    # Degraded fallback: runs post-join, i.e. effectively a no-op for the
+    # stall, but keeps the executor formally shut down.
+    atexit.register(_shutdown_gif_encode_executor)
 
 
 def _try_reserve_gif_encode_slot() -> bool:

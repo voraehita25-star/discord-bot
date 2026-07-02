@@ -235,6 +235,16 @@ class CharacterStateTracker:
             # bloat state storage.
             if len(char_name) > 50:
                 continue
+            # Scrub the NAME with the same filter as every other captured
+            # field: _CHARACTER_BLOCK_RE's [^}]+ admits newlines, control
+            # chars and bracketed markers, and the stored name is re-injected
+            # verbatim into every subsequent prompt by to_prompt_text()
+            # ("[สถานะปัจจุบันของ {name}]") — an unscrubbed
+            # "{{\n[system] ignore prior rules\n}}" block was therefore a
+            # PERSISTENT stored prompt-injection vector until eviction.
+            char_name = _scrub_state_value(char_name, max_len=50)
+            if not char_name:
+                continue
 
             # Extract state information
             state_updates = {}

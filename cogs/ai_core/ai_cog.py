@@ -46,12 +46,12 @@ from .imports import (  # noqa: F401 - public re-exports
     UNRESTRICTED_AVAILABLE,
     add_feedback_reactions,
     feedback_collector,
+    get_unrestricted_channels,
     is_unrestricted,
     msg,
     msg_en,
     set_unrestricted,
     unrestricted_all_enabled,
-    unrestricted_channels,
 )
 from .logic import ChatManager
 from .memory.rag import rag_system
@@ -480,6 +480,22 @@ class AI(commands.Cog):
     @commands.cooldown(1, 3, commands.BucketType.user)
     async def chat_command(self, ctx: Context, *, message: str | None = None) -> None:
         """Talk to AI."""
+        # Rate-limit gauntlet — the direct command path must consume the same
+        # budget buckets as every other invocation path (webhook proxy, DM,
+        # @mention/reply). Without this, !chat bypassed the shared
+        # gemini_api/gemini_global budgets AND the owner-set
+        # !channel_ratelimit override entirely (its only gate was the 3s
+        # per-user cooldown decorator). Runs BEFORE the defer: the checks are
+        # in-memory and instant, and on rejection ctx.send completes the
+        # slash interaction directly instead of orphaning a deferred
+        # placeholder. send_message=False because ctx.send is the reply here.
+        if (
+            not await check_rate_limit("gemini_api", ctx.message, send_message=False)
+            or not await check_rate_limit("gemini_global", ctx.message, send_message=False)
+            or not await self._check_custom_channel_limit(ctx.message, send_message=False)
+        ):
+            await ctx.send("⏳ ตอนนี้มีการใช้งาน AI หนาแน่น กรุณารอสักครู่แล้วลองใหม่")
+            return
         # Slash (/chat) ต้อง ack ภายใน 3 วินาทีของ Discord แต่ AI ใช้เวลานานกว่านั้น
         # จึง defer ไว้ก่อน ไม่งั้นจะขึ้น "The application did not respond"
         # (prefix !chat ไม่มี interaction จึงไม่ได้รับผลกระทบ)
@@ -505,6 +521,7 @@ class AI(commands.Cog):
                         # (resend / reference lookups rely on it).
                         user_message_id=ctx.message.id,
                     )
+                    await self._complete_deferred_interaction(ctx)
                 else:
                     await ctx.send("❌ ไม่พบห้อง Output สำหรับ Roleplay")
                 return
@@ -548,6 +565,24 @@ class AI(commands.Cog):
             ctx.message.attachments,
             user_message_id=ctx.message.id,
         )
+        await self._complete_deferred_interaction(ctx)
+
+    @staticmethod
+    async def _complete_deferred_interaction(ctx: Context) -> None:
+        """Resolve a deferred slash interaction whose real reply went out via
+        ``channel.send`` (process_chat) rather than an interaction followup.
+
+        Deleting the deferred placeholder completes the interaction; without
+        this, every successful slash ``/chat`` left the non-ephemeral
+        "thinking…" placeholder unresolved until the 15-minute token expiry
+        rendered it as "The application did not respond" — even though the AI
+        reply had long since arrived as a plain channel message. No-op for
+        prefix invocations.
+        """
+        if ctx.interaction is None:
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await ctx.interaction.delete_original_response()
 
     @chat_command.error
     async def chat_command_error(self, ctx, error):
@@ -561,6 +596,13 @@ class AI(commands.Cog):
     @commands.is_owner()
     async def reset_ai(self, ctx):
         """Reset Chat History (Owner Only)."""
+        # Slash: ack ภายใน 3 วินาที — ด้านล่างตั้งใจรอ lock ได้ถึง 30s (รอ
+        # generation ที่ค้างอยู่ให้จบก่อน wipe) ซึ่งเกินหน้าต่าง ack ของ
+        # Discord แน่นอน ถ้าไม่ defer ตัว ctx.send สุดท้ายจะวิ่งไปที่
+        # interaction.response.send_message แล้ว 404 (Unknown interaction)
+        # ทำให้ owner ไม่เห็นข้อความยืนยันทั้งที่ wipe สำเร็จแล้ว
+        if ctx.interaction is not None:
+            await ctx.defer()
         channel_id = ctx.channel.id
         # RP guild: commands are issued in the COMMAND channel but the session
         # lives under the OUTPUT channel id (logic.py keys by context channel)
@@ -1232,7 +1274,14 @@ class AI(commands.Cog):
             )
             await ctx.send(embed=embed)
         else:
-            await ctx.send("❌ ไม่สามารถตั้งค่าได้ (Session not found)")
+            # toggle_thinking returns False both when no session exists AND
+            # when the session updated in memory but persistence failed
+            # (save_history returned False) — surface both honestly instead
+            # of a false success embed.
+            await ctx.send(
+                "⚠️ ไม่สามารถตั้งค่าได้ครบถ้วน: ไม่พบ session "
+                "หรือบันทึกลงฐานข้อมูลไม่สำเร็จ (ค่าที่ตั้งอาจหายหลังรีสตาร์ท)"
+            )
 
     @commands.command(name="streaming", aliases=["stream"])
     @commands.has_permissions(manage_guild=True)
@@ -2081,7 +2130,12 @@ class AI(commands.Cog):
                     "**every** channel is unrestricted regardless of the per-channel list.\n\n"
                 )
 
-            if not unrestricted_channels:
+            # Snapshot under the module lock — set_unrestricted mutates the
+            # raw set from a worker thread (asyncio.to_thread below), so
+            # iterating it lock-free here could raise "Set changed size
+            # during iteration" mid-command.
+            unrestricted_snapshot = get_unrestricted_channels()
+            if not unrestricted_snapshot:
                 await ctx.send(
                     f"{global_note}📊 **Unrestricted Mode Status**\n\n"
                     "❌ No channels are individually marked unrestricted."
@@ -2089,7 +2143,7 @@ class AI(commands.Cog):
                 return
 
             channel_list = []
-            for cid in unrestricted_channels:
+            for cid in unrestricted_snapshot:
                 channel = self.bot.get_channel(cid)
                 if channel:
                     channel_list.append(f"• <#{cid}> (`{cid}`)")

@@ -421,10 +421,21 @@ h1, .page-header h1 {
     text-wrap: balance;
 }
 .control-card h2,
-.chart-card h2,
 .settings-card h2,
 .api-failover-card h2,
 .data-section h2 { font-size: var(--step-2); }
+/* Chart card titles are <h3> (the old .chart-card h2 entry above never
+   matched, leaving them on the legacy 14px base style). They are sub-labels
+   inside .charts-section, so give them the mono telemetry-label treatment
+   the section headings use rather than the big --step-2 card-title size. */
+.chart-card h3 {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: var(--step--1);
+    color: var(--text-secondary);
+}
 .stat-value, .stat-card .stat-value { font-size: var(--step-3); }
 body { font-size: var(--step-0); line-height: 1.55; }
 .shortcut, .message-time { font-size: var(--step--1); }
@@ -1232,6 +1243,11 @@ html[data-theme="light"] .modal-overlay { background: rgba(220, 232, 241, .62); 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: rgba(61, 245, 255, 0.24); border: 3px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(61, 245, 255, 0.44); background-clip: padding-box; }
+/* Light (Blueprint): the translucent NEON cyan above is sized for the carbon
+   canvas — on white paper it is nearly invisible. Deep-teal ink instead. */
+html[data-theme="light"] * { scrollbar-color: rgba(11, 96, 124, 0.38) transparent; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(11, 96, 124, 0.32); border: 3px solid transparent; background-clip: padding-box; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(11, 96, 124, 0.52); background-clip: padding-box; }
 
 /* ============================================================================
    MOTION — boot-up reveal for the status page panels + scan sweep on the logo
@@ -1305,8 +1321,19 @@ html[data-theme="light"] .modal-overlay { background: rgba(220, 232, 241, .62); 
     }
 }
 @keyframes orbital-dot-pulse {
-    0%, 100% { box-shadow: 0 0 6px currentColor, 0 0 0 0 rgba(46, 230, 166, 0.45); }
-    50%      { box-shadow: 0 0 12px currentColor, 0 0 0 5px rgba(46, 230, 166, 0); }
+    /* Halo derives from the per-theme online green via color-mix, so the
+       pulse ring matches the dot in light theme too (the old literal stayed
+       neon jade on Blueprint's deeper #0a8a55). */
+    0%, 100% {
+        box-shadow:
+            0 0 6px currentColor,
+            0 0 0 0 color-mix(in srgb, var(--accent-green) 45%, transparent);
+    }
+    50% {
+        box-shadow:
+            0 0 12px currentColor,
+            0 0 0 5px color-mix(in srgb, var(--accent-green) 0%, transparent);
+    }
 }
 @keyframes orbital-scan {
     0%   { opacity: 0; transform: scaleX(0.2); transform-origin: left; }
@@ -1355,7 +1382,9 @@ h1 .ic, h2 .ic, h3 .ic,
 .checkbox-icon .ic, .thinking-label .ic { width: 15px; height: 15px; vertical-align: -0.2em; }
 .live-indicator .ic { width: 9px; height: 9px; color: var(--accent-red); }
 .role-card-emoji .ic { width: 30px; height: 30px; color: var(--accent-cyan); }
-.empty-state .ic, .chat-files-empty-icon .ic, .overlay-icon .ic { width: 42px; height: 42px; color: var(--accent-cyan); stroke-width: 1.4; }
+/* (.overlay-icon dropped from this group — orphaned since the not-running
+   overlay moved to the shared .empty-state recipe.) */
+.empty-state .ic, .chat-files-empty-icon .ic { width: 42px; height: 42px; color: var(--accent-cyan); stroke-width: 1.4; }
 
 /* Code-block copy button: the icon is painted via a CSS mask (not inline SVG)
    because the button lives inside DOMPurify-sanitized message HTML, which
@@ -1764,6 +1793,15 @@ textarea:focus-visible, [tabindex]:focus-visible {
     outline-offset: 2px;
     box-shadow: var(--focus-ring);
 }
+/* Same redirect for the chat Search/Unrestricted checkboxes: their <input>
+   is visually hidden (0×0, opacity:0 — see styles.css) so the generic ring
+   lands on an invisible box; paint it on the visible icon chip instead. */
+.checkbox-label input:focus-visible + .checkbox-icon {
+    outline: 2px solid var(--accent-cyan);
+    outline-offset: 2px;
+    box-shadow: var(--focus-ring);
+    border-radius: var(--radius-sm);
+}
 a:focus:not(:focus-visible), button:focus:not(:focus-visible),
 .btn:focus:not(:focus-visible), .nav-item:focus:not(:focus-visible),
 .theme-toggle:focus:not(:focus-visible) { outline: none; }
@@ -1775,6 +1813,12 @@ a:focus:not(:focus-visible), button:focus:not(:focus-visible),
 }
 @media (prefers-contrast: more) {
     :root { --border-color: var(--border-strong); }
+    /* The light-theme token block sets --border-color at HIGHER specificity
+       (html[data-theme="light"]), which beats the bare :root above regardless
+       of source order — so OS "increase contrast" only worked in dark theme.
+       Restate at matching specificity. */
+    html[data-theme="light"],
+    :root[data-theme="light"] { --border-color: var(--border-strong); }
 }
 
 /* ============================================================================

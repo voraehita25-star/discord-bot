@@ -85,6 +85,7 @@ def is_silent_block(response: str) -> bool:
 # override), not content filtering.
 try:
     from .processing.unrestricted import (
+        get_unrestricted_channels,
         is_unrestricted,
         set_unrestricted,
         unrestricted_all_enabled,
@@ -103,6 +104,9 @@ except ImportError:
 
     def unrestricted_all_enabled() -> bool:
         return False
+
+    def get_unrestricted_channels() -> frozenset[int]:
+        return frozenset()
 
     # Annotation lives on the imported symbol (set[int]); re-annotating here
     # would be a no-redef. The empty set matches that declared type.
