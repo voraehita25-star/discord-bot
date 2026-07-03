@@ -85,6 +85,11 @@ def make_ctx(guild_id=12345, *, voice_client=None, in_voice=True):
         ctx.author.voice = None
     ctx.send = AsyncMock()
     ctx.typing = MagicMock(return_value=_Typing())
+    # Default to a prefix-style invocation (no interaction) so the join()
+    # slash-ack `if ctx.interaction is not None: await ctx.defer()` guard is
+    # skipped; otherwise MagicMock's auto-attr ctx.interaction would be
+    # truthy and ctx.defer (a non-async MagicMock) would fail to await.
+    ctx.interaction = None
     return ctx
 
 
@@ -966,6 +971,31 @@ class TestJoinCommand:
         ctx.author.voice.channel.connect = AsyncMock(side_effect=discord.ClientException("nope"))
         await cog.join.callback(cog, ctx)
         ctx.send.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_join_slash_defers_before_connect(self):
+        """Slash invocation (ctx.interaction set) must defer before the slow
+        channel.connect() — Discord's 3s ack window is far shorter than the
+        30s connect timeout, so deferring late would make the eventual
+        ctx.send raise discord.NotFound (see cog.py join())."""
+        cog = make_cog()
+        ctx = make_ctx(voice_client=None)
+        ctx.interaction = MagicMock()
+        ctx.defer = AsyncMock()
+        perms = MagicMock(connect=True, speak=True)
+        ctx.author.voice.channel.permissions_for = MagicMock(return_value=perms)
+
+        call_order = []
+        ctx.defer.side_effect = lambda: call_order.append("defer")
+        ctx.author.voice.channel.connect = AsyncMock(
+            side_effect=lambda *a, **kw: call_order.append("connect")
+        )
+
+        await cog.join.callback(cog, ctx)
+
+        ctx.defer.assert_awaited_once()
+        ctx.author.voice.channel.connect.assert_awaited_once()
+        assert call_order == ["defer", "connect"]
 
 
 # --------------------------------------------------------------------------- #

@@ -860,17 +860,19 @@ class Music(commands.Cog):
                 if gs.last_text_channel is not None:
                     last_channel_id = gs.last_text_channel
                     last_channel = guild.get_channel(last_channel_id)
-                    if (
-                        last_channel
-                        and guild.me
-                        and last_channel.permissions_for(guild.me).send_messages
-                    ):
-                        text_channel = last_channel
+                    if last_channel and guild.me:
+                        perms = last_channel.permissions_for(guild.me)
+                        # embed_links required too — the notification below is
+                        # embed-only, so a channel that can't render it should
+                        # never be picked.
+                        if perms.send_messages and perms.embed_links:
+                            text_channel = last_channel
 
-                # Fallback: Find any text channel with send permission
+                # Fallback: Find any text channel with send + embed permission
                 if not text_channel and guild.me:
                     for channel in guild.text_channels:
-                        if channel.permissions_for(guild.me).send_messages:
+                        perms = channel.permissions_for(guild.me)
+                        if perms.send_messages and perms.embed_links:
                             text_channel = channel
                             break
 
@@ -885,7 +887,16 @@ class Music(commands.Cog):
                         color=Colors.WARNING,
                     )
                     embed.set_footer(text="ใช้ !join เพื่อเชื่อมต่อใหม่")
-                    await text_channel.send(embed=embed)  # type: ignore[union-attr]
+                    # Notification is best-effort only — this send must NOT
+                    # share the outer try. If it raises (e.g. embed_links
+                    # revoked after the picker ran, transient 429/5xx), the
+                    # outer `except discord.DiscordException` would swallow
+                    # it and skip the sleep/recheck/disconnect below, leaving
+                    # the bot stuck in an empty voice channel indefinitely.
+                    try:
+                        await text_channel.send(embed=embed)  # type: ignore[union-attr]
+                    except discord.DiscordException:
+                        logger.warning("Auto-disconnect notification failed for guild %s", guild_id)
 
             # Wait for the delay
             await asyncio.sleep(self.auto_disconnect_delay)
@@ -1908,6 +1919,13 @@ class Music(commands.Cog):
             )
             await ctx.send(embed=embed)
             return
+
+        # Slash (/join) ต้อง ack ภายใน 3 วินาทีของ Discord แต่ move_to/connect
+        # ด้านล่างอาจใช้เวลาถึง 30 วินาที จึง defer ไว้ก่อน ไม่งั้นจะขึ้น
+        # "The application did not respond" (prefix !join ไม่มี interaction
+        # จึงไม่ได้รับผลกระทบ)
+        if ctx.interaction is not None:
+            await ctx.defer()
 
         if ctx.voice_client is not None:
             try:

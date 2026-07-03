@@ -1936,13 +1936,19 @@ class TestAutoDisconnect:
 
     @pytest.mark.asyncio
     async def test_discord_exception_logged(self, monkeypatch):
-        """A DiscordException is caught and logged."""
+        """Notification send raising DiscordException doesn't abort disconnect.
+
+        The warning-embed send is best-effort only — it must not share the
+        outer try with the sleep/recheck/disconnect, or a failed notification
+        would strand the bot in an empty voice channel forever.
+        """
         cog, mock_bot = _make_cog()
         gid = 77
         guild = MagicMock()
         guild.me = MagicMock()
         text_chan = MagicMock()
         text_chan.permissions_for.return_value.send_messages = True
+        text_chan.permissions_for.return_value.embed_links = True
         text_chan.send = AsyncMock(side_effect=discord.DiscordException("send fail"))
         guild.get_channel.return_value = text_chan
         cog._gs(gid).last_text_channel = 1
@@ -1950,10 +1956,21 @@ class TestAutoDisconnect:
         vc = MagicMock()
         vc.is_connected.return_value = True
         vc.guild = guild
-        vc.channel = MagicMock()
+        # Alone after the wait -> disconnect must still run despite the
+        # notification send failing above.
+        empty_channel = MagicMock()
+        empty_channel.members = [MagicMock(bot=True)]
+        vc.channel = empty_channel
+        vc.disconnect = AsyncMock()
+
+        cog.cleanup_guild_data = AsyncMock()
+        mock_bot.voice_clients = [vc, MagicMock()]  # >1 so presence NOT reset
 
         with patch("asyncio.sleep", new=AsyncMock()):
             await cog._auto_disconnect(gid, vc)
+
+        text_chan.send.assert_awaited_once()
+        vc.disconnect.assert_awaited_once()
         assert cog._gs(gid).auto_disconnect_task is None
 
 
