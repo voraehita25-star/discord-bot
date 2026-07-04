@@ -1238,21 +1238,16 @@ html[data-theme="light"] .chat-connection-status.connected {
 .chat-input-hint { font-size: var(--step--1); }
 
 /* ============================================================================
-   SAKURA PETALS — cursor interaction. app.ts sets --repel-x/-y on petals near
-   the pointer; the offset composes on the inner <svg> because the fall
-   keyframes own the petal element's transform. Soft ease out + a slower ease
-   back as the cursor moves on. Petals stay pointer-events:none (decorative,
-   never block clicks) — proximity is computed in JS, not via :hover.
+   SAKURA PETALS — fully physics-driven (app.ts integrates gravity/drag/
+   flutter/breeze/cursor forces per frame and writes transform + opacity
+   directly on each petal). NO transitions or keyframes here: any CSS easing
+   on top of a per-frame-integrated value reads as stutter. Petals stay
+   pointer-events:none — the cursor force field is computed in JS.
    ============================================================================ */
 #sakura-container .sakura-petal svg {
     display: block;
     width: 100%;
     height: 100%;
-    transform: translate(var(--repel-x, 0px), var(--repel-y, 0px));
-    /* NO transition here — app.ts smooths --repel-x/-y itself with a per-frame
-       spring lerp. A CSS transition on top would restart every frame against
-       the continuously-updated target and read as stutter. */
-    will-change: transform;
 }
 
 /* Star toggle — chat-manager renders the graphic <svg .ic> star; the .starred
