@@ -1,17 +1,26 @@
 /* ============================================================================
-   ORBITAL v3 — "Tactical Command Deck"
+   SAKURA MIDNIGHT v4 — "Night-Blossom Deck" (밤벚꽃)
    ----------------------------------------------------------------------------
-   A bold re-skin layered on top of styles.css (linked AFTER it in index.html so
-   it wins by source order). Strategy: redefine the existing design-token VALUES
-   (carbon / neon-cyan / warning-amber) + swap the typeface to Chakra Petch +
-   JetBrains Mono, then add HUD structure (corner brackets, scanlines, technical
-   grid) without touching the 5.8k-line base or any selector/JS contract.
-   Every element id and class the TypeScript queries is preserved.
-   Korean body text falls back to Malgun Gothic / Noto Sans KR (fonts are
-   Latin-subset, self-hosted → CSP font-src 'self').
+   A full re-skin layered on top of styles.css (linked AFTER it in index.html so
+   it wins by source order). v4 finally unifies the app's two identities: the
+   ORBITAL command-deck BONES (mono eyebrows, corner ticks, tabular telemetry)
+   stay, but the soul is the Sakura Midnight brand — a deep plum night sky,
+   luminous sakura-pink as the primary accent, wisteria as the secondary, and
+   blossom-gold for warnings. The light theme is "새벽" (dawn): the same garden
+   at sunrise — warm blush paper, rose-ink text — not a different app.
+   Typography: Bricolage Grotesque (revived from vendor/fonts — it shipped as
+   the original "SakuraDisplay" face) for display, Chakra Petch for UI,
+   JetBrains Mono for telemetry. Korean falls back to Malgun Gothic/Noto Sans KR.
+   Every element id, class, data-* and custom-property the TypeScript + the
+   e2e suites query is preserved — this file changes VALUES, not contracts.
    ============================================================================ */
 
-/* ---- Typefaces (self-hosted, offline-safe) ---------------------------------- */
+/* ---- Typefaces (self-hosted, offline-safe, CSP font-src 'self') ------------ */
+@font-face {
+    font-family: 'Bricolage Grotesque';
+    src: url('vendor/fonts/bricolage-grotesque.woff2') format('woff2-variations');
+    font-weight: 200 800; font-style: normal; font-display: swap;
+}
 @font-face {
     font-family: 'Chakra Petch';
     src: url('vendor/fonts/chakra-petch-400.woff2') format('woff2');
@@ -39,128 +48,121 @@
 }
 
 /* ============================================================================
-   TOKEN MAP — canonical surface/elevation vocabulary (VIS-05, documentation
-   only; NO tokens deleted — legacy styles.css rules still reference the aliases).
+   TOKEN MAP — canonical surface/elevation vocabulary (documentation only;
+   NO tokens deleted — legacy styles.css rules still reference the aliases).
    ----------------------------------------------------------------------------
    PAGE CANVAS      --bg-primary / --bg-secondary / --bg-tertiary
-                      → the full-window background field (body + page washes).
+                      → the full-window night-sky field (body + page washes).
    CHIPS / FILLS    --surface-1 / --surface-2 / --surface-3
                       → inputs, badges, small tinted fills, list rows.
    PANELS           --card-bg / --sidebar-bg / --glass
                       → opaque cards, sidebar, glass chrome (content sits here).
    ELEVATION        --shadow-sm / --shadow-md / --shadow-lg / --shadow-glow
-                      → flat HUD depth ramp.
-                    --shadow-*-3d  → DEPRECATED-ALIAS of the flat ramp above,
-                      kept only so surviving styles.css refs resolve. Do NOT
-                      author new rules against the *-3d names.
-   EMPHASIS/ATMOS   --accent-sakura* / --glow-sakura / --aurora / --grain
-                      → decorative emphasis + atmosphere ONLY (never load-bearing
-                      text contrast). The cyan ramp stays the DATA/HUD layer.
+                      → flat depth ramp. --shadow-*-3d = DEPRECATED aliases,
+                      kept only so surviving styles.css refs resolve.
+   ACCENT NAMES     --accent-cyan is the PRIMARY-accent SLOT (historical name;
+                      it now holds sakura pink). --accent-azure is the
+                      secondary slot (wisteria). --accent-pink/-purple/-violet
+                      alias onto those two. Renaming the slots would orphan
+                      hundreds of styles.css references — values change, names
+                      never do.
    ============================================================================ */
 
 /* ============================================================================
-   TOKENS — DARK (default). Redefines both the v1 and v2 token sets to ORBITAL.
+   TOKENS — DARK "밤" (default): plum midnight + luminous sakura
    ============================================================================ */
 :root {
-    /* base canvas */
-    --bg-primary: #060910;
-    --bg-secondary: rgba(13, 19, 30, 0.85);
-    --bg-tertiary: rgba(20, 28, 42, 0.70);
+    /* base canvas — deep plum-black night sky */
+    --bg-primary: #0c0812;
+    --bg-secondary: rgba(24, 16, 32, 0.85);
+    --bg-tertiary: rgba(36, 25, 48, 0.70);
 
-    /* text */
-    --text-primary: #e6f3f8;
-    --text-secondary: #9fb4c6;
-    /* contrast bump (was #6f879b) — used for sub-lines / telemetry labels */
-    --text-tertiary: #8aa2b6;
-    --text-muted: #51677a;
+    /* text — moonlit blush neutrals */
+    --text-primary: #f5edf4;
+    --text-secondary: #c9b7cd;
+    --text-tertiary: #ab97b2;
+    --text-muted: #7d6d88;
 
     /* borders / surfaces */
-    --border-color: rgba(72, 196, 232, 0.16);
-    --border-strong: rgba(72, 196, 232, 0.34);
-    --border-focus: rgba(61, 245, 255, 0.60);
-    --surface-1: #0a1018;
-    --surface-2: rgba(18, 27, 40, 0.66);
-    --surface-3: rgba(28, 40, 56, 0.82);
+    --border-color: rgba(255, 161, 194, 0.15);
+    --border-strong: rgba(255, 161, 194, 0.32);
+    --border-focus: rgba(255, 161, 194, 0.62);
+    --surface-1: #140e1c;
+    --surface-2: rgba(44, 30, 58, 0.55);
+    --surface-3: rgba(62, 43, 80, 0.72);
 
-    /* accents — cyan primary, azure secondary, amber warn, jade online, red
-       danger. --accent-azure is the canonical secondary; --accent-pink/-purple/
-       -violet are kept as aliases of the cyan→azure family so every legacy rule
-       that referenced them now reads tactical. */
-    --accent-cyan: #3df5ff;
-    --accent-azure: #6aa6ff;
-    --accent-pink: #3df5ff;
-    --accent-purple: #6aa6ff;
-    --accent-green: #2ee6a6;
-    --accent-red: #ff4d61;
-    --accent-orange: #ffb000;
-    --accent-violet: #6aa6ff;
+    /* accents — sakura primary, wisteria secondary, blossom-gold warn, spring
+       jade online, rose-red danger. --accent-cyan/-azure are the SLOT names
+       (see token map); --accent-pink/-purple/-violet alias onto them. */
+    --accent-cyan: #ffa1c2;
+    --accent-azure: #c7b1ff;
+    --accent-pink: #ffa1c2;
+    --accent-purple: #c7b1ff;
+    --accent-green: #4ce9ab;
+    --accent-red: #ff5d78;
+    --accent-orange: #ffb85c;
+    --accent-violet: #c7b1ff;
 
-    --glow-pink: rgba(61, 245, 255, 0.42);
-    --glow-purple: rgba(106, 166, 255, 0.38);
-    --glow-amber: rgba(255, 176, 0, 0.40);
+    --glow-pink: rgba(255, 161, 194, 0.42);
+    --glow-purple: rgba(199, 177, 255, 0.36);
+    --glow-amber: rgba(255, 184, 92, 0.38);
 
-    /* sakura — emphasis + atmosphere ONLY (cyan stays the data/HUD layer). */
-    --accent-sakura: #ff5a8a;
-    --accent-sakura-soft: rgba(255, 90, 138, .14);
-    --glow-sakura: rgba(255, 90, 138, .40);
-    /* deep-red danger fill: white text 4.92–6.45:1 (AA) over either stop. */
+    /* sakura EMPHASIS — a deeper, hotter pink than the primary accent, used
+       for blooms/halos only (never load-bearing text contrast). */
+    --accent-sakura: #ff7fab;
+    --accent-sakura-soft: rgba(255, 127, 171, .14);
+    --glow-sakura: rgba(255, 127, 171, .40);
+    /* deep-rose danger fill: white text 4.92–6.45:1 (AA) over either stop. */
     --danger-grad: linear-gradient(135deg, #d62a40 0%, #b71f33 100%);
-    /* aurora: soft rose + azure corner washes, painted UNDER the body washes. */
-    --aurora: radial-gradient(900px 540px at 8% -10%, rgba(255, 90, 138, .10), transparent 58%),
-              radial-gradient(820px 520px at 102% 0%, rgba(106, 166, 255, .08), transparent 56%);
+    /* aurora: rose + wisteria night washes, painted UNDER the body washes. */
+    --aurora: radial-gradient(900px 540px at 8% -10%, rgba(255, 127, 171, .11), transparent 58%),
+              radial-gradient(820px 520px at 102% 0%, rgba(199, 177, 255, .09), transparent 56%);
     /* grain: static fractal-noise tile (theme-agnostic; no animation). */
     --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
 
-    /* brand / surfaces */
-    --brand-grad: linear-gradient(135deg, #2fe6ff 0%, #5b8cff 100%);
-    --brand-soft: linear-gradient(135deg, rgba(61, 245, 255, 0.12), rgba(91, 140, 255, 0.06));
-    --card-bg: linear-gradient(165deg, rgba(16, 24, 37, 0.92) 0%, rgba(8, 12, 21, 0.95) 100%);
-    --sidebar-bg: linear-gradient(180deg, rgba(11, 17, 27, 0.97) 0%, rgba(6, 9, 16, 0.99) 100%);
-    --glass: linear-gradient(160deg, rgba(18, 28, 42, 0.62), rgba(8, 12, 20, 0.74));
-    --glass-hi: inset 0 1px 0 rgba(120, 220, 255, 0.09);
-    --hairline: linear-gradient(135deg, rgba(61, 245, 255, 0.55), rgba(106, 166, 255, 0.30) 52%, rgba(255, 176, 0, 0.20));
+    /* brand / surfaces — sakura→wisteria is the signature gradient */
+    --brand-grad: linear-gradient(135deg, #ffa1c2 0%, #c7b1ff 100%);
+    --brand-soft: linear-gradient(135deg, rgba(255, 161, 194, 0.12), rgba(199, 177, 255, 0.06));
+    --card-bg: linear-gradient(165deg, rgba(34, 23, 46, 0.92) 0%, rgba(17, 11, 25, 0.95) 100%);
+    --sidebar-bg: linear-gradient(180deg, rgba(27, 18, 37, 0.97) 0%, rgba(14, 9, 20, 0.99) 100%);
+    --glass: linear-gradient(160deg, rgba(46, 31, 60, 0.62), rgba(19, 12, 27, 0.74));
+    --glass-hi: inset 0 1px 0 rgba(255, 190, 220, 0.09);
+    --hairline: linear-gradient(135deg, rgba(255, 161, 194, 0.55), rgba(199, 177, 255, 0.30) 52%, rgba(255, 184, 92, 0.20));
 
-    /* elevation */
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
-    --shadow-md: 0 10px 28px rgba(2, 6, 14, 0.55);
-    --shadow-lg: 0 24px 60px rgba(1, 4, 12, 0.65);
-    --shadow-glow: 0 14px 44px rgba(45, 200, 255, 0.20);
-    --focus-ring: 0 0 0 3px rgba(61, 245, 255, 0.45);
-    /* legacy 3D-shadow aliases: the styles.css "3D & Professional Polish" layer
-       is deleted, but one surviving rule (.remove-doc, styles.css) still reads
-       --shadow-sm-3d. Alias the whole family onto the flat HUD shadows so those
-       references resolve to tactical depth instead of dropping to none. */
+    /* elevation — plum-black depth */
+    --shadow-sm: 0 1px 2px rgba(8, 3, 14, 0.45);
+    --shadow-md: 0 10px 28px rgba(10, 4, 18, 0.55);
+    --shadow-lg: 0 24px 60px rgba(7, 2, 14, 0.65);
+    --shadow-glow: 0 14px 44px rgba(255, 127, 171, 0.16);
+    --focus-ring: 0 0 0 3px rgba(255, 161, 194, 0.45);
+    /* legacy 3D-shadow aliases — kept so surviving styles.css refs resolve. */
     --shadow-sm-3d: var(--shadow-sm);
     --shadow-md-3d: var(--shadow-md);
     --shadow-lg-3d: var(--shadow-lg);
     --shadow-xl-3d: var(--shadow-lg);
     --shadow-inset-3d: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 
-    /* sharper HUD geometry */
-    --radius-sm: 4px;
-    --radius: 7px;
-    --radius-lg: 10px;
+    /* petal-soft geometry (v3 was 4/7/10 tactical-sharp) */
+    --radius-sm: 6px;
+    --radius: 10px;
+    --radius-lg: 14px;
 
-    /* type */
-    --font-display: 'Chakra Petch', 'Malgun Gothic', 'Noto Sans KR', 'Segoe UI', sans-serif;
+    /* type — Bricolage display / Chakra UI / JetBrains telemetry */
+    --font-display: 'Bricolage Grotesque', 'Chakra Petch', 'Malgun Gothic', 'Noto Sans KR', 'Segoe UI', sans-serif;
     --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Consolas', ui-monospace, monospace;
     --font-ui: 'Chakra Petch', 'Malgun Gothic', 'Noto Sans KR', 'Segoe UI', sans-serif;
-
-    /* ---- unified scale tokens (UI x100) ------------------------------------
-       Added here so every later rule + the parallel TS chart code can read
-       one source of truth. Spacing/type/z are theme-agnostic; the cyan ramp,
-       chart + severity colors are re-stated per-theme below. */
 
     /* spacing */
     --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
     --space-5: 24px; --space-6: 32px; --space-8: 48px;
     --r-pill: 999px;
 
-    /* easing — now four DISTINCT curves (were all aliased onto --ease). */
-    --ease: cubic-bezier(.22, 1, .36, 1);            /* base, unchanged */
+    /* easing — four DISTINCT curves (VIS-04 contract: ≥3 distinct + a bounce
+       overshoot). */
+    --ease: cubic-bezier(.22, 1, .36, 1);            /* base */
     --ease-smooth: cubic-bezier(.4, 0, .2, 1);       /* hover/color transitions */
     --ease-out-expo: cubic-bezier(.16, 1, .3, 1);    /* reveal/fill animations */
-    --ease-bounce: cubic-bezier(.34, 1.56, .64, 1);  /* single gentle overshoot (entrances) */
+    --ease-bounce: cubic-bezier(.34, 1.56, .64, 1);  /* single gentle overshoot */
     /* duration ramp (theme-agnostic) */
     --dur-fast: .14s; --dur-base: .22s; --dur-slow: .45s;
 
@@ -172,13 +174,13 @@
     --step-3:  clamp(22px, 1.2rem + 1vw, 28px);
     --step-4:  clamp(28px, 1.4rem + 1.6vw, 38px);
 
-    /* cyan ramp (dark) — translucent neon over the carbon canvas */
-    --cyan-50:  rgba(61, 245, 255, .05);
-    --cyan-100: rgba(61, 245, 255, .10);
-    --cyan-200: rgba(61, 245, 255, .16);
-    --cyan-300: rgba(61, 245, 255, .24);
-    --cyan-400: rgba(61, 245, 255, .34);
-    --cyan-500: rgba(61, 245, 255, .45);
+    /* primary-accent tint ramp (historical "cyan" slot name; sakura values) */
+    --cyan-50:  rgba(255, 161, 194, .05);
+    --cyan-100: rgba(255, 161, 194, .10);
+    --cyan-200: rgba(255, 161, 194, .16);
+    --cyan-300: rgba(255, 161, 194, .24);
+    --cyan-400: rgba(255, 161, 194, .34);
+    --cyan-500: rgba(255, 161, 194, .45);
 
     /* glass blur + layering + native form scheme */
     --blur: 12px;
@@ -189,9 +191,9 @@
     /* chart tokens (read at draw-time by app.ts drawChart — SHARED CONTRACT #1) */
     --chart-line: var(--accent-cyan);
     --chart-line-2: var(--accent-azure);
-    --chart-grid: rgba(72, 196, 232, .10);
-    --chart-fill-top: rgba(61, 245, 255, .30);
-    --chart-fill-bot: rgba(61, 245, 255, .05);
+    --chart-grid: rgba(255, 161, 194, .10);
+    --chart-fill-top: rgba(255, 161, 194, .30);
+    --chart-fill-bot: rgba(255, 161, 194, .05);
 
     /* severity (log rails + toast rails) */
     --sev-error: var(--accent-red);
@@ -200,74 +202,72 @@
     --sev-debug: var(--accent-cyan);
     --sev-rail: 2px;
 
-    /* density multiplier — no UI toggle yet; consumed by the paddings we touch */
+    /* density multiplier — consumed by the paddings we touch */
     --density: 1;
 }
 
 /* ============================================================================
-   TOKENS — LIGHT ("Daylight Tactical": cool steel + teal/azure, WCAG-tuned)
+   TOKENS — LIGHT "새벽" (dawn): warm blush paper + rose ink.
+   NOTE (upgrade-guards B2): no rule scoped to [data-theme=light] may contain
+   the retired anime-purple/indigo literals — the dawn palette is built from a
+   distinct rose/plum family and every text token below clears WCAG AA.
    ============================================================================ */
 html[data-theme="light"],
 :root[data-theme="light"] {
-    /* "ORBITAL Blueprint" — crisp schematic-on-paper: bright white surfaces,
-       a visible blueprint grid, ink-navy text, deep teal accent. The daylight
-       counterpart to the night command deck — NOT a washed grey. */
-    --bg-primary: #e9f1f7;
+    --bg-primary: #f7eff0;
     --bg-secondary: #ffffff;
-    --bg-tertiary: #dce8f1;
+    --bg-tertiary: #efe2e6;
 
-    --text-primary: #081522;
-    --text-secondary: #2b475e;
-    --text-tertiary: #466074;
-    --text-muted: #6a8094;
+    --text-primary: #231423;
+    --text-secondary: #4d3550;
+    --text-tertiary: #69566f;
+    --text-muted: #84718a;
 
-    --border-color: rgba(11, 96, 124, 0.22);
-    --border-strong: rgba(11, 96, 124, 0.42);
-    --border-focus: rgba(7, 124, 151, 0.65);
+    --border-color: rgba(163, 37, 93, 0.20);
+    --border-strong: rgba(163, 37, 93, 0.40);
+    --border-focus: rgba(163, 37, 93, 0.65);
     --surface-1: #ffffff;
-    --surface-2: #eef5fa;
-    --surface-3: #e0ecf4;
+    --surface-2: #f9f0f3;
+    --surface-3: #f1e3e9;
 
-    /* Deepened from #097c96: as accent TEXT (logo, kbd shortcuts, message-name)
-       #097c96 was ~3.7:1 on the light wash (sub-AA). #075f73 clears AA (~5.8:1)
-       for small text; everything else that reads --accent-cyan (icons, corner
-       brackets, focus outline, nav rail, kbd background) only gains contrast. */
-    --accent-cyan: #075f73;
-    --accent-azure: #1656c2;
-    --accent-pink: #075f73;
-    --accent-purple: #1656c2;
-    --accent-green: #0a8a55;
-    --accent-red: #c41f2f;
-    --accent-orange: #ab5807;
-    --accent-violet: #1656c2;
+    /* deep rose primary ≈7.0:1 on white — AA for small accent text (logo, kbd,
+       message-name). Plum secondary ≈7.4:1. */
+    --accent-cyan: #a3255d;
+    --accent-azure: #79436f;
+    --accent-pink: #a3255d;
+    --accent-purple: #79436f;
+    --accent-green: #0f7a4d;
+    --accent-red: #b3223c;
+    --accent-orange: #8f5310;
+    --accent-violet: #79436f;
 
-    --glow-pink: rgba(9, 124, 150, 0.20);
-    --glow-purple: rgba(22, 86, 194, 0.16);
-    --glow-amber: rgba(171, 88, 7, 0.18);
+    --glow-pink: rgba(163, 37, 93, 0.18);
+    --glow-purple: rgba(121, 67, 111, 0.16);
+    --glow-amber: rgba(143, 83, 16, 0.16);
 
-    /* sakura (light) — deeper rose so emphasis stays legible on paper. */
-    --accent-sakura: #c2185b;
-    --accent-sakura-soft: rgba(194, 24, 91, .10);
-    --glow-sakura: rgba(194, 24, 91, .22);
-    /* same deep-red danger fill; white text still AA. */
+    /* sakura (dawn) — deeper rose so emphasis stays legible on paper. */
+    --accent-sakura: #ad2960;
+    --accent-sakura-soft: rgba(173, 41, 96, .10);
+    --glow-sakura: rgba(173, 41, 96, .20);
+    /* same deep-rose danger fill; white text still AA. */
     --danger-grad: linear-gradient(135deg, #d62a40 0%, #b71f33 100%);
-    --aurora: radial-gradient(900px 540px at 8% -10%, rgba(194, 24, 91, .06), transparent 58%),
-              radial-gradient(820px 520px at 102% 0%, rgba(22, 86, 194, .05), transparent 56%);
+    --aurora: radial-gradient(900px 540px at 8% -10%, rgba(173, 41, 96, .07), transparent 58%),
+              radial-gradient(820px 520px at 102% 0%, rgba(255, 176, 92, .08), transparent 56%);
     /* --grain + eases + dur inherit from :root (theme-agnostic). */
 
-    --brand-grad: linear-gradient(135deg, #097c96 0%, #1656c2 100%);
-    --brand-soft: linear-gradient(135deg, rgba(9, 124, 150, 0.10), rgba(22, 86, 194, 0.06));
-    --card-bg: linear-gradient(165deg, #ffffff 0%, #f4f9fc 100%);
-    --sidebar-bg: linear-gradient(180deg, #ffffff 0%, #eef5fb 100%);
-    --glass: linear-gradient(160deg, rgba(255, 255, 255, 0.92), rgba(243, 248, 252, 0.97));
+    --brand-grad: linear-gradient(135deg, #b23268 0%, #79436f 100%);
+    --brand-soft: linear-gradient(135deg, rgba(178, 50, 104, 0.09), rgba(121, 67, 111, 0.06));
+    --card-bg: linear-gradient(165deg, #ffffff 0%, #faf3f5 100%);
+    --sidebar-bg: linear-gradient(180deg, #ffffff 0%, #f7edf1 100%);
+    --glass: linear-gradient(160deg, rgba(255, 255, 255, 0.92), rgba(250, 242, 245, 0.97));
     --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.95);
-    --hairline: linear-gradient(135deg, rgba(9, 124, 150, 0.48), rgba(22, 86, 194, 0.30) 52%, rgba(171, 88, 7, 0.20));
+    --hairline: linear-gradient(135deg, rgba(163, 37, 93, 0.45), rgba(121, 67, 111, 0.30) 52%, rgba(143, 83, 16, 0.22));
 
-    --shadow-sm: 0 1px 2px rgba(15, 50, 75, 0.06);
-    --shadow-md: 0 8px 22px rgba(17, 52, 78, 0.10);
-    --shadow-lg: 0 22px 50px rgba(17, 52, 78, 0.15);
-    --shadow-glow: 0 12px 32px rgba(9, 124, 150, 0.16);
-    --focus-ring: 0 0 0 3px rgba(7, 124, 151, 0.42);
+    --shadow-sm: 0 1px 2px rgba(75, 30, 55, 0.06);
+    --shadow-md: 0 8px 22px rgba(75, 30, 55, 0.10);
+    --shadow-lg: 0 22px 50px rgba(75, 30, 55, 0.15);
+    --shadow-glow: 0 12px 32px rgba(163, 37, 93, 0.14);
+    --focus-ring: 0 0 0 3px rgba(163, 37, 93, 0.38);
     /* legacy 3D-shadow aliases (light) — see :root note above */
     --shadow-sm-3d: var(--shadow-sm);
     --shadow-md-3d: var(--shadow-md);
@@ -275,60 +275,57 @@ html[data-theme="light"],
     --shadow-xl-3d: var(--shadow-lg);
     --shadow-inset-3d: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 
-    /* ---- per-theme scale tokens (light) ------------------------------------
-       Spacing / type / z-index / --blur / --density are theme-agnostic and
-       inherit from :root above; only the color-bearing tokens are restated. */
-
-    /* cyan ramp (light) — deep teal ink on paper */
-    --cyan-50:  rgba(11, 96, 124, .05);
-    --cyan-100: rgba(11, 96, 124, .10);
-    --cyan-200: rgba(11, 96, 124, .22);
-    --cyan-300: rgba(11, 96, 124, .30);
-    --cyan-400: rgba(11, 96, 124, .42);
-    --cyan-500: rgba(7, 124, 151, .42);
+    /* primary-accent tint ramp (dawn) — rose ink on paper */
+    --cyan-50:  rgba(163, 37, 93, .05);
+    --cyan-100: rgba(163, 37, 93, .09);
+    --cyan-200: rgba(163, 37, 93, .18);
+    --cyan-300: rgba(163, 37, 93, .28);
+    --cyan-400: rgba(163, 37, 93, .40);
+    --cyan-500: rgba(163, 37, 93, .48);
 
     color-scheme: light;
 
-    /* chart tokens (light) */
-    --chart-line: #097c96;
+    /* chart tokens (dawn) */
+    --chart-line: #a3255d;
     --chart-line-2: var(--accent-azure);
-    --chart-grid: rgba(11, 96, 124, .10);
-    --chart-fill-top: rgba(9, 124, 150, .22);
-    --chart-fill-bot: rgba(9, 124, 150, .04);
+    --chart-grid: rgba(163, 37, 93, .10);
+    --chart-fill-top: rgba(163, 37, 93, .20);
+    --chart-fill-bot: rgba(163, 37, 93, .03);
 
-    /* severity (light) */
-    --sev-error: #c41f2f;
-    --sev-warn:  #ab5807;
-    --sev-info:  #0a8a55;
-    --sev-debug: #097c96;
+    /* severity (dawn) */
+    --sev-error: #b3223c;
+    --sev-warn:  #8f5310;
+    --sev-info:  #0f7a4d;
+    --sev-debug: #a3255d;
 }
 
 /* ============================================================================
-   ATMOSPHERE — carbon canvas + technical grid + scanlines (replaces the v2
-   aurora-mesh + film-grain). Decorative layers only; content sits above.
+   ATMOSPHERE — plum night sky + constellation grid + soft veil.
+   Decorative layers only; content sits above.
    ============================================================================ */
 body {
     font-family: var(--font-ui);
-    /* cyan/amber washes stay on top; --aurora (sakura+azure) paints UNDER them
-       (later layers render behind earlier ones), and --bg-primary is the floor. */
+    /* sakura/gold moon washes on top; --aurora paints UNDER them and
+       --bg-primary is the floor. */
     background:
-        radial-gradient(1200px 760px at 6% -12%, rgba(45, 200, 255, 0.10), transparent 58%),
-        radial-gradient(980px 620px at 104% -6%, rgba(255, 176, 0, 0.06), transparent 54%),
+        radial-gradient(1200px 760px at 6% -12%, rgba(255, 161, 194, 0.09), transparent 58%),
+        radial-gradient(980px 620px at 104% -6%, rgba(255, 184, 92, 0.05), transparent 54%),
         var(--aurora),
         var(--bg-primary);
     background-attachment: fixed;
     letter-spacing: 0.01em;
 }
 html[data-theme="light"] body {
-    /* clean paper with a faint cyan corner wash + the rose/azure aurora under it */
+    /* dawn paper: a warm horizon glow + the rose/gold aurora under it */
     background:
-        radial-gradient(1100px 600px at 0% -10%, rgba(9, 124, 150, 0.06), transparent 60%),
+        radial-gradient(1100px 600px at 0% -10%, rgba(163, 37, 93, 0.05), transparent 60%),
         var(--aurora),
-        linear-gradient(180deg, #f5f9fc 0%, #e7eff7 100%);
+        linear-gradient(180deg, #fbf5f4 0%, #f2e7ea 100%);
     background-attachment: fixed;
 }
 
-/* technical grid */
+/* constellation grid — wider + fainter than the v3 technical grid: the deck
+   bones remain, but they read as a night-garden lattice. */
 body::before {
     content: '';
     position: fixed;
@@ -337,39 +334,40 @@ body::before {
     pointer-events: none;
     opacity: 0.5;
     background-image:
-        linear-gradient(rgba(72, 196, 232, 0.05) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(72, 196, 232, 0.05) 1px, transparent 1px);
-    background-size: 44px 44px, 44px 44px;
+        linear-gradient(rgba(255, 161, 194, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 161, 194, 0.045) 1px, transparent 1px);
+    background-size: 48px 48px, 48px 48px;
     -webkit-mask-image: radial-gradient(120% 100% at 50% 0%, #000 30%, transparent 80%);
     mask-image: radial-gradient(120% 100% at 50% 0%, #000 30%, transparent 80%);
 }
 html[data-theme="light"] body::before {
-    /* blueprint paper: a fine grid + bolder major lines, covering the page */
+    /* dawn paper: a fine rose grid + bolder major lines */
     opacity: 1;
     background-image:
-        linear-gradient(rgba(11, 96, 124, 0.07) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(11, 96, 124, 0.07) 1px, transparent 1px),
-        linear-gradient(rgba(11, 96, 124, 0.12) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(11, 96, 124, 0.12) 1px, transparent 1px);
-    background-size: 22px 22px, 22px 22px, 110px 110px, 110px 110px;
+        linear-gradient(rgba(163, 37, 93, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(163, 37, 93, 0.05) 1px, transparent 1px),
+        linear-gradient(rgba(163, 37, 93, 0.09) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(163, 37, 93, 0.09) 1px, transparent 1px);
+    background-size: 24px 24px, 24px 24px, 120px 120px, 120px 120px;
     -webkit-mask-image: none;
     mask-image: none;
 }
 
-/* fine scanlines */
+/* night veil — soft vertical shading instead of the v3 CRT scanlines: keeps
+   depth without the sci-fi TV artifact. */
 body::after {
     content: '';
     position: fixed;
     inset: 0;
     z-index: 0;
     pointer-events: none;
-    opacity: 0.4;
+    opacity: 0.3;
     mix-blend-mode: normal;
     background-image: repeating-linear-gradient(
         to bottom,
         rgba(0, 0, 0, 0) 0px,
-        rgba(0, 0, 0, 0) 2px,
-        rgba(0, 0, 0, 0.10) 3px
+        rgba(0, 0, 0, 0) 3px,
+        rgba(8, 3, 14, 0.08) 4px
     );
     background-size: auto;
 }
@@ -377,9 +375,7 @@ html[data-theme="light"] body::after { opacity: 0; }
 
 /* film grain — a static (NON-animated) fractal-noise tile at very low opacity,
    soft-light blended so it textures the canvas without touching card/content
-   contrast (washes + grain sit behind the opaque cards). reduced-motion safe
-   because nothing here animates. Painted on html::after (both body pseudos are
-   already in use) to keep it a single decorative, pointer-transparent layer. */
+   contrast. Painted on html::after (both body pseudos are already in use). */
 html::after {
     content: '';
     position: fixed;
@@ -391,43 +387,38 @@ html::after {
     mix-blend-mode: soft-light;
 }
 
-/* (the .anime-characters kill-switch that used to live here was removed —
-   no markup or TS has carried that class for several versions) */
 /* #sakura-container is intentionally NOT force-hidden here: the Sakura Petals
    toggle (#sakura-toggle) + persisted `sakuraEnabled` setting + initSakuraAnimation()
-   in app.ts are all still wired, so visibility must be controlled by that JS path,
-   not stomped with !important (which left a dead Settings control). */
+   in app.ts are all still wired, so visibility must be controlled by that JS path. */
 
 /* ============================================================================
-   TYPOGRAPHY — Chakra Petch display, JetBrains Mono telemetry
+   TYPOGRAPHY — Bricolage Grotesque display, Chakra Petch UI, JetBrains Mono data
    ============================================================================ */
 h1, h2, h3,
 .page-header h1, .page-header h2,
 .empty-state h2, .empty-state h3 {
     font-family: var(--font-display);
-    letter-spacing: 0.01em;
+    letter-spacing: 0.005em;
 }
 h1, .page-header h1 {
-    font-weight: 700;
+    font-weight: 800;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.035em;
 }
 /* fluid type mapping — single scale drives every heading/body size */
 .page-title-bar h1,
 .page-header h1,
 .page > h1:first-child {
     font-size: var(--step-4);
-    line-height: 1.15;
+    line-height: 1.12;
     text-wrap: balance;
 }
 .control-card h2,
 .settings-card h2,
 .api-failover-card h2,
-.data-section h2 { font-size: var(--step-2); }
-/* Chart card titles are <h3> (the old .chart-card h2 entry above never
-   matched, leaving them on the legacy 14px base style). They are sub-labels
-   inside .charts-section, so give them the mono telemetry-label treatment
-   the section headings use rather than the big --step-2 card-title size. */
+.data-section h2 { font-size: var(--step-2); font-weight: 700; }
+/* Chart card titles are <h3> sub-labels inside .charts-section — mono
+   telemetry-label treatment, not the big card-title size. */
 .chart-card h3 {
     font-family: var(--font-mono);
     font-weight: 600;
@@ -440,10 +431,9 @@ h1, .page-header h1 {
 body { font-size: var(--step-0); line-height: 1.55; }
 .shortcut, .message-time { font-size: var(--step--1); }
 .empty-state h2, .empty-state h3 { text-wrap: balance; }
-/* a thin cyan kicker rule under top-level page titles. Repointed onto
-   .page-title-bar h1 (the unified page header, CONTRACT) so it fires exactly
-   once per page. The bare .page > h1 / .page-header h1 fallbacks are kept for
-   any view not yet wrapped in a .page-title-bar. */
+/* the petal kicker: a sakura→wisteria→gold rule under top-level page titles.
+   Fires once per page via .page-title-bar h1 (CONTRACT); bare fallbacks kept
+   for any view not yet wrapped in a .page-title-bar. */
 .page-title-bar h1,
 .page > h1:first-child,
 .page-header h1 {
@@ -456,17 +446,17 @@ body { font-size: var(--step-0); line-height: 1.55; }
     content: '';
     position: absolute;
     left: 0; bottom: 0;
-    width: 54px; height: 2px;
-    background: var(--brand-grad);
-    box-shadow: 0 0 12px var(--glow-pink);
+    width: 64px; height: 2px;
+    border-radius: 2px;
+    background: var(--hairline);
+    box-shadow: 0 0 12px var(--glow-sakura);
 }
 
 /* ============================================================================
-   PAGE TITLE BAR — unified HUD header for all six page views (CONTRACT).
-   Markup (ui-html): <div class="page-title-bar"><span class="page-eyebrow">SYS
-   // STATUS</span><h1>…</h1></div>. The eyebrow is a mono uppercase telemetry
-   tag; the h1 keeps the cyan kicker rule above; the bar carries a subtle corner
-   bracket pair consistent with the panel HUD motif.
+   PAGE TITLE BAR — unified header for all six page views (CONTRACT).
+   Markup: <div class="page-title-bar"><span class="page-eyebrow">SYS //
+   STATUS</span><h1>…</h1></div>. Mono eyebrow + petal-kicker h1 + a corner
+   bracket pair consistent with the panel motif.
    ============================================================================ */
 .page-title-bar {
     position: relative;
@@ -495,8 +485,6 @@ body { font-size: var(--step-0); line-height: 1.55; }
 .page-title-bar h1 {
     margin: 0;
 }
-/* the kicker rule already supplies the bottom accent; nudge its origin so it
-   aligns to the title text, not the bracketed bar padding */
 .page-title-bar h1::after { left: 0; }
 
 /* mono, tabular telemetry numerals */
@@ -519,7 +507,7 @@ body { font-size: var(--step-0); line-height: 1.55; }
 }
 
 /* ============================================================================
-   HUD PANELS — corner brackets painted with background gradients (no
+   PANELS — corner petals-and-ticks painted with background gradients (no
    pseudo-elements, so no conflict with existing ::before/::after rules).
    ============================================================================ */
 .control-card,
@@ -529,7 +517,7 @@ body { font-size: var(--step-0); line-height: 1.55; }
 .data-section,
 .charts-section,
 .quick-actions {
-    --hud-tick: rgba(61, 245, 255, 0.55);
+    --hud-tick: rgba(255, 161, 194, 0.50);
     border: 1px solid var(--border-color);
     border-top-color: var(--border-strong);
     border-radius: var(--radius-lg);
@@ -556,7 +544,7 @@ html[data-theme="light"] .settings-card,
 html[data-theme="light"] .api-failover-card,
 html[data-theme="light"] .data-section,
 html[data-theme="light"] .charts-section,
-html[data-theme="light"] .quick-actions { --hud-tick: rgba(8, 131, 160, 0.50); }
+html[data-theme="light"] .quick-actions { --hud-tick: rgba(163, 37, 93, 0.40); }
 
 /* corner-tick brighten on hover (works with or without motion preference) */
 .control-card:hover,
@@ -595,9 +583,7 @@ html[data-theme="light"] .quick-actions:hover {
     }
 }
 
-/* Confine the glass blur to the few chrome surfaces that earn it. The base
-   sheet blurs cards + inputs (styles.css), which both costs paint and muddies
-   text — strip it everywhere and re-apply only here. */
+/* Confine the glass blur to the few chrome surfaces that earn it. */
 .sidebar,
 .modal-overlay,
 #toast-container {
@@ -619,7 +605,7 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     -webkit-backdrop-filter: none;
 }
 
-/* Stat cards: glass + brighter top edge + cyan hover, no brackets (kept clean) */
+/* Stat cards: glass + brighter top edge + sakura hover, no brackets */
 .stat-card {
     background: var(--card-bg);
     border: 1px solid var(--border-color);
@@ -632,9 +618,7 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     border-color: var(--border-strong);
     box-shadow: var(--shadow-lg), var(--shadow-glow), var(--glass-hi);
 }
-/* stat-icon: ONE canonical definition (chip + layout + box size merged). The
-   legacy emoji-era stat-icon rules in styles.css are deleted; the inner-glyph
-   sizing lives in .stat-icon .ic in the icon section below. */
+/* stat-icon: ONE canonical definition (chip + layout + box size merged). */
 .stat-icon, .stat-card .stat-icon {
     display: inline-flex;
     align-items: center;
@@ -650,11 +634,9 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
 }
 
 /* Status hero card (CONTRACT): the Messages card spans two grid columns and
-   gets an oversized numeral so the headline metric dominates. Inner ids
-   (#stat-messages etc.) are untouched. */
+   gets an oversized numeral. Inner ids (#stat-messages etc.) untouched. */
 .stat-card--hero {
     grid-column: span 2;
-    /* cyan data wash + a sakura emphasis bloom over it (sakura = emphasis only) */
     background:
         radial-gradient(120% 140% at 100% 0%, var(--accent-sakura-soft), transparent 60%),
         radial-gradient(120% 140% at 100% 0%, var(--cyan-100), transparent 60%),
@@ -662,16 +644,16 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     border-top-color: var(--border-focus);
 }
 .stat-card--hero .stat-value {
+    font-family: var(--font-mono) !important;
     font-size: var(--step-4);
     line-height: 1.05;
 }
-/* keep the hero from forcing a 2-col span when the grid collapses to one track */
+/* keep the hero from forcing a 2-col span when the grid collapses */
 @media (max-width: 560px) {
     .stat-card--hero { grid-column: span 1; }
 }
 
-/* Chart readout chip (CONTRACT): app.ts writes the latest value here; small mono
-   muted tag that sits next to each chart-card <h3>. */
+/* Chart readout chip (CONTRACT): app.ts writes the latest value here. */
 .chart-readout {
     font-family: var(--font-mono);
     font-feature-settings: "tnum" 1, "zero" 1;
@@ -697,10 +679,7 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
 }
 
 /* ============================================================================
-   SPACING + RADII RHYTHM — override the leftover legacy 16-22px radii and the
-   ad-hoc 20-28px paddings/gaps/margins from styles.css base so every surface
-   speaks the same corner + --space-* rhythm. Density-aware: paddings scale by
-   var(--density) so the #setting-density toggle actually tightens the layout.
+   SPACING + RADII RHYTHM — density-aware paddings; petal-soft corners.
    ============================================================================ */
 .control-card,
 .chart-card,
@@ -721,58 +700,46 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
 .stats-grid { gap: calc(var(--space-4) * var(--density)); margin-bottom: var(--space-5); }
 .charts-grid { gap: calc(var(--space-4) * var(--density)); }
 .action-buttons { gap: var(--space-3); }
-/* card section headers: consistent rhythm under the title */
 .charts-section > h2,
 .quick-actions > h2,
 .api-failover-card h2,
 .data-section-header,
 .data-section > h2,
 .control-card h2 { margin-bottom: var(--space-4); }
-/* top-level page title spacing — only for views still using a BARE h1 directly
-   (not wrapped in .page-title-bar, which owns its own bottom rhythm) */
 .page > h1:first-child,
 .page-header > h1 { margin-bottom: var(--space-5); }
 .api-failover-card { margin-top: var(--space-5); }
 
 /* ============================================================================
-   BOT CONTROL CARD — command-deck header treatment
+   BOT CONTROL CARD — deck header treatment
    ============================================================================ */
-.control-card h2 { font-family: var(--font-display); letter-spacing: 0.04em; }
+.control-card h2 { font-family: var(--font-display); letter-spacing: 0.02em; }
 #bot-status-text {
     font-family: var(--font-mono);
-    font-size: 12.5px; /* deliberate off-scale exception: a fixed live-telemetry readout */
+    font-size: 12.5px; /* deliberate off-scale exception: fixed live-telemetry readout */
     letter-spacing: 0.04em;
     color: var(--text-tertiary);
 }
 
 /* ============================================================================
-   SIDEBAR / NAV — tactical rail
+   SIDEBAR / NAV — night-garden rail
    ============================================================================ */
 .sidebar { border-right: 1px solid var(--border-strong); }
-.logo-text { font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.10em; font-weight: 700; }
-/* Hangul has no Latin tracking — drop the letter-spacing on the one genuinely
-   Korean label, the sidebar logo "봇 대시보드", so it tightens naturally.
-   Scoped to .logo-text ONLY: the nav labels are Latin ("Status", "AI Chat", …)
-   but inherit lang=ko from <html lang="ko">, so a .nav-item:lang(ko) rule would
-   wrongly strip the intended 0.045em tactical tracking from every nav label. */
+.logo-text { font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+/* Hangul has no Latin tracking — tighten the Korean logo label naturally.
+   Scoped to .logo-text ONLY (nav labels are Latin but inherit lang=ko). */
 .logo-text:lang(ko) { letter-spacing: normal; }
 .nav-item {
-    font-family: var(--font-display);
+    font-family: var(--font-ui);
     text-transform: uppercase;
-    /* tightened tracking + gap/padding so the longest label ("AI HISTORY")
-       fits on one line next to its CTRL+n chip without tripping the ellipsis. */
     letter-spacing: 0.045em;
     font-size: var(--step--1);
     gap: 11px;
     padding: 13px 14px;
     border-radius: var(--radius-sm);
-    /* never let "AI History" (or any two-word label) wrap to a second line */
     white-space: nowrap;
 }
-/* a touch more room: trim the shortcut chip's horizontal padding/tracking */
 .nav-item .shortcut { letter-spacing: 0.02em; padding-left: 5px; padding-right: 5px; }
-/* the label is the bare <span> child (not .nav-icon / .shortcut); let it shrink
-   and clip with an ellipsis as a safety net on very narrow rails */
 .nav-item > span:not(.nav-icon) {
     min-width: 0;
     overflow: hidden;
@@ -785,31 +752,34 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
 }
 .nav-item.active {
     background: var(--brand-soft);
-    box-shadow: inset 0 0 0 1px var(--border-strong), inset 0 0 22px rgba(61, 245, 255, 0.08);
+    box-shadow: inset 0 0 0 1px var(--border-strong), inset 0 0 22px rgba(255, 161, 194, 0.08);
 }
-/* active-nav rail glow uses the sakura EMPHASIS color (the rail fill stays the
-   cyan brand-grad; only the bloom is sakura). */
+/* active-nav petal rail: brand gradient fill + sakura bloom */
 .nav-item.active::before { width: 3px; background: var(--brand-grad); box-shadow: 0 0 14px var(--glow-sakura); }
 @media (prefers-reduced-motion: no-preference) {
     .nav-item:active { transform: scale(.98); }
 }
 .shortcut, .nav-item .shortcut {
     font-family: var(--font-mono);
-    background: rgba(61, 245, 255, 0.08);
+    background: rgba(255, 161, 194, 0.08);
     border: 1px solid var(--border-color);
     color: var(--text-tertiary);
     border-radius: 4px;
 }
+html[data-theme="light"] .shortcut,
+html[data-theme="light"] .nav-item .shortcut {
+    background: var(--cyan-50);
+}
 .status-badge { border-radius: var(--radius-sm); font-family: var(--font-mono); letter-spacing: 0.06em; font-size: var(--step--1); }
-.status-badge.online { background: rgba(46, 230, 166, 0.10); border-color: rgba(46, 230, 166, 0.34); color: #7df5cf; }
+.status-badge.online { background: rgba(76, 233, 171, 0.10); border-color: rgba(76, 233, 171, 0.34); color: #7df5cf; }
+html[data-theme="light"] .status-badge.online { color: #0f7a4d; background: rgba(15, 122, 77, 0.10); border-color: rgba(15, 122, 77, 0.35); }
 .status-dot { box-shadow: 0 0 10px currentColor; }
 
 /* ----------------------------------------------------------------------------
-   SIDEBAR FOOTER — group the trailing theme-toggle + status-badge into one
-   bracketed "system status" panel. They are bare siblings of .sidebar (no
-   wrapper to add markup to), so the panel is faked: a shared tinted frame drawn
-   on the theme-toggle (top, with a "SYS" eyebrow + top brackets) joined to the
-   status-badge (bottom, with bottom brackets) by a continuous left/right edge.
+   SIDEBAR FOOTER — the trailing theme-toggle + status-badge read as one
+   "system status" panel: a shared tinted frame with a SYSTEM eyebrow on top.
+   v4 fix: the eyebrow previously collided with the "Toggle Theme" label —
+   the eyebrow now has its own reserved band (padding-top 26px, eyebrow at 6px).
    ---------------------------------------------------------------------------- */
 .sidebar .theme-toggle {
     position: relative;
@@ -824,7 +794,7 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
         linear-gradient(var(--accent-cyan), var(--accent-cyan)) no-repeat calc(100% - 8px) 6px / 12px 2px,
         linear-gradient(var(--accent-cyan), var(--accent-cyan)) no-repeat calc(100% - 8px) 6px / 2px 12px,
         var(--surface-2);
-    padding-top: var(--space-4);
+    padding-top: 26px;
 }
 .sidebar .theme-toggle:hover {
     border-color: var(--border-strong);
@@ -836,11 +806,11 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
         linear-gradient(var(--accent-cyan), var(--accent-cyan)) no-repeat calc(100% - 8px) 6px / 2px 12px,
         var(--surface-3);
 }
-/* "SYSTEM" eyebrow tag pinned to the panel's top-left, mono + muted */
+/* "SYSTEM" eyebrow tag pinned to the panel's reserved top band */
 .sidebar .theme-toggle::after {
     content: 'SYSTEM';
     position: absolute;
-    top: var(--space-2);
+    top: 6px;
     left: 50%;
     transform: translateX(-50%);
     font-family: var(--font-mono);
@@ -867,20 +837,27 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
         linear-gradient(var(--accent-green), var(--accent-green)) no-repeat 8px calc(100% - 16px) / 2px 12px,
         linear-gradient(var(--accent-green), var(--accent-green)) no-repeat calc(100% - 8px) calc(100% - 6px) / 12px 2px,
         linear-gradient(var(--accent-green), var(--accent-green)) no-repeat calc(100% - 8px) calc(100% - 16px) / 2px 12px,
-        rgba(46, 230, 166, 0.10);
+        rgba(76, 233, 171, 0.10);
+}
+html[data-theme="light"] .sidebar .status-badge.online {
+    background:
+        linear-gradient(var(--accent-green), var(--accent-green)) no-repeat 8px calc(100% - 6px) / 12px 2px,
+        linear-gradient(var(--accent-green), var(--accent-green)) no-repeat 8px calc(100% - 16px) / 2px 12px,
+        linear-gradient(var(--accent-green), var(--accent-green)) no-repeat calc(100% - 8px) calc(100% - 6px) / 12px 2px,
+        linear-gradient(var(--accent-green), var(--accent-green)) no-repeat calc(100% - 8px) calc(100% - 16px) / 2px 12px,
+        rgba(15, 122, 77, 0.08);
 }
 
 /* ============================================================================
-   BUTTONS — tactical: squarer, uppercase, mono-tracked, scan glow
+   BUTTONS — soft-squared, uppercase UI face, petal glow on the primary
    ============================================================================ */
 .btn {
     border-radius: var(--radius-sm);
-    font-family: var(--font-display);
+    font-family: var(--font-ui);
     text-transform: uppercase;
     letter-spacing: 0.07em;
     font-weight: 600;
-    /* neutral base — kills the styles.css L596 purple-tinted fill that was
-       never overridden. .btn-primary below is the ONLY gradient/glow button. */
+    /* neutral base — kills the styles.css purple-tinted fill. */
     background: var(--surface-2);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
@@ -888,42 +865,51 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
 }
 .btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); }
 .btn:active:not(:disabled) { transform: translateY(1px); filter: brightness(.97); }
-.btn-primary { background: var(--brand-grad); color: #03121a; box-shadow: 0 6px 18px rgba(45, 200, 255, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.25); }
-.btn-primary:hover:not(:disabled) { box-shadow: 0 10px 26px rgba(45, 200, 255, 0.44); filter: brightness(1.06); }
-.btn-warning { background: linear-gradient(135deg, #ffc24d, #ff9e00); color: #2a1600; }
+/* primary: the sakura→wisteria signature gradient with deep-plum ink (AA ≈9:1
+   at both stops); light theme flips to white on the deeper dawn gradient. */
+.btn-primary { background: var(--brand-grad); color: #2b1226; box-shadow: 0 6px 18px rgba(255, 127, 171, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.25); }
+.btn-primary:hover:not(:disabled) { box-shadow: 0 10px 26px rgba(255, 127, 171, 0.42); filter: brightness(1.05); }
+.btn-warning { background: linear-gradient(135deg, #ffca70, #f2a136); color: #2a1600; }
 .btn-danger { background: var(--danger-grad); color: #fff; }
-/* Deepen the danger red on hover (+ a red glow) for affordance. Both stops keep
-   white text ≥4.5:1 AA: #c8243a ≈ 5.6:1, #9e1a2b ≈ 7.4:1. (The previous hover
-   lighter stop #e23347 was 4.38:1 — just under AA.) */
+/* Deepen the danger rose on hover (+ a rose glow). Both stops keep white text
+   ≥4.5:1 AA: #c8243a ≈ 5.6:1, #9e1a2b ≈ 7.4:1. */
 .btn-danger:hover:not(:disabled) {
     background: linear-gradient(135deg, #c8243a, #9e1a2b);
     box-shadow: 0 6px 20px rgba(214, 42, 64, 0.42);
 }
-/* ghost-danger: icon / small destructive buttons read as a tinted outline, not a
-   heavy red block. Full-width Delete/Clear-All keep the solid --danger-grad above.
-   --accent-red (#ff4d61) on the dark surface stays legible. */
+/* ghost-danger: icon / small destructive buttons read as a tinted outline. */
 .btn-icon.btn-danger, .btn-small.btn-danger {
-    background: rgba(255, 77, 97, .10);
-    border: 1px solid rgba(255, 77, 97, .34);
+    background: rgba(255, 93, 120, .10);
+    border: 1px solid rgba(255, 93, 120, .34);
     color: var(--accent-red);
 }
 .btn-icon.btn-danger:hover:not(:disabled), .btn-small.btn-danger:hover:not(:disabled) {
-    background: rgba(255, 77, 97, .18);
+    background: rgba(255, 93, 120, .18);
 }
-.btn-secondary { background: rgba(61, 245, 255, 0.08); border: 1px solid var(--border-strong); color: var(--text-primary); }
-.btn-secondary:hover:not(:disabled) { background: rgba(61, 245, 255, 0.14); }
-.btn-icon { background: rgba(61, 245, 255, 0.07); border: 1px solid var(--border-color); }
-.btn-icon:hover:not(:disabled) { background: rgba(61, 245, 255, 0.15); color: var(--text-primary); }
+.btn-secondary { background: rgba(255, 161, 194, 0.08); border: 1px solid var(--border-strong); color: var(--text-primary); }
+.btn-secondary:hover:not(:disabled) { background: rgba(255, 161, 194, 0.14); }
+.btn-icon { background: rgba(255, 161, 194, 0.07); border: 1px solid var(--border-color); }
+.btn-icon:hover:not(:disabled) { background: rgba(255, 161, 194, 0.15); color: var(--text-primary); }
 html[data-theme="light"] .btn-primary { color: #fff; }
+html[data-theme="light"] .btn-secondary { background: var(--cyan-50); }
+html[data-theme="light"] .btn-icon { background: var(--cyan-50); }
+/* dawn warning/danger: replace the base sheet's harsh orange/red literals with
+   brand-warm gradients whose white labels clear AA at every stop
+   (#a85c08 ≈5.0:1, #8f5310 ≈6.2:1; danger reuses the proven --danger-grad). */
+html[data-theme="light"] .btn-warning {
+    background: linear-gradient(135deg, #a85c08, #8f5310);
+    color: #fff;
+}
+html[data-theme="light"] .btn-danger { background: var(--danger-grad); color: #fff; }
+html[data-theme="light"] .btn-danger:hover:not(:disabled) {
+    background: linear-gradient(135deg, #c8243a, #9e1a2b);
+}
 
 /* ============================================================================
    INPUTS / SELECTS / TOGGLES
    ============================================================================ */
 /* NOTE: .conversation-filter is deliberately NOT in these input groups — it is
-   a wrapper <div> AROUND the chat-sidebar search input (styles.css styles the
-   container and its inner input separately). Styling the wrapper as a field
-   rendered a bordered box INSIDE a bordered box around that search input; the
-   inner <input type="search"> is already covered by the type selectors here. */
+   a wrapper <div> AROUND the chat-sidebar search input. */
 .setting-input, .setting-select, #log-filter,
 input[type="text"], input[type="search"], input[type="number"], textarea, select {
     border-radius: var(--radius-sm);
@@ -936,10 +922,11 @@ input:focus, textarea:focus, select:focus,
     box-shadow: var(--focus-ring);
 }
 input:checked + .toggle-slider { background: var(--accent-cyan); }
+html[data-theme="light"] .toggle-slider { background: #dcc9d3; }
+html[data-theme="light"] input:checked + .toggle-slider { background: var(--accent-cyan); }
 
-/* History channel filter (B3) — TS injects .history-channel-filter > .history-filter-input
-   above #ai-channel-list with zero CSS (rendered ~17px). Mirror .conversation-filter
-   so the search target clears the WCAG 2.5.8 min (≥24px, here 32px). */
+/* History channel filter (B3) — TS injects .history-channel-filter >
+   .history-filter-input above #ai-channel-list. Search target ≥24px (here 32px). */
 .history-channel-filter {
     padding: var(--space-2) var(--space-3);
     border-bottom: 1px solid var(--border-color);
@@ -957,7 +944,7 @@ input:checked + .toggle-slider { background: var(--accent-cyan); }
 .history-filter-input::placeholder { color: var(--text-tertiary); }
 
 /* ============================================================================
-   LOG VIEWER — green-phosphor terminal
+   LOG VIEWER — green-phosphor terminal, framed in plum night
    ============================================================================ */
 .log-container {
     position: relative;
@@ -965,24 +952,22 @@ input:checked + .toggle-slider { background: var(--accent-cyan); }
     border-radius: var(--radius);
     background:
         /* inner vignette: darken the four edges so the phosphor text floats */
-        radial-gradient(140% 120% at 50% 50%, transparent 62%, rgba(0, 0, 0, 0.45) 100%),
+        radial-gradient(140% 120% at 50% 50%, transparent 62%, rgba(6, 2, 10, 0.45) 100%),
         repeating-linear-gradient(to bottom, transparent 0, transparent 2px, rgba(0,0,0,0.18) 3px),
-        linear-gradient(180deg, rgba(6, 14, 12, 0.96), rgba(4, 9, 8, 0.98));
-    box-shadow: var(--shadow-md), inset 0 0 0 1px rgba(46, 230, 166, 0.06);
+        linear-gradient(180deg, rgba(7, 13, 11, 0.96), rgba(5, 9, 8, 0.98));
+    box-shadow: var(--shadow-md), inset 0 0 0 1px rgba(76, 233, 171, 0.06);
 }
 #log-content, .log-container pre { font-family: var(--font-mono); }
 .live-indicator { font-family: var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; font-size: var(--step--1); }
 
-/* Height fix: the base sheet pins .log-container to calc(100vh - 220px), which
-   over/underflows in the Tauri window. Make the logs page a flex column and let
-   the container take the remaining height instead. */
+/* Height fix: make the logs page a flex column and let the container take the
+   remaining height (the base sheet's calc(100vh-220px) over/underflows). */
 #page-logs.active { display: flex; flex-direction: column; }
 .log-container { flex: 1; min-height: 0; height: auto; }
 .log-controls { flex-wrap: wrap; }
 
-/* Sticky toolbar — the page header (title + filter) pins to the top while the
-   log body scrolls under it. Elevated + a thin cyan rule underneath so it reads
-   as a HUD command strip, not just floating text. */
+/* Sticky toolbar — the page header pins to the top while the log body scrolls
+   under it. */
 #page-logs .page-header {
     position: sticky;
     top: 0;
@@ -990,36 +975,33 @@ input:checked + .toggle-slider { background: var(--accent-cyan); }
     background:
         linear-gradient(180deg, var(--surface-1), var(--surface-1)) padding-box;
     border-bottom: 1px solid var(--border-strong);
-    box-shadow: 0 6px 14px rgba(2, 6, 14, 0.45);
+    box-shadow: 0 6px 14px rgba(10, 4, 18, 0.45);
     padding-bottom: var(--space-3);
     margin-bottom: var(--space-3);
 }
 html[data-theme="light"] #page-logs .page-header {
-    box-shadow: 0 6px 14px rgba(17, 52, 78, 0.10);
+    box-shadow: 0 6px 14px rgba(75, 30, 55, 0.10);
 }
 
-/* Severity rails — a left-edge inset bar. Thicker (3px) + a faint matching wash
-   so each level reads clearly against the dark terminal (verified ≥AA on the
-   carbon log surface for all four severities). */
+/* Severity rails — a left-edge inset bar + faint matching wash. */
 .log-line { position: relative; padding-left: var(--space-3); }
-.log-line.error   { box-shadow: inset 3px 0 0 var(--sev-error);  background: rgba(255, 77, 97, 0.06); }
-.log-line.warning { box-shadow: inset 3px 0 0 var(--sev-warn);   background: rgba(255, 176, 0, 0.06); }
+.log-line.error   { box-shadow: inset 3px 0 0 var(--sev-error);  background: rgba(255, 93, 120, 0.06); }
+.log-line.warning { box-shadow: inset 3px 0 0 var(--sev-warn);   background: rgba(255, 184, 92, 0.06); }
 .log-line.info    { box-shadow: inset 3px 0 0 var(--sev-info);   background: transparent; }
 .log-line.debug   { box-shadow: inset 3px 0 0 var(--sev-debug);  background: transparent; }
-html[data-theme="light"] .log-line.error   { background: rgba(196, 31, 47, 0.07); }
-html[data-theme="light"] .log-line.warning { background: rgba(171, 88, 7, 0.08); }
+html[data-theme="light"] .log-line.error   { background: rgba(179, 34, 60, 0.07); }
+html[data-theme="light"] .log-line.warning { background: rgba(143, 83, 16, 0.08); }
 
-/* Light: the dark phosphor terminal would be unreadable on paper — give the
-   log surface a faint cool-paper gradient instead. */
+/* Dawn: the dark phosphor terminal would be unreadable on paper — give the
+   log surface a warm-parchment gradient instead. */
 html[data-theme="light"] .log-container {
-    background: linear-gradient(180deg, #f4faf6, #eef6f1);
+    background: linear-gradient(180deg, #f8f4ec, #f2ece2);
 }
 
 /* ============================================================================
-   EMPTY STATES — shared recipe (SHARED CONTRACT #2). The CODE coder builds:
+   EMPTY STATES — shared recipe (SHARED CONTRACT #2):
      <div class="empty-state"><svg class="ic"><use href="#i-logs"/></svg>
         <h3>…</h3><p>…</p></div>
-   .ic is sized to 42px by the icon block above; here we own the layout.
    ============================================================================ */
 .empty-state {
     display: flex;
@@ -1031,10 +1013,7 @@ html[data-theme="light"] .log-container {
     padding: var(--space-8) var(--space-4);
     color: var(--text-secondary);
 }
-/* HUD chip: a bracketed frame + faint wash behind the zero-data glyph so empty
-   screens read as part of the tactical deck. Targets the 42px .ic glyph (works
-   whether it sits directly in .empty-state or inside a wrapper like
-   .chat-files-empty-icon). */
+/* blossom chip: a bracketed frame + faint wash behind the zero-data glyph */
 .empty-state .ic {
     color: var(--accent-cyan);
     box-sizing: content-box;
@@ -1059,11 +1038,24 @@ html[data-theme="light"] .log-container {
         4px calc(100% - 4px), 4px calc(100% - 4px), calc(100% - 4px) calc(100% - 4px), calc(100% - 4px) calc(100% - 4px),
         center;
 }
+/* v4 fix: buttons inside an empty-state (e.g. the chat overlay's START BOT)
+   must NOT inherit the 42px zero-data glyph size — restore button icon scale. */
+.empty-state .btn .ic {
+    width: 1.05em; height: 1.05em;
+    padding: 0;
+    margin-bottom: 0;
+    background: none;
+    background-image: none;
+    border-radius: 0;
+    stroke-width: 1.75;
+    color: currentColor;
+}
 .empty-state h3 {
     margin: 0;
     font-family: var(--font-display);
     font-size: var(--step-2);
-    letter-spacing: 0.02em;
+    font-weight: 700;
+    letter-spacing: 0.01em;
     color: var(--text-primary);
 }
 .empty-state p {
@@ -1081,7 +1073,7 @@ html[data-theme="light"] .log-container {
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-color);
     background: var(--surface-2);
-    /* single bracket pair: top-left + bottom-right ticks (4 gradient layers) */
+    /* single bracket pair: top-left + bottom-right ticks */
     --hud-tick: var(--cyan-300);
     background-image:
         linear-gradient(var(--hud-tick), var(--hud-tick)), linear-gradient(var(--hud-tick), var(--hud-tick)),
@@ -1095,7 +1087,7 @@ html[data-theme="light"] .log-container {
         center;
 }
 .data-item:hover { border-color: var(--border-strong); --hud-tick: var(--accent-cyan); }
-/* press feedback on tappable list rows (not the already-selected/active one) */
+/* press feedback on tappable list rows */
 .conversation-item:active:not(.active),
 .data-item:active:not(.selected),
 .role-card:active:not(.selected) {
@@ -1103,11 +1095,21 @@ html[data-theme="light"] .log-container {
     transition: transform var(--dur-fast) var(--ease);
 }
 .danger-zone {
-    border: 1px solid rgba(255, 77, 97, 0.32);
+    border: 1px solid rgba(255, 93, 120, 0.32);
     border-radius: var(--radius);
-    background: linear-gradient(160deg, rgba(40, 10, 14, 0.6), rgba(20, 6, 9, 0.7));
+    background: linear-gradient(160deg, rgba(46, 12, 20, 0.6), rgba(24, 7, 12, 0.7));
 }
-.danger-zone h2 { color: var(--accent-red); font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.08em; }
+html[data-theme="light"] .danger-zone {
+    background: linear-gradient(160deg, rgba(179, 34, 60, 0.06), rgba(179, 34, 60, 0.03));
+    border-color: rgba(179, 34, 60, 0.35);
+}
+.danger-zone h2 { color: var(--accent-red); font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* API endpoint rows — repaint the styles.css literal cyan (#22d3ee) states
+   onto the sakura tokens (same specificity, later source order). */
+.api-endpoint-item.active { border-color: var(--border-focus); background: var(--brand-soft); }
+.api-endpoint-item.unhealthy { border-color: rgba(255, 93, 120, 0.45); }
+.ep-badge.healthy { color: var(--accent-green); }
 
 /* ============================================================================
    CHAT — header / bubbles / input accents (palette comes from tokens)
@@ -1115,13 +1117,26 @@ html[data-theme="light"] .log-container {
 .chat-container, .chat-sidebar, .history-sidebar, .history-main {
     border-color: var(--border-strong);
 }
-.chat-header h3 { font-family: var(--font-display); letter-spacing: 0.02em; }
+.chat-header h3 { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.01em; }
 .context-bar-fill { background: var(--brand-grad); box-shadow: 0 0 10px var(--glow-pink); }
 
-/* Bubbles — assistant = neutral surface with a cyan left rail; user = brand
-   wash. Tokens resolve per-theme; the light-scoped pair below matches the
-   specificity of the styles.css light overrides so the purple leak dies in
-   both themes. */
+/* v4 layout fix: the conversation title used to overlap the connection-status
+   text when both grew. The info block takes the flexible space and its text
+   ellipsizes instead of colliding. */
+.chat-header-info { flex: 1 1 auto; min-width: 0; }
+.chat-header-text { min-width: 0; }
+.chat-header-text h3,
+.chat-header-text .chat-role-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+}
+.chat-connection-status { flex: 0 0 auto; }
+
+/* Bubbles — assistant = neutral surface with a sakura left rail; user = brand
+   wash. The light-scoped pair matches the specificity of the styles.css light
+   overrides so the legacy leak dies in both themes. */
 .chat-message.assistant .message-content {
     background: var(--surface-2);
     border: 1px solid var(--border-color);
@@ -1141,16 +1156,20 @@ html[data-theme="light"] .chat-message.user .message-content {
     border: 1px solid var(--border-strong);
 }
 .chat-message.assistant .message-name { color: var(--accent-cyan); }
-.chat-message.user .message-name { color: var(--accent-green); }
+.chat-message.user .message-name { color: var(--accent-azure); }
+/* user avatar chip: repaint the styles.css cyan→green literal gradient onto
+   the sakura→wisteria brand (matching 0,3,0 specificity, later source). */
+.chat-message.user .message-avatar {
+    background: linear-gradient(135deg, var(--accent-sakura), var(--accent-azure));
+    border-color: var(--border-strong);
+}
 .message-time { font-family: var(--font-mono); font-size: var(--step--1); }
 .chat-input-hint kbd, kbd {
     font-family: var(--font-mono);
 }
 .send-icon { filter: drop-shadow(0 0 6px var(--glow-pink)); }
 
-/* Failed-send (INT-04): the TS coder keeps the optimistic user bubble, tags it
-   .send-failed and appends a .retry-send control. An error-severity left rail
-   marks the failure; the retry reads as a quiet outline button. */
+/* Failed-send: error-severity left rail + a quiet outline retry control. */
 .chat-message.send-failed { box-shadow: inset 3px 0 0 var(--sev-error); }
 .chat-message.send-failed .retry-send {
     color: var(--accent-red);
@@ -1161,24 +1180,23 @@ html[data-theme="light"] .chat-message.user .message-content {
     padding: 2px 8px;
     margin-top: var(--space-1);
 }
-.retry-send:hover { background: rgba(255, 77, 97, .12); }
+.retry-send:hover { background: rgba(255, 93, 120, .12); }
 
 /* ============================================================================
-   MODALS — HUD frame on the content shell
+   MODALS — blossom frame on the content shell
    ============================================================================ */
 .modal-content {
-    /* sit above the full-bleed .modal-overlay scrim (a SIBLING at --z-modal);
-       without this the scrim paints over the dialog and eats every click. */
+    /* sit above the full-bleed .modal-overlay scrim (a SIBLING at --z-modal) */
     position: relative;
     z-index: calc(var(--z-modal) + 1);
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg), var(--glass-hi);
 }
-.modal-header h2 { font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.05em; }
+.modal-header h2 { font-family: var(--font-display); font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
 .role-card {
     border-radius: var(--radius);
-    /* single bracket pair (top-left + bottom-right) to match the data-item motif */
+    /* single bracket pair (top-left + bottom-right) matching the data-item motif */
     --hud-tick: var(--cyan-300);
     background-image:
         linear-gradient(var(--hud-tick), var(--hud-tick)), linear-gradient(var(--hud-tick), var(--hud-tick)),
@@ -1194,10 +1212,7 @@ html[data-theme="light"] .chat-message.user .message-content {
 .role-card:hover { --hud-tick: var(--accent-cyan); }
 .role-card.selected { border-color: var(--border-focus); --hud-tick: var(--accent-cyan); box-shadow: 0 0 0 1px var(--border-focus), 0 0 22px var(--glow-sakura); }
 
-/* Retire the 3D pop/tilt for a flat scan-in. In the real DOM .active lands on
-   the .modal wrapper (.modal-overlay is a full-bleed sibling scrim, not a
-   parent), so this is the selector that actually fires + overrides the base
-   modalIn / modal-pop-3d animations. */
+/* flat bloom-in (the .active lands on the .modal wrapper) */
 @media (prefers-reduced-motion: no-preference) {
     .modal.active .modal-content { animation: orbital-modal var(--dur-base) var(--ease-bounce) both; }
 }
@@ -1206,16 +1221,15 @@ html[data-theme="light"] .chat-message.user .message-content {
     to   { opacity: 1; transform: none; }
 }
 .modal-overlay {
-    background: rgba(3, 6, 12, .62);
+    background: rgba(10, 4, 16, .62);
     backdrop-filter: blur(var(--blur));
     z-index: var(--z-modal);
 }
-html[data-theme="light"] .modal-overlay { background: rgba(220, 232, 241, .62); }
+html[data-theme="light"] .modal-overlay { background: rgba(240, 226, 231, .62); }
 
 /* ============================================================================
-   TOASTS — slide in from the right, flat (no rotateY), severity left-rail.
-   Class names (#toast-container / .toast-visible / .toast-hiding / .toast-*)
-   are JS hooks — kept verbatim.
+   TOASTS — slide in from the right, severity left-rail. Class names are JS
+   hooks — kept verbatim.
    ============================================================================ */
 #toast-container { z-index: var(--z-toast); }
 .toast {
@@ -1237,29 +1251,24 @@ html[data-theme="light"] .modal-overlay { background: rgba(220, 232, 241, .62); 
 .toast-warning { box-shadow: var(--shadow-lg), var(--glass-hi), inset 3px 0 0 var(--sev-warn); }
 
 /* ============================================================================
-   SCROLLBAR — cyan
+   SCROLLBAR — sakura
    ============================================================================ */
-* { scrollbar-color: rgba(61, 245, 255, 0.30) transparent; }
+* { scrollbar-color: rgba(255, 161, 194, 0.30) transparent; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: rgba(61, 245, 255, 0.24); border: 3px solid transparent; background-clip: padding-box; }
-::-webkit-scrollbar-thumb:hover { background: rgba(61, 245, 255, 0.44); background-clip: padding-box; }
-/* Light (Blueprint): the translucent NEON cyan above is sized for the carbon
-   canvas — on white paper it is nearly invisible. Deep-teal ink instead. */
-html[data-theme="light"] * { scrollbar-color: rgba(11, 96, 124, 0.38) transparent; }
-html[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(11, 96, 124, 0.32); border: 3px solid transparent; background-clip: padding-box; }
-html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(11, 96, 124, 0.52); background-clip: padding-box; }
+::-webkit-scrollbar-thumb { background: rgba(255, 161, 194, 0.24); border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 161, 194, 0.44); background-clip: padding-box; }
+/* Dawn: translucent pink is invisible on paper — deep rose ink instead. */
+html[data-theme="light"] * { scrollbar-color: rgba(163, 37, 93, 0.38) transparent; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(163, 37, 93, 0.32); border: 3px solid transparent; background-clip: padding-box; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(163, 37, 93, 0.52); background-clip: padding-box; }
 
 /* ============================================================================
-   MOTION — boot-up reveal for the status page panels + scan sweep on the logo
+   MOTION — bloom-up reveal for the status page panels + petal pulse on the logo
    ============================================================================ */
 @media (prefers-reduced-motion: no-preference) {
-    /* stat cards: just the rise (no brackets — kept clean per the HUD spec) */
     #page-status.active .stat-card {
         animation: orbital-rise 0.5s var(--ease-out-expo) both;
     }
-    /* bracketed panels: rise + a one-time corner-bracket draw-in (the HUD ticks
-       grow from their corners as the panel rises). animation-delay (the stagger)
-       is set per-panel below, AFTER this shorthand, so it is not reset. */
     #page-status.active .control-card,
     #page-status.active .charts-section,
     #page-status.active .quick-actions {
@@ -1277,13 +1286,11 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(11, 
 
     .logo-icon { animation: orbital-pulse 3.2s ease-in-out infinite; }
 
-    /* Breathing online dot — a soft pulse on the live (online) status dot only.
-       Offline/red dot stays static. */
+    /* Breathing online dot — soft pulse on the live status dot only. */
     .status-badge.online .status-dot { animation: orbital-dot-pulse 2.4s ease-in-out infinite; }
 
-    /* Scan sweep — a one-shot bright line crossing the top edge of the page as
-       it becomes active, reinforcing the boot-up read. Painted on .page.active
-       via a gradient background layered above the content's normal flow. */
+    /* Petal sweep — a one-shot luminous line crossing the top edge of the page
+       as it becomes active. */
     .page.active::after {
         content: '';
         position: absolute;
@@ -1302,10 +1309,10 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(11, 
     to   { opacity: 1; transform: translateY(0); }
 }
 @keyframes orbital-pulse {
-    0%, 100% { filter: drop-shadow(0 0 4px var(--glow-pink)); }
-    50%      { filter: drop-shadow(0 0 12px var(--glow-pink)); }
+    0%, 100% { filter: drop-shadow(0 0 4px var(--glow-sakura)); }
+    50%      { filter: drop-shadow(0 0 12px var(--glow-sakura)); }
 }
-/* corner ticks grow in from each corner (top/bottom L + R) */
+/* corner ticks grow in from each corner */
 @keyframes orbital-brackets {
     0% {
         background-size:
@@ -1321,9 +1328,6 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(11, 
     }
 }
 @keyframes orbital-dot-pulse {
-    /* Halo derives from the per-theme online green via color-mix, so the
-       pulse ring matches the dot in light theme too (the old literal stayed
-       neon jade on Blueprint's deeper #0a8a55). */
     0%, 100% {
         box-shadow:
             0 0 6px currentColor,
@@ -1342,9 +1346,9 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(11, 
 }
 
 /* ============================================================================
-   ICONS — custom monoline SVG set (replaces all emoji). Symbols live in an
-   inline sprite at the top of <body>; used via <svg class="ic"><use href="#i-…"/>.
-   Stroke inherits currentColor so each icon tints with its surrounding context.
+   ICONS — custom monoline SVG set. Symbols live in an inline sprite at the top
+   of <body>; used via <svg class="ic"><use href="#i-…"/>. Stroke inherits
+   currentColor so each icon tints with its surrounding context.
    ============================================================================ */
 /* inline icon sprite: hidden via stylesheet (no inline style → CSP-safe) */
 #orbital-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
@@ -1366,7 +1370,6 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(11, 
 .nav-icon { display: inline-flex; align-items: center; justify-content: center; }
 .nav-icon .ic { width: 19px; height: 19px; }
 .nav-item.active .nav-icon .ic { color: var(--accent-cyan); }
-/* .stat-icon layout merged into its canonical chip rule above (single source). */
 .stat-icon .ic { width: 22px; height: 22px; color: var(--accent-cyan); }
 .btn .ic { width: 1.02em; height: 1.02em; vertical-align: -0.13em; }
 .btn-icon .ic { width: 1.15em; height: 1.15em; vertical-align: -0.22em; }
@@ -1382,13 +1385,10 @@ h1 .ic, h2 .ic, h3 .ic,
 .checkbox-icon .ic, .thinking-label .ic { width: 15px; height: 15px; vertical-align: -0.2em; }
 .live-indicator .ic { width: 9px; height: 9px; color: var(--accent-red); }
 .role-card-emoji .ic { width: 30px; height: 30px; color: var(--accent-cyan); }
-/* (.overlay-icon dropped from this group — orphaned since the not-running
-   overlay moved to the shared .empty-state recipe.) */
 .empty-state .ic, .chat-files-empty-icon .ic { width: 42px; height: 42px; color: var(--accent-cyan); stroke-width: 1.4; }
 
-/* Code-block copy button: the icon is painted via a CSS mask (not inline SVG)
-   because the button lives inside DOMPurify-sanitized message HTML, which
-   whitelists tags and would strip an <svg>/<use>. currentColor fills the mask. */
+/* Code-block copy button: icon painted via a CSS mask (DOMPurify strips
+   inline <svg>/<use> in sanitized message HTML). currentColor fills the mask. */
 .code-copy-btn::before {
     content: "";
     display: inline-block;
@@ -1400,10 +1400,8 @@ h1 .ic, h2 .ic, h3 .ic,
 
 /* ============================================================================
    DENSITY — compact multiplier. app.ts sets <html data-density="compact"> from
-   the #setting-density toggle (CONTRACT) and persists it; this drops --density,
-   and the card/section paddings + gaps above (all routed through
-   calc(--space-* * var(--density))) tighten accordingly. Type/radii stay fixed
-   so only the breathing room compresses.
+   the #setting-density toggle (CONTRACT); paddings routed through
+   calc(--space-* * var(--density)) tighten accordingly.
    ============================================================================ */
 [data-density="compact"] { --density: .7; }
 .empty-state { padding-block: calc(var(--space-8) * var(--density)); }
@@ -1411,27 +1409,23 @@ h1 .ic, h2 .ic, h3 .ic,
 [data-density="compact"] .setting-row { padding-top: var(--space-2); padding-bottom: var(--space-2); }
 
 /* ============================================================================
-   RESPONSIVE — keep the HUD readable on narrow windows
+   RESPONSIVE — keep the deck readable on narrow windows
    ============================================================================ */
-/* ≤1100px: collapse the sidebar to an icon rail (text + shortcut hidden; the
-   nav buttons keep their title/aria labels as tooltips). */
+/* ≤1100px: collapse the sidebar to an icon rail. */
 @media (max-width: 1100px) {
     .sidebar { width: 64px; padding-left: var(--space-2); padding-right: var(--space-2); }
     .nav-item { justify-content: center; gap: 0; padding-left: 0; padding-right: 0; }
     .nav-item > span:not(.nav-icon),
     .nav-item .shortcut,
-    /* Also collapse the sidebar-footer labels — the theme-toggle text and the
-       Online/Offline status text — which otherwise overflow the 64px rail
-       between 901–1100px (styles.css only hides them at ≤900px). */
     .theme-toggle span:not(#theme-icon),
     .status-text { display: none; }
     .nav-icon { margin: 0; }
     .logo-text { display: none; }
 }
 
-/* ≤920px: shrink the HUD corner ticks (kept from the original). */
+/* ≤920px: shrink the corner ticks. */
 @media (max-width: 920px) {
-    h1, .page-header h1 { letter-spacing: 0.04em; }
+    h1, .page-header h1 { letter-spacing: 0.02em; }
     .control-card, .chart-card, .settings-card, .api-failover-card,
     .data-section, .charts-section, .quick-actions { background-size: 10px 2px, 2px 10px, 10px 2px, 2px 10px, 10px 2px, 2px 10px, 10px 2px, 2px 10px, auto; }
 }
@@ -1448,19 +1442,14 @@ h1 .ic, h2 .ic, h3 .ic,
 }
 
 /* ============================================================================
-   ===== Claude Design parity — ORBITAL restyle =====
-   CSS-only override layer that lifts the live app to the "Sakura Midnight /
-   ORBITAL Tactical Command Deck" design-system look. APPEND-ONLY: every rule
-   here re-skins a surface that styles.css still paints in the retired
-   anime-purple/round/blurred idiom. No markup, class, id or data-* touched;
-   source order (orbital is linked AFTER styles.css) wins specificity ties.
-   Kept immediately BEFORE the authoritative FOCUS block so that block stays
-   last. Sub-sections mirror the plan phases P1–P6.
+   ===== Base-sheet parity — repaint the surfaces styles.css still owns =====
+   CSS-only override layer (source order wins the specificity ties). No markup,
+   class, id or data-* touched. Kept immediately BEFORE the authoritative FOCUS
+   block so that block stays last.
    ============================================================================ */
 
 /* ---- P1 · tokens — shared hover-glow (added to BOTH themes) ---------------- */
 :root {
-    /* one shared "tick brighten" glow for the optional hover ticks in P2–P6 */
     --glow-hover: 0 0 0 1px var(--border-strong), 0 0 22px var(--cyan-200);
 }
 html[data-theme="light"],
@@ -1469,64 +1458,67 @@ html[data-theme="light"],
 }
 
 /* ---- P2 · shell + nav ----------------------------------------------------- */
-/* drop the leftover 2px blur (styles.css:302) so the carbon canvas is crisp */
+/* drop the leftover 2px blur so the night canvas is crisp */
 .app {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
 }
-/* let the carbon canvas + technical grid show through the content well
-   (styles.css:466 washed it with rgba(10,5,20,.4)) */
+/* let the night canvas + constellation grid show through the content well */
 .content {
     background: transparent;
 }
-/* retire the anime purple→pink glass chip (styles.css:5234) for the tactical
-   glass + gradient hairline used by the rest of the deck. Dark-only at (0,1,0);
-   the light theme keeps its existing teal logo (html[data-theme=light] .logo,
-   styles.css:125, higher specificity). */
+/* glass logo chip with the petal hairline */
 .logo {
     background: var(--glass);
     border: 1px solid;
     border-image: var(--hairline) 1;
 }
+html[data-theme="light"] .logo {
+    background: var(--glass);
+    border: 1px solid;
+    border-image: var(--hairline) 1;
+}
+/* dawn headings: ink-plum instead of the base sheet's navy literals */
+html[data-theme="light"] h1,
+html[data-theme="light"] h2,
+html[data-theme="light"] h3 { color: var(--text-primary); }
+/* dawn status badge: rose-neutral chip instead of the base sheet's teal */
+html[data-theme="light"] .status-badge {
+    background: var(--surface-2);
+    border-color: var(--border-color);
+    color: var(--text-secondary);
+}
 
 /* ---- P3 · cards / stat / role --------------------------------------------- */
-/* kill the violet glow under stat numerals (styles.css:5192) */
+/* no glow under stat numerals — the mono digits carry the weight */
 .stat-value {
     text-shadow: none;
 }
-/* the salmon Faust leak (styles.css:3315, specificity 0,3,0): match it and let
-   source-order win, repainting onto the cyan focus + sakura emphasis bloom. */
+/* the salmon Faust leak (0,3,0): repaint onto the rose focus + sakura bloom. */
 .role-card[data-role="faust"].selected {
     border-color: var(--border-focus);
     background: var(--card-bg);
     box-shadow: 0 0 0 1px var(--border-focus), 0 0 22px var(--glow-sakura);
 }
-/* squared HUD avatar instead of the round purple gradient (styles.css:2170).
-   The user-avatar fill (styles.css:2189, 0,3,0) intentionally keeps its own
-   cyan→green gradient; only the radius + border + assistant fill change here. */
+/* soft-squared avatar chip */
 .message-avatar {
     border-radius: var(--radius-sm);
     background: var(--brand-soft);
     border: 1px solid var(--border-strong);
 }
-/* light (Blueprint): --brand-soft is a ~8% wash that dissolves the assistant
-   chip on the white canvas — give it an opaque surface so the chip reads. The
-   user avatar keeps its own gradient (styles.css:2189, higher specificity). */
+/* dawn: --brand-soft is a ~8% wash that dissolves on paper — opaque surface */
 html[data-theme="light"] .message-avatar {
     background: var(--surface-2);
 }
 
 /* ---- P4 · buttons / inputs ------------------------------------------------ */
-/* square the chat textarea + drop the raw white-alpha fill (styles.css:3087).
-   ID specificity (1,0,0); focus styling is owned by the FOCUS block below.
-   Light theme keeps its own #chat-input bg (styles.css:3392, 1,1,1). */
+/* soft-square the chat textarea + drop the raw white-alpha fill. */
 #chat-input {
     border-radius: var(--radius-sm);
     background: var(--surface-2);
     border: 1px solid var(--border-color);
 }
-/* flatten the hover shimmer sweeps (styles.css:5201) so the primary/warning/
-   danger buttons read flat like the cards. */
+/* flatten the hover shimmer sweeps so primary/warning/danger read flat */
 .btn-primary::after,
 .btn-warning::after,
 .btn-danger::after {
@@ -1534,25 +1526,24 @@ html[data-theme="light"] .message-avatar {
 }
 
 /* ---- P5 · chat ------------------------------------------------------------ */
-/* bubble corners onto the deck radius (styles.css:2498 was 16px) */
 .message-content {
     border-radius: var(--radius);
 }
-/* square the send button to match .btn-primary (styles.css:3112 was round
-   purple); the brand gradient + cyan lift stay. */
+/* soft-square the send button to match .btn-primary */
 .btn-send {
     border-radius: var(--radius-sm);
     background: var(--brand-grad);
-    box-shadow: 0 6px 18px rgba(45, 200, 255, 0.30);
+    box-shadow: 0 6px 18px rgba(255, 127, 171, 0.28);
 }
-/* give the scroll-to-bottom FAB the deck elevation + a glass top edge + a
-   brand hairline (styles.css:2930 was a bare round FAB). Radius stays round. */
+.btn-send .ic, .send-icon .ic { color: #2b1226; }
+html[data-theme="light"] .btn-send .ic,
+html[data-theme="light"] .send-icon .ic { color: #fff; }
+/* deck elevation for the scroll-to-bottom FAB (radius stays round) */
 .scroll-to-bottom-fab {
     border: 1px solid var(--border-strong);
     box-shadow: var(--shadow-md), var(--glass-hi);
 }
-/* context-window chip: tactical chip surface instead of raw white-alpha
-   (styles.css:1929 / :1941). */
+/* context-window chip: soft chip surface instead of raw white-alpha */
 .context-window-indicator {
     background: var(--surface-2);
     border: 1px solid var(--border-color);
@@ -1561,31 +1552,25 @@ html[data-theme="light"] .message-avatar {
 .context-bar-container {
     background: var(--cyan-100);
 }
-/* the high-usage fill used a literal #f87171 (styles.css:1962, 0,2,0) — match
-   specificity and repaint with the token (theme-aware red). */
+/* high-usage fill: token (theme-aware red) instead of the literal #f87171 */
 .context-bar-fill.usage-high {
     background: var(--accent-red);
 }
-/* HUD command strips: a thin cyan hairline on the chat header (top) + input
-   area (top), leaving their --card-bg backgrounds intact (styles.css:1867 /
-   :3075). */
+/* petal hairlines on the chat header (top) + input area (top) */
 .chat-header {
     border-top: 1px solid var(--border-color);
 }
 .chat-input-area {
     border-top: 1px solid var(--border-color);
 }
-/* conversation rows onto the deck radius (styles.css:1742 was 12px) */
 .conversation-item {
     border-radius: var(--radius-sm);
 }
 
 /* ---- P6 · feedback / history ---------------------------------------------- */
-/* toasts onto the deck radius (styles.css:204 was 12px) */
 .toast {
     border-radius: var(--radius-sm);
 }
-/* history surfaces onto the deck radii (legacy 16/12/10px) */
 .history-sidebar {
     border-radius: var(--radius-lg);
 }
@@ -1595,7 +1580,6 @@ html[data-theme="light"] .message-avatar {
 .history-channel-item {
     border-radius: var(--radius-sm);
 }
-/* optional tick brighten on channel-row hover (motion-safe) */
 @media (prefers-reduced-motion: no-preference) {
     .history-channel-item {
         transition: background var(--dur-fast) var(--ease-smooth),
@@ -1606,26 +1590,17 @@ html[data-theme="light"] .message-avatar {
         box-shadow: var(--glow-hover);
     }
 }
-/* the live indicator carries a background, so square it to the deck radius
-   (styles.css:909 was a 20px pill). */
 .live-indicator {
     border-radius: var(--radius-sm);
 }
 
 /* ============================================================================
-   POLISH PASS (2026-06) — on-brand interaction + rest-state refinements.
-   APPEND-ONLY, additive; kept BEFORE the authoritative FOCUS block so that block
-   stays source-order-last. Strategy: deepen the INTERACTION layer (hover / press
-   feedback the static visual baselines never capture, so it adds "feel" at zero
-   regression cost) plus a few small rest-state touches (history header hairline,
-   chart fill). No contrast-bearing token is weakened; no id / class / contract
-   touched; every transform is wrapped in prefers-reduced-motion: no-preference.
+   POLISH — interaction feel. APPEND-ONLY, additive; kept BEFORE the
+   authoritative FOCUS block. Every transform is wrapped in
+   prefers-reduced-motion: no-preference.
    ============================================================================ */
 
-/* ---- card interaction parity — every bracketed panel lifts + blooms like the
-   stat/control/chart cards already do (settings + api panels previously only
-   brightened their corner ticks). Transitions are rest-state-invisible, so the
-   committed visual baselines are unaffected. -------------------------------- */
+/* ---- card interaction parity — every bracketed panel lifts + blooms -------- */
 @media (prefers-reduced-motion: no-preference) {
     .settings-card,
     .api-failover-card,
@@ -1640,8 +1615,6 @@ html[data-theme="light"] .message-avatar {
         transform: translateY(-3px);
         border-color: var(--border-strong);
     }
-    /* unify the lift shadow across ALL lifting panels: add the cyan bloom that
-       the stat cards already get on hover. */
     .control-card:hover,
     .chart-card:hover,
     .data-section:hover,
@@ -1651,7 +1624,7 @@ html[data-theme="light"] .message-avatar {
     }
 }
 
-/* ---- stat-icon chip reacts to its card's hover: brighter frame + cyan halo -- */
+/* ---- stat-icon chip reacts to its card's hover ----------------------------- */
 .stat-icon, .stat-card .stat-icon {
     transition: border-color var(--dur-base) var(--ease-smooth),
                 box-shadow var(--dur-base) var(--ease-smooth),
@@ -1662,7 +1635,7 @@ html[data-theme="light"] .message-avatar {
     box-shadow: var(--glass-hi), 0 0 16px var(--cyan-200);
 }
 
-/* ---- nav rail — a tactile micro-slide on hover (active item stays anchored) -- */
+/* ---- nav rail — a tactile micro-slide on hover ------------------------------ */
 @media (prefers-reduced-motion: no-preference) {
     .nav-item {
         transition: background var(--dur-fast) var(--ease-smooth),
@@ -1671,10 +1644,10 @@ html[data-theme="light"] .message-avatar {
                     transform var(--dur-fast) var(--ease-smooth);
     }
     .nav-item:hover:not(.active) { transform: translateX(3px); }
-    .nav-item:active { transform: scale(.98); }   /* press still wins over the slide */
+    .nav-item:active { transform: scale(.98); }
 }
 
-/* ---- buttons — a 1px hover lift for affordance; press still sinks 1px -------- */
+/* ---- buttons — a 1px hover lift; press still sinks 1px ---------------------- */
 @media (prefers-reduced-motion: no-preference) {
     .btn {
         transition: background var(--dur-fast) var(--ease-smooth),
@@ -1685,12 +1658,10 @@ html[data-theme="light"] .message-avatar {
     }
     .btn:hover:not(:disabled) { transform: translateY(-1px); }
     .btn:active:not(:disabled) { transform: translateY(1px); filter: brightness(.97); }
-    /* icon buttons are tiny — a lift reads as jitter; let them just brighten. */
     .btn-icon:hover:not(:disabled) { transform: none; }
 }
 
-/* ---- list rows — a soft cyan ring on hover, matching the history channel rows
-   (orbital P6) so all tappable list rows share one hover language. ----------- */
+/* ---- list rows — a soft petal ring on hover --------------------------------- */
 @media (prefers-reduced-motion: no-preference) {
     .conversation-item, .data-item {
         transition: background var(--dur-fast) var(--ease-smooth),
@@ -1714,12 +1685,12 @@ html[data-theme="light"] .message-avatar {
         box-shadow: var(--shadow-lg), var(--shadow-glow), var(--glass-hi);
     }
     .btn-send:hover:not(:disabled) {
-        box-shadow: 0 10px 26px rgba(45, 200, 255, 0.46);
-        filter: brightness(1.06);
+        box-shadow: 0 10px 26px rgba(255, 127, 171, 0.44);
+        filter: brightness(1.05);
     }
 }
 
-/* ---- role cards — a gentle lift on hover (the selected card stays put) ------- */
+/* ---- role cards — a gentle lift on hover ------------------------------------ */
 @media (prefers-reduced-motion: no-preference) {
     .role-card {
         transition: transform var(--dur-base) var(--ease-smooth),
@@ -1729,9 +1700,7 @@ html[data-theme="light"] .message-avatar {
     .role-card:hover:not(.selected) { transform: translateY(-2px); }
 }
 
-/* ---- REST-STATE — the AI History header reads as a HUD command strip: a cyan
-   rule that fades from the left edge, instead of a flat full-width hairline.
-   (Changes the page-history visual baseline — regenerated alongside this pass.) */
+/* ---- REST-STATE — AI History header: a petal rule fading from the left ------ */
 .history-header {
     border-bottom: none;
     background-image: linear-gradient(90deg, var(--accent-cyan) 0%, var(--cyan-200) 38%, transparent 92%);
@@ -1739,37 +1708,29 @@ html[data-theme="light"] .message-avatar {
     background-position: 0 100%;
     background-size: 100% 2px;
 }
-.history-header h2 { font-family: var(--font-display); letter-spacing: 0.02em; }
+.history-header h2 { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.01em; }
 
-/* ---- REST-STATE — chart fill carries a touch more presence and the grid reads
-   a touch more clearly. app.ts reads these at draw time (SHARED CONTRACT #1), so
-   they stay plain custom-property overrides. (Touches the status visual
-   baselines — regenerated alongside this pass.) ------------------------------ */
+/* ---- REST-STATE — chart fill presence + clearer grid (SHARED CONTRACT #1) --- */
 :root {
-    --chart-fill-top: rgba(61, 245, 255, .34);
-    --chart-fill-bot: rgba(61, 245, 255, .03);
-    --chart-grid: rgba(72, 196, 232, .12);
+    --chart-fill-top: rgba(255, 161, 194, .32);
+    --chart-fill-bot: rgba(255, 161, 194, .03);
+    --chart-grid: rgba(255, 161, 194, .12);
 }
 html[data-theme="light"],
 :root[data-theme="light"] {
-    --chart-fill-top: rgba(9, 124, 150, .26);
-    --chart-fill-bot: rgba(9, 124, 150, .03);
-    --chart-grid: rgba(11, 96, 124, .12);
+    --chart-fill-top: rgba(163, 37, 93, .20);
+    --chart-fill-bot: rgba(163, 37, 93, .03);
+    --chart-grid: rgba(163, 37, 93, .12);
 }
 
 /* ============================================================================
    FOCUS / FORCED-COLORS / CONTRAST — ONE authoritative ruleset, kept LAST so
-   it wins source-order over every base + orbital focus style. Satisfies
-   interactions.spec.ts (accepts outline OR box-shadow).
-   NOTE: explicit class/type selectors (specificity 0,2,0), NOT :where() (0,1,0).
-   styles.css L5030 sets `outline:none` on .btn/.nav-item/.theme-toggle at (0,2,0);
-   source order only breaks ties at EQUAL specificity, so :where() would lose and
-   forced-colors mode (box-shadow stripped by the OS) would leave NO focus
-   indicator (WCAG 2.4.7). Matching (0,2,0) lets source-order-LAST win.
-   #chat-input is special-cased below: styles.css sets `#chat-input:focus{outline:none}`
-   at ID specificity (1,1,0), which a (0,2,0) selector CANNOT beat — so the chat
-   textarea needs its own (1,1,0) `#chat-input:focus-visible` rule (source-order-LAST
-   to win the tie) or it keeps the same forced-colors no-focus defect.
+   it wins source-order over every base + skin focus style. Satisfies
+   interactions.spec.ts (real outline required under forced-colors).
+   NOTE: explicit class/type selectors (specificity 0,2,0), NOT :where() —
+   styles.css sets `outline:none` on .btn/.nav-item/.theme-toggle at (0,2,0);
+   matching specificity lets source-order-LAST win. #chat-input is special-cased
+   at (1,1,0) to outrank the base `#chat-input:focus{outline:none}`.
    ============================================================================ */
 a:focus-visible, button:focus-visible, .btn:focus-visible, .nav-item:focus-visible,
 .theme-toggle:focus-visible, input:focus-visible, select:focus-visible,
@@ -1784,18 +1745,14 @@ textarea:focus-visible, [tabindex]:focus-visible {
     outline-offset: 2px;
     box-shadow: var(--focus-ring);
 }
-/* Toggle switches hide the real <input> (0×0, opacity:0) under the .toggle-slider,
-   so the generic input:focus-visible ring above lands on an invisible box behind
-   the slider. Redirect the ring to the visible slider sibling so keyboard users
-   can see which settings toggle is focused before pressing Space (WCAG 2.4.7). */
+/* Toggle switches hide the real <input> under .toggle-slider — redirect the
+   ring to the visible slider sibling (WCAG 2.4.7). */
 .toggle-switch input:focus-visible + .toggle-slider {
     outline: 2px solid var(--accent-cyan);
     outline-offset: 2px;
     box-shadow: var(--focus-ring);
 }
-/* Same redirect for the chat Search/Unrestricted checkboxes: their <input>
-   is visually hidden (0×0, opacity:0 — see styles.css) so the generic ring
-   lands on an invisible box; paint it on the visible icon chip instead. */
+/* Same redirect for the chat Search/Unrestricted checkboxes. */
 .checkbox-label input:focus-visible + .checkbox-icon {
     outline: 2px solid var(--accent-cyan);
     outline-offset: 2px;
@@ -1813,22 +1770,16 @@ a:focus:not(:focus-visible), button:focus:not(:focus-visible),
 }
 @media (prefers-contrast: more) {
     :root { --border-color: var(--border-strong); }
-    /* The light-theme token block sets --border-color at HIGHER specificity
-       (html[data-theme="light"]), which beats the bare :root above regardless
-       of source order — so OS "increase contrast" only worked in dark theme.
-       Restate at matching specificity. */
+    /* Restate at matching specificity so OS "increase contrast" also works in
+       the light theme (its token block outranks the bare :root). */
     html[data-theme="light"],
     :root[data-theme="light"] { --border-color: var(--border-strong); }
 }
 
 /* ============================================================================
-   IPC DISCONNECTED BANNER — sticky cue shown when the dashboard itself can't
-   reach its Tauri backend (app.ts setDisconnectedCue, after 3 failed status
-   ticks). It is appended to <body>, which is height:100vh + overflow:hidden,
-   so a statically-positioned element lays out below the fold and is CLIPPED —
-   position:fixed is load-bearing here, not cosmetic. Anchored bottom-centre and
-   above app chrome so it stays visible over any page/modal. Carbon surface with
-   a danger-red hairline to read as an alert in the ORBITAL palette.
+   IPC DISCONNECTED BANNER — sticky cue shown when the dashboard can't reach
+   its Tauri backend (app.ts setDisconnectedCue). position:fixed is load-bearing
+   (body is height:100vh + overflow:hidden). Night surface + rose alert edge.
    ============================================================================ */
 .ipc-disconnected-banner {
     position: fixed;
@@ -1842,14 +1793,14 @@ a:focus:not(:focus-visible), button:focus:not(:focus-visible),
     max-width: min(92vw, 560px);
     padding: 12px 18px;
     border-radius: var(--r-pill, 999px);
-    background: var(--surface-2, #0a1018);
-    border: 1px solid var(--accent-red, #ff4d61);
-    color: var(--text-primary, #e6f3f8);
+    background: var(--surface-1, #140e1c);
+    border: 1px solid var(--accent-red, #ff5d78);
+    color: var(--text-primary, #f5edf4);
     font-size: 14px;
     font-weight: 600;
-    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 77, 97, 0.22);
+    box-shadow: 0 10px 34px rgba(8, 3, 14, 0.5), 0 0 0 1px rgba(255, 93, 120, 0.22);
 }
 .ipc-disconnected-banner .ic {
     flex: 0 0 auto;
-    color: var(--accent-red, #ff4d61);
+    color: var(--accent-red, #ff5d78);
 }
