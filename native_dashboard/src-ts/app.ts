@@ -736,12 +736,30 @@ function initSakuraAnimation(): void {
     // payoff. Bail entirely so reduced-motion users pay no animation cost.
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
+    // All five shapes are unmistakably sakura: two full five-petal blossoms and
+    // three single petals — every petal carries the signature notched (cleft)
+    // outer tip. (The old set mixed in plain ellipses and a diamond sparkle.)
+    const BLOSSOM_LOBE =
+        'M20 20 C15 15 13.6 8.4 16.4 5.2 C18 3.4 19.5 4.8 20 7 C20.5 4.8 22 3.4 23.6 5.2 C26.4 8.4 25 15 20 20 Z';
+    const BLOSSOM_LOBE_ROUND =
+        'M20 20 C14.6 15.2 13 9 16 5.6 C17.8 3.6 19.4 5 20 7.4 C20.6 5 22.2 3.6 24 5.6 C27 9 25.4 15.2 20 20 Z';
+    const blossom = (lobe: string, center: string): string =>
+        `<svg viewBox="0 0 40 40"><g fill="currentColor">` +
+        [0, 72, 144, 216, 288]
+            .map(a => `<path d="${lobe}" transform="rotate(${a} 20 20)"/>`)
+            .join('') +
+        `</g>${center}</svg>`;
     const petalShapes: string[] = [
-        `<svg viewBox="0 0 40 40"><path d="M20 0 C25 10, 35 15, 40 20 C35 25, 25 30, 20 40 C15 30, 5 25, 0 20 C5 15, 15 10, 20 0" fill="currentColor"/></svg>`,
-        `<svg viewBox="0 0 40 40"><ellipse cx="20" cy="20" rx="18" ry="12" fill="currentColor"/></svg>`,
-        `<svg viewBox="0 0 40 40"><path d="M20 35 C10 25, 0 15, 10 5 C15 0, 20 5, 20 10 C20 5, 25 0, 30 5 C40 15, 30 25, 20 35" fill="currentColor"/></svg>`,
-        `<svg viewBox="0 0 40 40"><ellipse cx="20" cy="20" rx="10" ry="18" fill="currentColor"/></svg>`,
-        `<svg viewBox="0 0 40 40"><path d="M20 0 C30 15, 30 25, 20 40 C10 25, 10 15, 20 0" fill="currentColor"/></svg>`,
+        // full blossom with a pale stamen dot
+        blossom(BLOSSOM_LOBE, '<circle cx="20" cy="20" r="2.2" fill="rgba(255,255,255,0.85)"/>'),
+        // full blossom, rounder lobes, no center
+        blossom(BLOSSOM_LOBE_ROUND, ''),
+        // single wide petal (notched tip)
+        `<svg viewBox="0 0 40 40"><path d="M20 37 C10.5 30.5 6.8 20.5 9.2 12.5 C11.2 6 16 3 18.7 5.6 C19.8 6.7 20 9.2 20 11.2 C20 9.2 20.2 6.7 21.3 5.6 C24 3 28.8 6 30.8 12.5 C33.2 20.5 29.5 30.5 20 37 Z" fill="currentColor"/></svg>`,
+        // single narrow petal (notched tip)
+        `<svg viewBox="0 0 40 40"><path d="M20 37 C14.3 30.6 11.8 21.4 13.1 13.6 C14.2 7 17 4 18.9 5.9 C19.7 6.8 20 9.3 20 11.4 C20 9.3 20.3 6.8 21.1 5.9 C23 4 25.8 7 26.9 13.6 C28.2 21.4 25.7 30.6 20 37 Z" fill="currentColor"/></svg>`,
+        // single petal fluttering edge-on (asymmetric)
+        `<svg viewBox="0 0 40 40"><path d="M23 35.5 C13 32 7.5 23.5 9.5 15 C11.2 8 16 4.2 19.3 6.4 C20.8 7.5 21.1 10 20.5 12.3 C21.6 10.3 23.6 8.9 25.6 9.8 C29.6 11.6 30.6 17.6 28.6 23.8 C26.9 29.2 25.2 32.8 23 35.5 Z" fill="currentColor"/></svg>`,
     ];
 
     const colors: string[] = [
@@ -846,6 +864,57 @@ function initSakuraAnimation(): void {
     };
     document.addEventListener('visibilitychange', visibilityHandler);
     sakuraDisposers.push(() => document.removeEventListener('visibilitychange', visibilityHandler));
+
+    // ---- Cursor interaction: petals drift away from the mouse --------------
+    // The fall keyframes own the petal element's transform, so the repel
+    // offset lives on the inner <svg> as --repel-x/-y (orbital.css composes it
+    // with a soft transition). A rAF loop (auto-paused when the window is
+    // hidden) checks distances every frame so petals falling INTO a stationary
+    // cursor still react, not just on mousemove.
+    let pointerX = -9999;
+    let pointerY = -9999;
+    const REPEL_RADIUS = 110;
+    const REPEL_PUSH = 46;
+
+    function applyRepel(): void {
+        if (pointerX < -999) return;
+        for (const petal of activePetals) {
+            const rect = petal.getBoundingClientRect();
+            const dx = rect.left + rect.width / 2 - pointerX;
+            const dy = rect.top + rect.height / 2 - pointerY;
+            const dist = Math.hypot(dx, dy);
+            if (dist < REPEL_RADIUS && dist > 0.01) {
+                const force = (1 - dist / REPEL_RADIUS) * REPEL_PUSH;
+                petal.style.setProperty('--repel-x', `${((dx / dist) * force).toFixed(1)}px`);
+                petal.style.setProperty('--repel-y', `${((dy / dist) * force).toFixed(1)}px`);
+                petal.classList.add('repelled');
+            } else if (petal.classList.contains('repelled')) {
+                petal.style.setProperty('--repel-x', '0px');
+                petal.style.setProperty('--repel-y', '0px');
+                petal.classList.remove('repelled');
+            }
+        }
+    }
+    let repelLoop: number | null = requestAnimationFrame(function repelTick() {
+        applyRepel();
+        repelLoop = requestAnimationFrame(repelTick);
+    });
+    const pointerMoveHandler = (e: MouseEvent): void => {
+        pointerX = e.clientX;
+        pointerY = e.clientY;
+    };
+    const pointerLeaveHandler = (): void => {
+        pointerX = -9999;
+        pointerY = -9999;
+    };
+    document.addEventListener('mousemove', pointerMoveHandler, { passive: true });
+    document.addEventListener('mouseleave', pointerLeaveHandler);
+    sakuraDisposers.push(() => {
+        document.removeEventListener('mousemove', pointerMoveHandler);
+        document.removeEventListener('mouseleave', pointerLeaveHandler);
+        if (repelLoop !== null) cancelAnimationFrame(repelLoop);
+        repelLoop = null;
+    });
 }
 
 // ============================================================================

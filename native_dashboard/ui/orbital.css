@@ -1213,6 +1213,45 @@ html[data-theme="light"] .chat-connection-status.connected {
     #page-database .stat-card--hero { grid-column: 1 / -1; }
 }
 
+/* ============================================================================
+   COMPACT CHAT SCALE (v4.1) — the chat surface read oversized next to the rest
+   of the deck (48px avatars, 15px/1.6 bubbles, 24px gutters). One notch down
+   across the whole column; ids keep their (1,0,0) specificity where needed.
+   ============================================================================ */
+.chat-messages { padding: var(--space-4); gap: 11px; }
+.chat-message { gap: 9px; max-width: min(78%, calc(100% - 40px)); }
+.message-avatar { width: 30px; height: 30px; font-size: 15px; }
+.message-content {
+    padding: 9px 13px;
+    font-size: var(--step-0);
+    line-height: 1.55;
+}
+.message-name { font-size: var(--step--1); }
+.chat-role-avatar, .ai-avatar-icon { width: 38px; height: 38px; }
+.chat-header { padding: 12px 16px; }
+.chat-input-area { padding: 12px 16px 14px; }
+#chat-input { padding: 10px 14px; font-size: var(--step-0); }
+.chat-input-hint { font-size: var(--step--1); }
+
+/* ============================================================================
+   SAKURA PETALS — cursor interaction. app.ts sets --repel-x/-y on petals near
+   the pointer; the offset composes on the inner <svg> because the fall
+   keyframes own the petal element's transform. Soft ease out + a slower ease
+   back as the cursor moves on. Petals stay pointer-events:none (decorative,
+   never block clicks) — proximity is computed in JS, not via :hover.
+   ============================================================================ */
+#sakura-container .sakura-petal svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    transform: translate(var(--repel-x, 0px), var(--repel-y, 0px));
+    transition: transform .5s var(--ease);
+    will-change: transform;
+}
+#sakura-container .sakura-petal.repelled svg {
+    transition: transform .22s var(--ease-out-expo);
+}
+
 /* Star toggle — chat-manager renders the graphic <svg .ic> star; the .starred
    state fills the glyph in blossom gold (+ aria-pressed for AT). */
 #btn-star-chat.starred {
