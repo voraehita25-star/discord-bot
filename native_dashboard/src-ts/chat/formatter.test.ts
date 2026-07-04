@@ -294,6 +294,19 @@ describe('formatMessage — blockquotes', () => {
         const html = formatMessage('> quoted line');
         expect(html).toContain('<blockquote>');
     });
+
+    it('merges consecutive > lines into a single blockquote', () => {
+        const html = formatMessage('> line one\n> line two');
+        expect(html.match(/<blockquote>/g)).toHaveLength(1);
+        expect(html).toContain('line one<br>line two');
+    });
+
+    it('keeps a quote connected across a bare > continuation line', () => {
+        const html = formatMessage('> para one\n>\n> para two');
+        expect(html.match(/<blockquote>/g)).toHaveLength(1);
+        // the bare > must not leak into the output as a visible ">" character
+        expect(html).not.toContain('&gt;');
+    });
 });
 
 describe('formatMessage — CRLF normalization', () => {
