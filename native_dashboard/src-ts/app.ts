@@ -774,6 +774,22 @@ function initSakuraAnimation(): void {
     const activePetals: Set<HTMLDivElement> = new Set();
     const MAX_PETALS = 30;
 
+    /** Per-petal physical state — integrated per frame by the simulation loop
+     *  below (which owns transform + opacity; no CSS keyframes involved). */
+    interface PetalPhysics {
+        x: number; y: number;       // px, container space
+        vx: number; vy: number;     // px/s
+        angle: number;              // deg
+        size: number;               // px
+        life: number;               // s since spawn (drives the fade-in)
+        flutterPhase: number;       // rad, de-syncs petals from each other
+        flutterFreq: number;        // Hz — how fast this petal rocks
+        flutterAmp: number;         // px/s² lateral rocking force
+        terminal: number;           // px/s fall speed where gravity ⇄ drag balance
+        spin: number;               // deg/s slow tumble bias
+    }
+    const physics = new WeakMap<HTMLDivElement, PetalPhysics>();
+
     function getPetal(): HTMLDivElement {
         let petal = petalPool.pop();
         if (!petal) {
@@ -796,39 +812,42 @@ function initSakuraAnimation(): void {
         activePetals.add(petal);
 
         const size = Math.random() * 15 + 10;
-        // Cap startX so the petal's right edge cannot push the document past
-        // the viewport. Petals are position:fixed but still contribute to
-        // scrollWidth — the previous formula could position a 25px petal at
-        // x = innerWidth - 1, leaving its right side ~24px outside the
-        // viewport and forcing a horizontal scrollbar / layout overflow.
-        const startX = Math.random() * Math.max(0, window.innerWidth - size);
-        const duration = Math.random() * 6 + 6;
-        const delay = Math.random() * 2;
-        const rotateStart = Math.random() * 360;
-        const rotateEnd = rotateStart + (Math.random() * 720 - 360);
-        const swayAmount = Math.random() * 80 + 40;
         const color = colors[Math.floor(Math.random() * colors.length)];
         const shape = petalShapes[Math.floor(Math.random() * petalShapes.length)];
 
         petal.innerHTML = shape;
         // position:absolute (not fixed) so the container's overflow:hidden
         // actually clips petals — fixed escapes any ancestor clip and would
-        // push past the viewport during the sway transform, creating a few
-        // hundred px of phantom horizontal scroll.
+        // push past the viewport, creating phantom horizontal scroll. The
+        // simulation drives position via transform; left/top stay 0.
         petal.style.position = 'absolute';
         petal.style.width = `${size}px`;
         petal.style.height = `${size}px`;
-        petal.style.left = `${startX}px`;
-        petal.style.top = '-40px';
+        petal.style.left = '0';
+        petal.style.top = '0';
         petal.style.color = color;
         petal.style.pointerEvents = 'none';
         petal.style.zIndex = '1';
         petal.style.opacity = '0';
         petal.style.willChange = 'transform, opacity';
-        petal.style.animation = `sakuraFall${Math.floor(Math.random() * 3)} ${duration}s linear ${delay}s`;
-        petal.style.setProperty('--sway', `${swayAmount}px`);
-        petal.style.setProperty('--rotate-start', `${rotateStart}deg`);
-        petal.style.setProperty('--rotate-end', `${rotateEnd}deg`);
+
+        // Spawn above the viewport with a touch of initial drift; heavier
+        // (larger) petals get a slightly higher terminal speed, like the real
+        // thing. Lifetime is position-based — the sim recycles at the floor.
+        physics.set(petal, {
+            x: Math.random() * Math.max(0, window.innerWidth - size),
+            y: -40 - Math.random() * 80,
+            vx: (Math.random() - 0.5) * 24,
+            vy: 10 + Math.random() * 20,
+            angle: Math.random() * 360,
+            size,
+            life: 0,
+            flutterPhase: Math.random() * Math.PI * 2,
+            flutterFreq: 0.9 + Math.random() * 1.3,
+            flutterAmp: 26 + Math.random() * 34,
+            terminal: 30 + size * 1.7 + Math.random() * 16,
+            spin: (Math.random() - 0.5) * 50,
+        });
 
         // Capture container reference; if the element was removed from the DOM
         // after init (e.g. page swap), abort instead of throwing in setInterval.
@@ -838,7 +857,6 @@ function initSakuraAnimation(): void {
             return;
         }
         target.appendChild(petal);
-        setTimeout(() => returnPetal(petal), (duration + delay) * 1000);
     }
 
     // Gate the initial burst + interval on visibility so re-enabling sakura
@@ -865,74 +883,134 @@ function initSakuraAnimation(): void {
     document.addEventListener('visibilitychange', visibilityHandler);
     sakuraDisposers.push(() => document.removeEventListener('visibilitychange', visibilityHandler));
 
-    // ---- Cursor interaction: petals drift away from the mouse --------------
-    // The fall keyframes own the petal element's transform, so the repel
-    // offset lives on the inner <svg> as --repel-x/-y (orbital.css composes it
-    // with a soft transition). A rAF loop (auto-paused when the window is
-    // hidden) checks distances every frame so petals falling INTO a stationary
-    // cursor still react, not just on mousemove.
+    // ---- Physics simulation -------------------------------------------------
+    // Real falling-petal model, integrated per frame (semi-implicit Euler):
+    //   · vertical — velocity relaxes toward each petal's TERMINAL speed (the
+    //     gravity ⇄ air-drag balance); the flutter modulates that target, so
+    //     petals visibly hesitate when they rock flat: the falling-leaf effect
+    //   · horizontal — flutter rocking force + entrainment into a slow
+    //     two-sine breeze + linear air drag
+    //   · rotation — banks into lateral motion, rocks with the flutter, and
+    //     carries a per-petal tumble bias
+    //   · cursor — a radial force field (quadratic falloff) PLUS entrained air
+    //     from the cursor's own velocity: flick the mouse and petals gust
+    //     away, then drag settles them back into a gentle fall. All forces
+    //     feed VELOCITY, so every reaction is a continuous curve.
+    const V_RELAX = 2.1;            // 1/s vertical relaxation toward terminal
+    const H_DRAG = 1.5;             // 1/s horizontal air drag
+    const BREEZE_PULL = 0.55;       // 1/s entrainment into the breeze
+    const CURSOR_RADIUS = 130;      // px
+    const CURSOR_FORCE = 1150;      // px/s² at the cursor, quadratic falloff
+    const CURSOR_WIND = 0.9;        // fraction of cursor velocity entrained
+
     let pointerX = -9999;
     let pointerY = -9999;
-    const REPEL_RADIUS = 120;
-    const REPEL_PUSH = 52;
-    // Smoothing lives HERE, not in a CSS transition (a transition restarted
-    // against a per-frame-moving target reads as stutter): each petal's offset
-    // spring-lerps toward its target every frame, so both the dodge and the
-    // drift back are continuous.
-    const REPEL_EASE = 0.14;
-    const repelState = new WeakMap<HTMLDivElement, { x: number; y: number }>();
+    let pointerVX = 0;
+    let pointerVY = 0;
+    let lastPointerT = 0;
 
-    function applyRepel(): void {
-        for (const petal of activePetals) {
-            const st = repelState.get(petal) ?? { x: 0, y: 0 };
-            let tx = 0;
-            let ty = 0;
-            if (pointerX > -999) {
-                const rect = petal.getBoundingClientRect();
-                const dx = rect.left + rect.width / 2 - pointerX;
-                const dy = rect.top + rect.height / 2 - pointerY;
-                const dist = Math.hypot(dx, dy);
-                if (dist < REPEL_RADIUS && dist > 0.01) {
-                    const force = (1 - dist / REPEL_RADIUS) * REPEL_PUSH;
-                    tx = (dx / dist) * force;
-                    ty = (dy / dist) * force;
-                }
-            }
-            st.x += (tx - st.x) * REPEL_EASE;
-            st.y += (ty - st.y) * REPEL_EASE;
-            const settled = tx === 0 && ty === 0 && Math.abs(st.x) < 0.05 && Math.abs(st.y) < 0.05;
-            if (settled) {
-                st.x = 0;
-                st.y = 0;
-            }
-            repelState.set(petal, st);
-            const active = !settled;
-            if (active || petal.classList.contains('repelled')) {
-                petal.style.setProperty('--repel-x', `${st.x.toFixed(2)}px`);
-                petal.style.setProperty('--repel-y', `${st.y.toFixed(2)}px`);
-                petal.classList.toggle('repelled', active);
-            }
-        }
-    }
-    let repelLoop: number | null = requestAnimationFrame(function repelTick() {
-        applyRepel();
-        repelLoop = requestAnimationFrame(repelTick);
-    });
     const pointerMoveHandler = (e: MouseEvent): void => {
+        const now = performance.now();
+        if (lastPointerT > 0) {
+            const pdt = Math.max(8, now - lastPointerT) / 1000;
+            // low-pass the cursor velocity so a flick reads as a gust, not a spike
+            pointerVX = pointerVX * 0.7 + ((e.clientX - pointerX) / pdt) * 0.3;
+            pointerVY = pointerVY * 0.7 + ((e.clientY - pointerY) / pdt) * 0.3;
+        }
         pointerX = e.clientX;
         pointerY = e.clientY;
+        lastPointerT = now;
     };
     const pointerLeaveHandler = (): void => {
         pointerX = -9999;
         pointerY = -9999;
+        pointerVX = 0;
+        pointerVY = 0;
+        lastPointerT = 0;
     };
+
+    let simTime = 0;
+    let lastFrame = performance.now();
+    let rafId: number | null = requestAnimationFrame(function simTick(now: number) {
+        rafId = requestAnimationFrame(simTick);
+        let dt = (now - lastFrame) / 1000;
+        lastFrame = now;
+        if (dt <= 0) return;
+        if (dt > 0.05) dt = 0.05; // clamp tab-switch / hidden-window spikes
+        simTime += dt;
+
+        // the cursor's gust decays between mouse events
+        const gustDecay = Math.exp(-3 * dt);
+        pointerVX *= gustDecay;
+        pointerVY *= gustDecay;
+
+        // slow two-sine breeze — smooth, never-quite-repeating lateral drift
+        const breeze = 18 * Math.sin(simTime * 0.31) + 12 * Math.sin(simTime * 0.117 + 1.7);
+        const floor = (container.clientHeight || window.innerHeight) + 60;
+        const width = container.clientWidth || window.innerWidth;
+
+        for (const petal of Array.from(activePetals)) {
+            const p = physics.get(petal);
+            if (!p) continue;
+            p.life += dt;
+
+            const flutterArg = simTime * p.flutterFreq * 2 * Math.PI + p.flutterPhase;
+            const flutter = Math.sin(flutterArg);
+
+            // lateral: rocking force + breeze entrainment
+            let ax = flutter * p.flutterAmp + (breeze - p.vx) * BREEZE_PULL;
+            let ay = 0;
+
+            // cursor force field + entrained air
+            if (pointerX > -999) {
+                const dx = p.x + p.size / 2 - pointerX;
+                const dy = p.y + p.size / 2 - pointerY;
+                const dist = Math.hypot(dx, dy);
+                if (dist < CURSOR_RADIUS && dist > 0.01) {
+                    const fall = 1 - dist / CURSOR_RADIUS;
+                    const push = CURSOR_FORCE * fall * fall;
+                    ax += (dx / dist) * push + pointerVX * CURSOR_WIND * fall;
+                    ay += (dy / dist) * push + pointerVY * CURSOR_WIND * fall;
+                }
+            }
+
+            // integrate: horizontal drag; vertical relaxes toward a flutter-
+            // modulated terminal speed (petals hesitate when rocking flat)
+            p.vx += ax * dt;
+            p.vx -= p.vx * H_DRAG * dt;
+            const vyTarget = p.terminal * (0.82 + 0.28 * Math.cos(flutterArg * 2));
+            p.vy += ay * dt + (vyTarget - p.vy) * V_RELAX * dt;
+
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+
+            // banking into motion + flutter rock + tumble bias
+            p.angle += (p.spin + flutter * 55 + p.vx * 0.55) * dt;
+
+            // blown off one side → drift in from the other
+            if (p.x < -60) p.x = width + 20;
+            else if (p.x > width + 60) p.x = -20;
+
+            // recycle at the floor
+            if (p.y > floor) {
+                returnPetal(petal);
+                continue;
+            }
+
+            const fadeIn = Math.min(1, p.life * 1.6);
+            petal.style.opacity = (0.92 * fadeIn).toFixed(3);
+            petal.style.transform =
+                `translate3d(${p.x.toFixed(2)}px, ${p.y.toFixed(2)}px, 0) rotate(${(p.angle % 360).toFixed(2)}deg)`;
+        }
+    });
+
     document.addEventListener('mousemove', pointerMoveHandler, { passive: true });
     document.addEventListener('mouseleave', pointerLeaveHandler);
     sakuraDisposers.push(() => {
         document.removeEventListener('mousemove', pointerMoveHandler);
         document.removeEventListener('mouseleave', pointerLeaveHandler);
-        if (repelLoop !== null) cancelAnimationFrame(repelLoop);
-        repelLoop = null;
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        rafId = null;
     });
 }
 
