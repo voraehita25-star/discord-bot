@@ -200,12 +200,24 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _UNRESTRICTED_SYSTEM_PROMPT_PRIMARY = _REPO_ROOT / "CLAUDE2.md"
 _UNRESTRICTED_SYSTEM_PROMPT_FALLBACK = _REPO_ROOT / "CLAUDE.md"
 
-# Dedicated working directory for every `claude -p` invocation. Claude Code
-# logs each session as a .jsonl under `~/.claude/projects/<encoded-cwd>/`, so
-# spawning from a bot-specific directory isolates Dashboard-spawned sessions
-# from the user's own Claude Code session list (which uses the bot's repo
-# root as CWD). Created lazily on first spawn.
-_CLAUDE_CLI_WORKDIR = Path(__file__).resolve().parents[3] / "data" / "claude_cli_workdir"
+# Dedicated working directory for every `claude -p` invocation, deliberately
+# located OUTSIDE the bot repo (under the user home). Two reasons:
+#   1. Session-log isolation: Claude Code logs each session as a .jsonl under
+#      `<config>/projects/<encoded-cwd>/`, so a bot-specific CWD keeps
+#      Dashboard-spawned sessions out of the operator's own session list.
+#   2. Context isolation (the important one): Claude Code AUTO-DISCOVERS
+#      CLAUDE.md by walking UP from the CWD, and injects the enclosing git
+#      repo's branch/status as dynamic system-prompt sections. A CWD nested
+#      inside the repo (the old `<repo>/data/claude_cli_workdir`) therefore
+#      leaked this repo's developer-facing CLAUDE.md and git state into the
+#      end-user chat. A workdir under the user home has no CLAUDE.md above it
+#      and is not a git repo, so neither leaks. Unrestricted mode still gets
+#      CLAUDE2.md/CLAUDE.md because it passes them as an EXPLICIT
+#      --append-system-prompt-file path, which is CWD-agnostic.
+# Created lazily on first spawn. NOTE: the two maintenance scripts
+# (scripts/maintenance/{clean_cli_orphans,count_cli_sessions}.py) replicate
+# this path from stdlib — keep them in sync if it moves.
+_CLAUDE_CLI_WORKDIR = Path.home() / ".discord_bot" / "claude_cli_workdir"
 
 # Sidecar JSON persisting {conversation_id: session_id}. Kept next to the
 # workdir (not inside it — Claude Code would pick up random .jsonl-adjacent
@@ -508,8 +520,8 @@ def _encode_claude_project_dirname(path: Path) -> str:
     Claude Code stores `~/.claude/projects/<encoded>/<session-id>.jsonl`
     where `<encoded>` replaces *every* non-ASCII-alphanumeric character with
     `-` (consecutive specials are NOT collapsed):
-        `c:\\Users\\ME\\BOT Discord\\data\\claude_cli_workdir`
-            →  `c--Users-ME-BOT-Discord-data-claude-cli-workdir`
+        `c:\\Users\\ME\\.discord_bot\\claude_cli_workdir`
+            →  `c--Users-ME--discord-bot-claude-cli-workdir`
     We need the same encoding to locate the session file to delete. A fixed
     subset (`: \\ / space _`) omitted `.` (and every other special), so any
     path segment containing a dot — e.g. a Windows profile like `me.name`
@@ -1353,8 +1365,9 @@ def _build_full_prompt(
             parts.append(f"# Conversation so far\n{history_block}")
 
     # Use absolute POSIX-style paths so Claude's Read tool can locate files
-    # outside its CWD. The subprocess runs from `data/claude_cli_workdir/`,
-    # but attachments live under `data/tmp/dashboard_cli_*/<conv>/`. Passing
+    # outside its CWD. The subprocess runs from the out-of-repo workdir
+    # (_CLAUDE_CLI_WORKDIR), but attachments live under
+    # `data/tmp/dashboard_cli_*/<conv>/` and are add-dir'd. Passing
     # only the basename (a previous regression) made Read fail with ENOENT
     # and the model fell back to "I can't see the image".
     if image_paths:

@@ -382,6 +382,24 @@ class TestClaudeConfigDirParity:
         assert cli_mod._claude_config_dir() == cli_mod.Path.home() / ".claude"
 
 
+class TestWorkdirIsolation:
+    """The spawn CWD must sit OUTSIDE the repo tree.
+
+    Claude Code auto-discovers CLAUDE.md by walking UP from the CWD and injects
+    the enclosing git repo's branch/status into the system prompt. A workdir
+    nested inside the repo therefore leaks this repo's developer-facing
+    CLAUDE.md and git state into the embedded end-user chat (the same class of
+    leak as auto-memory). Guard the invariant so a future refactor can't
+    silently move it back under the repo.
+    """
+
+    def test_workdir_is_outside_repo(self):
+        workdir = cli_mod._CLAUDE_CLI_WORKDIR.resolve()
+        repo_root = cli_mod._REPO_ROOT.resolve()
+        assert workdir != repo_root
+        assert repo_root not in workdir.parents
+
+
 # ============================================================================
 # handle_chat_message_claude_cli — handler-level recovery behavior
 # ============================================================================

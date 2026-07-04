@@ -14,7 +14,15 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKDIR = (ROOT / "data" / "claude_cli_workdir").resolve()
+# Must match _CLAUDE_CLI_WORKDIR in
+# cogs/ai_core/api/dashboard_chat_claude_cli.py — the dashboard spawns `claude`
+# from a workdir OUTSIDE the repo (under the user home) so Claude Code does not
+# auto-discover the repo's CLAUDE.md / git state into the end-user chat.
+WORKDIR = (Path.home() / ".discord_bot" / "claude_cli_workdir").resolve()
+# Legacy location before the out-of-repo relocation: sessions logged while the
+# workdir still lived at <repo>/data/claude_cli_workdir are stranded under this
+# folder, so survey it too (mirrors the repo-root legacy bucket below).
+LEGACY_WORKDIR = (ROOT / "data" / "claude_cli_workdir").resolve()
 PROJECTS = Path.home() / ".claude" / "projects"
 
 
@@ -109,6 +117,10 @@ def main() -> None:
         ("Bot/Claude workdir folder", bot_folder),
         ("Claude actual workdir folder", claude_folder),
         ("Repo-root folder (legacy pre-isolation orphans)", repo_root_folder),
+        (
+            "Old in-repo workdir (legacy pre-relocation orphans)",
+            PROJECTS / encode_claude_actual(LEGACY_WORKDIR),
+        ),
     ]
     surveys: list[tuple[str, Path]] = []
     _seen_paths: set[str] = set()

@@ -39,6 +39,11 @@ def isolate_image_root(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_TEMP_DOCS_ROOT", tmp_path / "doc")
     # Keep _ensure_write_guard_settings() from writing into the real data/ dir.
     monkeypatch.setattr(cli, "_WRITE_GUARD_SETTINGS_FILE", tmp_path / "guard_settings.json")
+    # Redirect the spawn workdir to scratch too: _make_subprocess_env() mkdir's
+    # `<_CLAUDE_CLI_WORKDIR>/claude_home` when an OAuth token is present, so the
+    # env tests below would otherwise create it under the REAL workdir (now the
+    # user home, ~/.discord_bot). Individual tests may still override this.
+    monkeypatch.setattr(cli, "_CLAUDE_CLI_WORKDIR", tmp_path / "workdir")
 
 
 class TestSaveInlineImages:
