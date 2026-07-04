@@ -12,7 +12,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKDIR = (ROOT / "data" / "claude_cli_workdir").resolve()
+# Must match _CLAUDE_CLI_WORKDIR in
+# cogs/ai_core/api/dashboard_chat_claude_cli.py. The dashboard spawns `claude`
+# from a workdir OUTSIDE the repo (under the user home) so Claude Code does not
+# auto-discover the repo's CLAUDE.md / git state into the end-user chat. The
+# sidecar tracker, however, still lives in the repo's data/ dir.
+WORKDIR = (Path.home() / ".discord_bot" / "claude_cli_workdir").resolve()
 SIDECAR = ROOT / "data" / "claude_cli_sessions.json"
 
 
@@ -150,7 +155,7 @@ def main() -> int:
                         pass
                 deleted_dirs += 1
 
-    # Stray non-jsonl files in the *bot* workdir (data/claude_cli_workdir/).
+    # Stray non-jsonl files in the *bot* workdir (WORKDIR, out-of-repo).
     # Restrict to known stray suffixes so we don't accidentally delete legitimate
     # bot temp files / future attachments stored alongside session data.
     # IMPORTANT: do NOT include `.jsonl` here — those are tracked sessions and
