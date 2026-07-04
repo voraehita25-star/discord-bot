@@ -1527,6 +1527,18 @@ def _make_subprocess_env() -> dict[str, str]:
     # doesn't depend on operator configuration.
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
+    # Force-disable Claude Code auto-memory for the embedded chat. The dashboard
+    # child runs with cwd nested inside this repo, so the CLI's auto-memory
+    # resolves the project to the repo root and injects the OPERATOR's private
+    # ~/.claude/projects/<repo>/memory/MEMORY.md into the dashboard assistant's
+    # context — leaking the developer's Claude Code notes into the end-user chat
+    # (and, worse, letting the chat WRITE back into that shared store). The
+    # embedded assistant must be isolated from the operator's dev memory in both
+    # directions. We SET the var (not just allowlist it) so isolation holds
+    # regardless of operator config, and it covers every spawn path (cold,
+    # pre-warm, read-only, write mode) since they all build env through here.
+    env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+
     # A set-but-blank CLAUDE_CONFIG_DIR means "unset" (repo convention — see
     # ai_tools_ipc._flag): the Node CLI treats "" as absent and falls back to
     # ~/.claude, but the membership gate below would see the var as present

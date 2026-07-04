@@ -403,6 +403,16 @@ class TestMakeSubprocessEnv:
         env = cli._make_subprocess_env()
         assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "tok-x"
 
+    def test_disables_auto_memory(self, monkeypatch):
+        # The child runs with cwd nested inside this repo, so Claude Code
+        # auto-memory would otherwise resolve to the repo root and inject the
+        # operator's private ~/.claude/projects/<repo>/memory into the embedded
+        # chat (and let the chat write back to it). Force isolation regardless
+        # of operator config — set even when the operator never set the var.
+        monkeypatch.delenv("CLAUDE_CODE_DISABLE_AUTO_MEMORY", raising=False)
+        env = cli._make_subprocess_env()
+        assert env.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1"
+
 
 # ---------------------------------------------------------------------------
 # _build_claude_argv
