@@ -1160,7 +1160,11 @@ export class ChatManager {
     updateConnectionStatus(connected: boolean): void {
         const statusEl = document.getElementById('chat-connection-status');
         if (statusEl) {
-            statusEl.className = connected ? 'connected' : 'disconnected';
+            // classList toggles, NOT className assignment — the old `className =`
+            // wiped the base 'chat-connection-status' class off the element,
+            // orphaning every CSS rule for the chip (it rendered as bare text).
+            statusEl.classList.toggle('connected', connected);
+            statusEl.classList.toggle('disconnected', !connected);
             if (connected) {
                 statusEl.textContent = 'Connected';
             } else if (this.reconnectAttempts >= this.wsClient.maxReconnectAttempts) {
@@ -2313,7 +2317,16 @@ export class ChatManager {
     updateStarButton(): void {
         const btn = document.getElementById('btn-star-chat');
         if (btn && this.currentConversation) {
-            btn.textContent = this.currentConversation.is_starred ? 'Starred' : 'Star';
+            // Graphic star icon, not a text label (the old textContent write wiped
+            // the <svg> out of the button). Starred state is expressed via the
+            // .starred class (CSS fills the glyph) + aria-pressed for AT.
+            const starred = !!this.currentConversation.is_starred;
+            btn.innerHTML = icon('star');
+            btn.classList.toggle('starred', starred);
+            btn.setAttribute('aria-pressed', String(starred));
+            const label = starred ? 'Unstar Conversation' : 'Star Conversation';
+            btn.setAttribute('aria-label', label);
+            btn.title = label;
         }
     }
 
