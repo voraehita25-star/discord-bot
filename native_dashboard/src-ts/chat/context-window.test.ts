@@ -203,3 +203,32 @@ describe('ContextWindowIndicator — localStorage persistence', () => {
         expect(parsed.c219).toBeDefined();
     });
 });
+
+describe('ContextWindowIndicator pending attached-file estimate', () => {
+    it('folds attached-document chars into the bar immediately (~4 chars/token)', () => {
+        const cw = new ContextWindowIndicator();
+        cw.update('c1', mkUsage(25_000, 100_000));   // 25%
+        cw.addPendingDocumentChars('c1', 100_000);   // +25k estimated tokens -> 50%
+        const fill = document.getElementById('context-bar-fill')!;
+        expect(fill.style.width).toBe('50%');
+    });
+
+    it('clears the estimate when the next real usage frame arrives', () => {
+        const cw = new ContextWindowIndicator();
+        cw.update('c1', mkUsage(25_000, 100_000));
+        cw.addPendingDocumentChars('c1', 100_000);
+        cw.update('c1', mkUsage(30_000, 100_000));   // real reading supersedes
+        const fill = document.getElementById('context-bar-fill')!;
+        expect(fill.style.width).toBe('30%');
+    });
+
+    it('keeps the estimate across a conversation switch (restore)', () => {
+        const cw = new ContextWindowIndicator();
+        cw.update('c1', mkUsage(25_000, 100_000));
+        cw.addPendingDocumentChars('c1', 100_000);
+        cw.update('c2', mkUsage(10_000, 100_000));   // switch away
+        cw.restore('c1');                            // back -> estimate still shown
+        const fill = document.getElementById('context-bar-fill')!;
+        expect(fill.style.width).toBe('50%');
+    });
+});

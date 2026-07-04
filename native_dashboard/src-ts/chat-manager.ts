@@ -1081,6 +1081,19 @@ export class ChatManager {
                     // from the server rather than optimistically incrementing
                     // so the badge stays in sync even on reconnect races.
                     this.refreshChatFilesBadge();
+                    // Fold the extracted text into the context meter right away
+                    // (an estimate; the next turn's real usage supersedes it) —
+                    // attached files otherwise looked "uncounted" until the
+                    // next message round-trip.
+                    const pendingChars = docs.reduce(
+                        (s, d) => s + (typeof d.char_count === 'number' ? d.char_count : 0),
+                        0,
+                    );
+                    this.contextWindow.addPendingDocumentChars(
+                        (data.conversation_id as string | undefined)
+                            ?? this.currentConversation?.id ?? null,
+                        pendingChars,
+                    );
                 }
                 break;
 
