@@ -1120,10 +1120,19 @@ html[data-theme="light"] .danger-zone {
 .chat-header h3 { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.01em; }
 .context-bar-fill { background: var(--brand-grad); box-shadow: 0 0 10px var(--glow-pink); }
 
-/* v4 layout fix: the conversation title used to overlap the connection-status
-   text when both grew. The info block takes the flexible space and its text
-   ellipsizes instead of colliding. */
-.chat-header-info { flex: 1 1 auto; min-width: 0; }
+/* v4 layout fix — the chat header holds a LOT (identity, connection state,
+   context meter, provider select, six actions). Let it wrap by DESIGN:
+   the identity block keeps the flexible left slot and ellipsizes; the action
+   cluster stays one right-aligned group that wraps as a tidy second row when
+   the window is narrow (previously two buttons broke off mid-cluster). */
+.chat-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    row-gap: var(--space-2);
+    column-gap: var(--space-2);
+}
+.chat-header-info { flex: 1 1 240px; min-width: 0; order: 1; }
 .chat-header-text { min-width: 0; }
 .chat-header-text h3,
 .chat-header-text .chat-role-name {
@@ -1132,7 +1141,90 @@ html[data-theme="light"] .danger-zone {
     white-space: nowrap;
     max-width: 100%;
 }
-.chat-connection-status { flex: 0 0 auto; }
+/* connection state reads as a status chip, not floating text (hidden while
+   the span is empty — it starts blank until the socket reports). */
+.chat-connection-status {
+    order: 2;
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 3px 10px;
+    border-radius: var(--r-pill);
+    border: 1px solid var(--border-color);
+    background: var(--surface-2);
+}
+.chat-connection-status:empty { display: none; }
+.chat-connection-status.connected {
+    color: var(--accent-green);
+    border-color: rgba(76, 233, 171, 0.35);
+    background: rgba(76, 233, 171, 0.08);
+}
+html[data-theme="light"] .chat-connection-status.connected {
+    border-color: rgba(15, 122, 77, 0.35);
+    background: rgba(15, 122, 77, 0.08);
+}
+.chat-connection-status.disconnected {
+    color: var(--accent-red);
+    border-color: rgba(255, 93, 120, 0.35);
+    background: rgba(255, 93, 120, 0.08);
+}
+.context-window-indicator { order: 3; }
+.chat-header-actions {
+    order: 4;
+    margin-left: auto;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 6px;
+}
+
+/* v4 layout fix — panel-sidebar headers (Conversations / AI History): the
+   title ellipsizes instead of colliding with its action button. */
+.chat-sidebar-header,
+.history-sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-3);
+}
+.chat-sidebar-header h2,
+.history-sidebar-header h2 {
+    margin: 0;
+    font-size: var(--step-1);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.chat-sidebar-header .btn,
+.history-sidebar-header .btn { flex: 0 0 auto; }
+
+/* v4 layout fix — rectangular stat grids (no ragged holes) on wide windows:
+   Status = 3 tracks (three singles, then hero+channels fill the second row);
+   Database = the hero becomes a full-width banner over its three singles.
+   Scoped to >820px so the existing narrow auto-fit override still rules. */
+@media (min-width: 821px) {
+    #page-status .stats-grid,
+    #page-database .stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    #page-database .stat-card--hero { grid-column: 1 / -1; }
+}
+
+/* Star toggle — chat-manager renders the graphic <svg .ic> star; the .starred
+   state fills the glyph in blossom gold (+ aria-pressed for AT). */
+#btn-star-chat.starred {
+    color: var(--accent-orange);
+    border-color: rgba(255, 184, 92, 0.42);
+    background: rgba(255, 184, 92, 0.12);
+}
+#btn-star-chat.starred .ic { fill: currentColor; }
+html[data-theme="light"] #btn-star-chat.starred {
+    background: rgba(143, 83, 16, 0.10);
+    border-color: rgba(143, 83, 16, 0.40);
+}
 
 /* Bubbles — assistant = neutral surface with a sakura left rail; user = brand
    wash. The light-scoped pair matches the specificity of the styles.css light
