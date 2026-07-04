@@ -12,8 +12,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import statistics
+import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+
+# Project root (parent of scripts/). Needed so the optional
+# --test-rate-limiter / --test-circuit-breaker paths can import
+# ``utils.*`` when this script is run directly (``python scripts/load_test.py``).
+PROJECT_ROOT = Path(__file__).parent.parent
+
+# Add project root to path for imports
+sys.path.insert(0, str(PROJECT_ROOT))
 
 
 @dataclass

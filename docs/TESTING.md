@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: June 15, 2026 | Python 3.14+ | Python Tests: 5,076 ✅ (114 files), 2 skipped, 3 deselected under -Fast | Frontend Tests: 298 ✅ (11 vitest files) + 72 ✅ (8 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots) | Timeout: 30s per test
+> Last Updated: July 4, 2026 | Python 3.14+ | Python Tests: 5,418 ✅ (126 files), 2 skipped, 3 deselected under -Fast | Frontend Tests: 467 ✅ (19 vitest files) + 90 ✅ (9 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots + upgrade-guards) | Timeout: 30s per test
 >
 > Counts drift as tests are added — run **`make docs-sync`** to refresh every number in the docs from the live repo in one pass (or `make test` / `npm test` / `npm run test:e2e` for the live numbers directly). CI can guard drift with `make docs-check`.
 
@@ -32,14 +32,14 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (114 Python files, 5,076 tests)
+## Test Structure (126 Python files, 5,418 tests)
 
 ```text
 tests/
 ├── __init__.py              # Package init
 ├── conftest.py              # Shared fixtures (mock bot, temp DB, env/singleton reset)
 ├── test_boilerplate.py      # Parametrized structural tests (docstrings, singletons)
-├── test_*.py                # 112 consolidated test files
+├── test_*.py                # 125 more test files (consolidated + coverage/regression suites)
 │   ├── AI Core              # ~25 test files (ai_cache, ai_cog, logic, storage, dashboard_chat*, etc.)
 │   ├── Music                # ~6 test files (music_cog, music_queue, spotify, ytdl, etc.)
 │   ├── Dashboard            # 2 test files (dashboard_handlers — 48 tests; dashboard_ai_history — 225 tests)
@@ -53,27 +53,35 @@ tests/
 > into their base files and parametrized boilerplate tests. A later coverage push
 > (mid-2026) added dedicated/regression suites (e.g. `test_migrations`,
 > `test_url_fetcher_client`, `test_url_safety`, `test_core_performance`,
-> `test_dev_watcher`, `test_imports`, plus cog-coverage files). Current count: **113 files**.
+> `test_dev_watcher`, `test_imports`, plus cog-coverage files). Current count: **126 files**.
 
-## Frontend Test Structure (11 vitest files, 298 tests)
+## Frontend Test Structure (19 vitest files, 467 tests)
 
 TypeScript tests run under [vitest](https://vitest.dev/) with a `jsdom` environment.
 There is no shared setup file; the two suites that need it attach DOMPurify in a per-file `beforeAll` (the real `dompurify` npm build, e.g. `formatter.test.ts`, `chat-manager.test.ts`). KaTeX is intentionally *not* loaded, so the formatter suite exercises the no-KaTeX LaTeX fallback path.
 
 ```text
 native_dashboard/src-ts/
-├── app.test.ts                     # app.ts — status/logs/DB/settings (legacy suite)
-├── chat-manager.test.ts            # ChatManager — handleMessage dispatcher + state (39 tests)
-├── history-manager.test.ts         # AI History page — load/edit/delete/undo + refresh (91 tests)
-├── e2e_smoke.test.ts               # Smoke-level end-to-end flows
+├── app.test.ts                     # app.ts — status/logs/DB/settings (54 tests, legacy suite)
+├── chat-manager.test.ts            # ChatManager — handleMessage dispatcher + state (64 tests)
+├── chat-manager.audit2.test.ts     # ChatManager — audit-round-2 regression guards (4 tests)
+├── history-manager.test.ts         # AI History page — load/edit/delete/undo + refresh (114 tests)
+├── e2e_smoke.test.ts               # Smoke-level end-to-end flows (13 tests)
 └── chat/
-    ├── formatter.test.ts           # Markdown + LaTeX + code fences + XSS (26 tests)
-    ├── message-template.test.ts    # computeWindow + renderMessagesHtml (19 tests)
+    ├── formatter.test.ts           # Markdown + LaTeX + code fences + XSS (43 tests)
+    ├── formatter.audit2.test.ts    # Formatter audit-round-2 regression guards (12 tests)
+    ├── formatter.audit3.test.ts    # Formatter audit-round-3 regression guards (7 tests)
+    ├── formatter.audit4.test.ts    # Formatter audit-round-4 regression guards (9 tests)
+    ├── message-template.test.ts    # computeWindow + renderMessagesHtml (22 tests)
+    ├── message-template.audit2.test.ts # Message-template audit-round-2 guards (4 tests)
     ├── context-window.test.ts      # Token bar + LRU cache + localStorage (16 tests)
     ├── conversation-list.test.ts   # Filter + 200-cap + tag chips (18 tests)
     ├── conversation-modals.test.ts # Rename + delete isStreaming guard (16 tests)
-    ├── search.test.ts              # wrapMatches + step cycling + keys (21 tests)
-    └── prism.test.ts               # canonicalPrismLang + code highlight (13 tests)
+    ├── search.test.ts              # wrapMatches + step cycling + keys (26 tests)
+    ├── prism.test.ts               # canonicalPrismLang + code highlight (16 tests)
+    ├── ws-client.test.ts           # ws-client.ts — connect/reconnect + message handling (19 tests)
+    ├── image-attach.test.ts        # Image attach + routing to DocumentAttachManager (3 tests)
+    └── document-attach.test.ts     # Document attach — caps + type gating (7 tests)
 ```
 
 Run from `native_dashboard/`:
@@ -92,7 +100,7 @@ npm run typecheck:test   # Type-check including the *.test.ts specs
 > numbers as a regression guard — raise them as coverage grows, don't lower
 > them to make a run pass.
 
-## Headless E2E Tests (8 Playwright files, 72 tests)
+## Headless E2E Tests (9 Playwright files, 90 tests)
 
 Playwright drives a real Chromium against the **static dashboard UI** (`native_dashboard/ui/index.html`)
 served by `python -m http.server`. Tauri's IPC layer is replaced at test time by a shim
@@ -113,13 +121,14 @@ native_dashboard/tests-e2e/
 ├── h5-importmap.spec.ts         # H5: import-map IPC resolves under withGlobalTauri:false
 ├── h7-csp.spec.ts               # H7: render under strict `style-src 'self'` (MathML, CSSOM)
 ├── dashboard-inspection.spec.ts # deep UI inspection (z-index, layout, console-error vigilance)
+├── upgrade-guards.spec.ts       # Sakura Midnight v2 upgrade-audit regression guards
 └── screenshots.spec.ts          # manual-inspection captures
 ```
 
 Run from `native_dashboard/`:
 
 ```bash
-npm run test:e2e                 # All 72 tests, headless Chromium
+npm run test:e2e                 # All 90 tests, headless Chromium
 npm run test:e2e:ui              # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots   # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots     # Just the screenshot captures

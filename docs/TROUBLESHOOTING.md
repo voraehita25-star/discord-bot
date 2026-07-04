@@ -213,7 +213,7 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 | `GEMINI_MODEL` | `gemini-3.1-pro-preview` | Gemini model name |
 | `ANTHROPIC_BASE_URL` | `""` | Custom API base URL |
 | `ANTHROPIC_PROXY_BASE_URL` | `""` | Proxy API URL |
-| `ANTHROPIC_API_ENDPOINT` | `direct` | Failover *mode* selector (a sentinel, not a URL): `direct` calls the Anthropic API directly; any other value pins the proxy. The failover layer flips between direct and `ANTHROPIC_PROXY_BASE_URL` automatically based on error rate. |
+| `ANTHROPIC_API_ENDPOINT` | `direct` | Failover endpoint selector (a sentinel, not a URL): valid values are exactly `direct` (default) or `proxy`; any other value (including a URL) is invalid and silently falls back to `direct`. The failover layer flips between direct and `ANTHROPIC_PROXY_BASE_URL` automatically based on error rate. |
 | `DEFAULT_AI_PROVIDER` | `claude` | Dashboard default provider (`gemini`/`claude`); unset resolves to `claude` |
 
 ### Discord IDs

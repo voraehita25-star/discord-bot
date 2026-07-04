@@ -19,8 +19,8 @@
 | 📈 **Performance Charts** | Real-time memory & message count graphs. |
 | ⚡ **Performance Caching** | LRU caching reduces repeat API calls ~50%. |
 | ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
-| 🧪 **Unit Tests** | 298 tests across 11 vitest files: `app.test.ts`, `chat-manager.test.ts`, `history-manager.test.ts`, `e2e_smoke.test.ts` + 7 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, formatter, message-template, prism, search). |
-| 🤖 **Headless E2E** | 72 Playwright tests across 8 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection (the page-sweep specs cover the History page too). Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
+| 🧪 **Unit Tests** | 467 tests across 19 vitest files: `app.test.ts`, `chat-manager.test.ts` (+`.audit2`), `history-manager.test.ts`, `e2e_smoke.test.ts` + 14 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, document-attach, formatter +3 audit suites, image-attach, message-template +1 audit suite, prism, search, ws-client). |
+| 🤖 **Headless E2E** | 90 Playwright tests across 9 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection, upgrade-audit regression guards (the page-sweep specs cover the History page too). Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
 | 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars, sakura, sound, haptic, telemetry. |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
 
@@ -148,14 +148,14 @@ native_dashboard/
 │   ├── bot_manager.rs      # Bot process control
 │   └── database.rs         # SQLite queries
 ├── src-ts/
-│   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~2.2k lines)
-│   ├── chat-manager.ts     # ChatManager orchestrator (~3.2k lines) — chat + file memory modal + editor
+│   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~2.6k lines)
+│   ├── chat-manager.ts     # ChatManager orchestrator (~3.5k lines) — chat + file memory modal + editor
 │   ├── history-manager.ts  # AI History page — browse/edit/delete/undo the bot's ai_history rows
 │   ├── shared.ts           # Shared utils (invoke wrapper, errors, settings, toasts, 3D interactions, animateNumber, sound+haptic)
 │   ├── types.ts            # Shared TypeScript interfaces
 │   ├── faust_avatar.ts     # Default AI avatar (base64)
 │   ├── app.test.ts         # app.ts unit tests
-│   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (39 tests)
+│   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (64 tests)
 │   ├── history-manager.test.ts # HistoryManager load/edit/delete/undo + live_session-ack tests
 │   ├── e2e_smoke.test.ts   # Smoke-level end-to-end tests
 │   └── chat/               # Chat modules extracted from chat-manager.ts
@@ -171,7 +171,7 @@ native_dashboard/
 │       ├── image-attach.ts       # Image attachment + drag-drop + paste; routes docs to DocumentAttachManager
 │       ├── document-attach.ts    # PDF / DOCX / text / code file attach (32 MB cap, 5 per msg)
 │       ├── export-picker.ts      # Export format picker UI
-│       └── *.test.ts             # 7 vitest files (298 tests total across all 11)
+│       └── *.test.ts             # 14 vitest files (467 tests total across all 19)
 ├── tests-e2e/              # Playwright (Chromium) — headless against the static UI
 │   ├── _fixtures/mock-tauri.ts   # Installs window.__TAURI__.core.invoke shim + WS stub + page-error tracker
 │   ├── dashboard-smoke.spec.ts   # smoke tests for recent UI fixes (null-guards, sakura, modals, ...)
@@ -182,6 +182,7 @@ native_dashboard/
 │   ├── h5-importmap.spec.ts      # H5: import-map IPC resolves under withGlobalTauri:false
 │   ├── h7-csp.spec.ts            # H7: render under strict style-src 'self' (MathML, CSSOM)
 │   ├── dashboard-inspection.spec.ts # deep UI inspection (z-index, layout, console-error vigilance)
+│   ├── upgrade-guards.spec.ts    # Sakura Midnight v2 upgrade-audit regression guards
 │   └── screenshots.spec.ts       # capture targets for manual inspection
 ├── scripts/
 │   ├── build-release.ps1   # Build + copy exes (no installer) — fast iteration
@@ -262,13 +263,13 @@ python scripts/create_desktop_shortcut.py
 
 ```bash
 # Unit tests (vitest, ~5s)
-npm test                       # Run all 298 vitest tests
+npm test                       # Run all 467 vitest tests
 npm run test:watch             # Watch mode
 npm run test:coverage          # With coverage report (enforces coverage floors → exits 1 if below)
 npm run typecheck:test         # Type-check including the *.test.ts specs
 
 # Headless e2e (Playwright + Chromium, ~30s)
-npm run test:e2e               # Run all 72 Playwright tests (smoke + interactions + a11y + visual + h5/h7 + inspection)
+npm run test:e2e               # Run all 90 Playwright tests (smoke + interactions + a11y + visual + h5/h7 + inspection + upgrade-guards)
 npm run test:e2e:ui            # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots  # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots   # Capture screenshots for manual inspection
