@@ -78,7 +78,6 @@ temp/
 native_dashboard/.drivers/
 # Claude Code transient/per-user state (shared settings.json is kept)
 .claude/scheduled_tasks.lock
-.claude/settings.local.json
 *.tmp
 *.temp
 tmpclaude-*
