@@ -1218,6 +1218,10 @@ html[data-theme="light"] .chat-connection-status.connected {
    of the deck (48px avatars, 15px/1.6 bubbles, 24px gutters). One notch down
    across the whole column; ids keep their (1,0,0) specificity where needed.
    ============================================================================ */
+/* The chat view IS the content — drop the page title bar (eyebrow + h1) there;
+   the flex chat-layout absorbs the reclaimed height. Every other page keeps
+   its header. */
+#page-chat .page-title-bar { display: none; }
 .chat-messages { padding: var(--space-4); gap: 11px; }
 .chat-message { gap: 9px; max-width: min(78%, calc(100% - 40px)); }
 .message-avatar { width: 30px; height: 30px; font-size: 15px; }
@@ -1245,11 +1249,10 @@ html[data-theme="light"] .chat-connection-status.connected {
     width: 100%;
     height: 100%;
     transform: translate(var(--repel-x, 0px), var(--repel-y, 0px));
-    transition: transform .5s var(--ease);
+    /* NO transition here — app.ts smooths --repel-x/-y itself with a per-frame
+       spring lerp. A CSS transition on top would restart every frame against
+       the continuously-updated target and read as stutter. */
     will-change: transform;
-}
-#sakura-container .sakura-petal.repelled svg {
-    transition: transform .22s var(--ease-out-expo);
 }
 
 /* Star toggle — chat-manager renders the graphic <svg .ic> star; the .starred

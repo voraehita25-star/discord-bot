@@ -873,25 +873,44 @@ function initSakuraAnimation(): void {
     // cursor still react, not just on mousemove.
     let pointerX = -9999;
     let pointerY = -9999;
-    const REPEL_RADIUS = 110;
-    const REPEL_PUSH = 46;
+    const REPEL_RADIUS = 120;
+    const REPEL_PUSH = 52;
+    // Smoothing lives HERE, not in a CSS transition (a transition restarted
+    // against a per-frame-moving target reads as stutter): each petal's offset
+    // spring-lerps toward its target every frame, so both the dodge and the
+    // drift back are continuous.
+    const REPEL_EASE = 0.14;
+    const repelState = new WeakMap<HTMLDivElement, { x: number; y: number }>();
 
     function applyRepel(): void {
-        if (pointerX < -999) return;
         for (const petal of activePetals) {
-            const rect = petal.getBoundingClientRect();
-            const dx = rect.left + rect.width / 2 - pointerX;
-            const dy = rect.top + rect.height / 2 - pointerY;
-            const dist = Math.hypot(dx, dy);
-            if (dist < REPEL_RADIUS && dist > 0.01) {
-                const force = (1 - dist / REPEL_RADIUS) * REPEL_PUSH;
-                petal.style.setProperty('--repel-x', `${((dx / dist) * force).toFixed(1)}px`);
-                petal.style.setProperty('--repel-y', `${((dy / dist) * force).toFixed(1)}px`);
-                petal.classList.add('repelled');
-            } else if (petal.classList.contains('repelled')) {
-                petal.style.setProperty('--repel-x', '0px');
-                petal.style.setProperty('--repel-y', '0px');
-                petal.classList.remove('repelled');
+            const st = repelState.get(petal) ?? { x: 0, y: 0 };
+            let tx = 0;
+            let ty = 0;
+            if (pointerX > -999) {
+                const rect = petal.getBoundingClientRect();
+                const dx = rect.left + rect.width / 2 - pointerX;
+                const dy = rect.top + rect.height / 2 - pointerY;
+                const dist = Math.hypot(dx, dy);
+                if (dist < REPEL_RADIUS && dist > 0.01) {
+                    const force = (1 - dist / REPEL_RADIUS) * REPEL_PUSH;
+                    tx = (dx / dist) * force;
+                    ty = (dy / dist) * force;
+                }
+            }
+            st.x += (tx - st.x) * REPEL_EASE;
+            st.y += (ty - st.y) * REPEL_EASE;
+            const settled = tx === 0 && ty === 0 && Math.abs(st.x) < 0.05 && Math.abs(st.y) < 0.05;
+            if (settled) {
+                st.x = 0;
+                st.y = 0;
+            }
+            repelState.set(petal, st);
+            const active = !settled;
+            if (active || petal.classList.contains('repelled')) {
+                petal.style.setProperty('--repel-x', `${st.x.toFixed(2)}px`);
+                petal.style.setProperty('--repel-y', `${st.y.toFixed(2)}px`);
+                petal.classList.toggle('repelled', active);
             }
         }
     }
