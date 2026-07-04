@@ -363,4 +363,4 @@ cd native_dashboard && npm run release
 
 ---
 
-*Last Updated: June 2026 | Version: 3.4.14*
+*Last Updated: June 2026 | Version: 3.5.0*
