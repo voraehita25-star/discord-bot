@@ -382,9 +382,13 @@ function formatMessageUncached(content: string): string {
     html = html.replace(/^#{1}[ \t]+(.+)$/gm, '<h1 class="md-heading">$1</h1>');
     // Horizontal rule (--- or ___ or *** on its own line).
     html = html.replace(/^(?:---+|___+|\*\*\*+)\s*$/gm, '<hr class="md-hr">');
-    // Blockquotes (> at start of line — already &gt; after escapeHtml).
-    html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-    // Merge consecutive blockquotes.
+    // Blockquotes (> at start of line — already &gt; after escapeHtml). A bare
+    // `>` with no text is a quote CONTINUATION line (markdown's paragraph
+    // separator inside a quote) and must ALSO match — otherwise it leaks as a
+    // literal ">" character that visually splits the quote in two.
+    html = html.replace(/^&gt;[ \t]?(.*)$/gm, '<blockquote>$1</blockquote>');
+    // Merge consecutive blockquote lines into ONE connected block (blank
+    // continuation lines become line breaks inside the same quote).
     html = html.replace(/<\/blockquote>\n?<blockquote>/g, '<br>');
 
     // Markdown tables — extract into placeholders before \n → <br>.
