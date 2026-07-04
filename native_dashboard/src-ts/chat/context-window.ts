@@ -28,6 +28,12 @@ const MAX_CACHE_SIZE = 200;  // LRU cap so localStorage doesn't grow unbounded
 export class ContextWindowIndicator {
     private cache: Map<string, TokenUsage> = new Map();
 
+    /** Estimated tokens (~4 chars each) of documents attached AFTER the last
+     *  real usage reading, per conversation. Session-scoped, not persisted:
+     *  the next real token_usage frame already includes the injected document
+     *  text, so it supersedes + clears the estimate — no double counting. */
+    private pendingDocTokens: Map<string, number> = new Map();
+
     /** Load persisted cache. Call once at startup (ChatManager.connect() does this). */
     load(): void {
         try {
@@ -90,6 +96,9 @@ export class ContextWindowIndicator {
         }
 
         if (conversationId) {
+            // A real reading supersedes any attached-file estimate (the
+            // injected documents are part of this turn's actual input).
+            this.pendingDocTokens.delete(conversationId);
             // Move-to-end LRU: ``cache.set`` only refreshes insertion order
             // when the key is new. For an existing key it keeps the
             // original position, defeating the LRU trim in ``save()``
@@ -183,14 +192,43 @@ export class ContextWindowIndicator {
             // promotion is persisted on the next real update().
             this.cache.delete(conversationId);
             this.cache.set(conversationId, cached);
-            this.paint(cached);
+            this.paint(this.withPending(conversationId, cached));
         } else {
             this.reset();
         }
     }
 
+    /**
+     * Fold freshly-attached document text into the bar as an ESTIMATE
+     * (~4 chars/token), so the meter reacts the moment a file is saved to the
+     * conversation instead of waiting for the next turn's real usage frame
+     * (which then replaces the estimate with actual numbers).
+     */
+    addPendingDocumentChars(conversationId: string | null, chars: number): void {
+        if (!conversationId || !Number.isFinite(chars) || chars <= 0) return;
+        const tokens = Math.ceil(chars / 4);
+        this.pendingDocTokens.set(
+            conversationId,
+            (this.pendingDocTokens.get(conversationId) ?? 0) + tokens,
+        );
+        const cached = this.cache.get(conversationId);
+        if (cached) this.paint(this.withPending(conversationId, cached));
+    }
+
+    /** Overlay a conversation's pending-document estimate onto a usage reading. */
+    private withPending(conversationId: string, usage: TokenUsage): TokenUsage {
+        const pending = this.pendingDocTokens.get(conversationId) ?? 0;
+        if (pending <= 0) return usage;
+        return {
+            ...usage,
+            input_tokens: usage.input_tokens + pending,
+            total_tokens: usage.total_tokens + pending,
+        };
+    }
+
     /** Drop one conversation's cached usage (called on conversation delete). */
     forget(conversationId: string): void {
+        this.pendingDocTokens.delete(conversationId);
         if (this.cache.delete(conversationId)) this.save();
     }
 
