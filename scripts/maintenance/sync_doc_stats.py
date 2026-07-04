@@ -179,6 +179,7 @@ def compute_stats() -> dict[str, object | None]:
         "pytest_test_files": _count_glob(ROOT / "tests", "test_*.py"),
         "python_files": _git_py_count(),
         "vitest_files": _count_glob(DASH / "src-ts", "**/*.test.ts"),
+        "vitest_chat_files": _count_glob(DASH / "src-ts" / "chat", "*.test.ts"),
         "playwright_files": _count_glob(DASH / "tests-e2e", "*.spec.ts"),
         "app_ts_lines": _line_count_k("native_dashboard/src-ts/app.ts"),
         "chat_manager_ts_lines": _line_count_k("native_dashboard/src-ts/chat-manager.ts"),
@@ -199,6 +200,7 @@ _INT_STATS = {
     "python_files",
     "vitest_tests",
     "vitest_files",
+    "vitest_chat_files",
     "playwright_tests",
     "playwright_files",
     "chat_manager_tests",
@@ -218,21 +220,49 @@ def render(stat: str, value: object) -> str:
 REPLACEMENTS: list[tuple[str, str, str]] = [
     # README.md
     ("README.md", r"Python suite \(([\d,]+) pytest\)", "pytest_tests"),
+    ("README.md", r"Playwright \(([\d,]+) spec files", "playwright_files"),
+    ("README.md", r"vitest ✅ \+ ([\d,]+) Playwright ✅", "playwright_tests"),
     ("README.md", r"\*\*Tests:\*\* ([\d,]+) pytest", "pytest_tests"),
     ("README.md", r"pytest ✅ \+ ([\d,]+) vitest", "vitest_tests"),
     ("README.md", r"\*\*Version:\*\* ([\d.]+) ", "version"),
     # CONTRIBUTING.md
     ("CONTRIBUTING.md", r"pytest \(~([\d,]+) Python tests\)", "pytest_tests"),
     ("CONTRIBUTING.md", r"`npm test` \(([\d,]+) vitest\)", "vitest_tests"),
+    ("CONTRIBUTING.md", r"test:e2e` \(([\d,]+) Playwright\)", "playwright_tests"),
     # CLAUDE.md
     ("CLAUDE.md", r"\(ruff ([0-9][0-9.]*)\)", "ruff_version"),
     ("CLAUDE.md", r"~([\d,]+) pytest", "pytest_tests"),
     ("CLAUDE.md", r"\| ([\d,]+) vitest \+ [\d,]+ Playwright", "vitest_tests"),
     ("CLAUDE.md", r"vitest \+ ([\d,]+) Playwright", "playwright_tests"),
     # native_dashboard/README.md
-    ("native_dashboard/README.md", r"([\d,]+) tests across 11 vitest files", "vitest_tests"),
-    ("native_dashboard/README.md", r"\(([\d,]+) tests total across all 11\)", "vitest_tests"),
+    # File-count spans are captured separately from test-count spans (one group
+    # per entry), so both halves of e.g. "467 tests across 19 vitest files" sync.
+    ("native_dashboard/README.md", r"([\d,]+) tests across [\d,]+ vitest files", "vitest_tests"),
+    ("native_dashboard/README.md", r"tests across ([\d,]+) vitest files", "vitest_files"),
+    ("native_dashboard/README.md", r"\+ ([\d,]+) in `src-ts/chat/`", "vitest_chat_files"),
+    (
+        "native_dashboard/README.md",
+        r"\(([\d,]+) tests total across all [\d,]+\)",
+        "vitest_tests",
+    ),
+    ("native_dashboard/README.md", r"tests total across all ([\d,]+)\)", "vitest_files"),
+    (
+        "native_dashboard/README.md",
+        r"# ([\d,]+) vitest files \([\d,]+ tests total",
+        "vitest_chat_files",
+    ),
     ("native_dashboard/README.md", r"Run all ([\d,]+) vitest tests", "vitest_tests"),
+    (
+        "native_dashboard/README.md",
+        r"([\d,]+) Playwright tests across [\d,]+ spec files",
+        "playwright_tests",
+    ),
+    (
+        "native_dashboard/README.md",
+        r"Playwright tests across ([\d,]+) spec files",
+        "playwright_files",
+    ),
+    ("native_dashboard/README.md", r"Run all ([\d,]+) Playwright tests", "playwright_tests"),
     (
         "native_dashboard/README.md",
         r"state-transition tests \(([\d,]+) tests\)",
@@ -256,6 +286,17 @@ REPLACEMENTS: list[tuple[str, str, str]] = [
     ("docs/DEVELOPER_GUIDE.md", r"([\d,]+) Python tests \+ [\d,]+ frontend vitest", "pytest_tests"),
     ("docs/DEVELOPER_GUIDE.md", r"Python tests \+ ([\d,]+) frontend vitest", "vitest_tests"),
     ("docs/DEVELOPER_GUIDE.md", r"vitest files total \(([\d,]+) tests\)", "vitest_tests"),
+    ("docs/DEVELOPER_GUIDE.md", r"([\d,]+) vitest files total", "vitest_files"),
+    ("docs/DEVELOPER_GUIDE.md", r"\+ ([\d,]+) vitest files \([\d,]+ frontend", "vitest_files"),
+    ("docs/DEVELOPER_GUIDE.md", r"([\d,]+) Playwright spec files", "playwright_files"),
+    ("docs/DEVELOPER_GUIDE.md", r"Playwright spec files \(([\d,]+) e2e", "playwright_tests"),
+    ("docs/DEVELOPER_GUIDE.md", r"static UI \(([\d,]+) tests, incl", "playwright_tests"),
+    ("docs/DEVELOPER_GUIDE.md", r"vitest tests \+ ([\d,]+) Playwright", "playwright_tests"),
+    (
+        "docs/DEVELOPER_GUIDE.md",
+        r"ChatManager dispatcher \+ state \(([\d,]+) tests\)",
+        "chat_manager_tests",
+    ),
     ("docs/DEVELOPER_GUIDE.md", r"Version ([\d.]+) \| Full-project", "version"),
     # docs/INSTALL.md
     ("docs/INSTALL.md", r"Version: ([\d.]+)\*", "version"),
@@ -263,18 +304,33 @@ REPLACEMENTS: list[tuple[str, str, str]] = [
     ("docs/TESTING.md", r"Python Tests: ([\d,]+) ✅", "pytest_tests"),
     ("docs/TESTING.md", r"Python Tests: [\d,]+ ✅ \(([\d,]+) files\)", "pytest_test_files"),
     ("docs/TESTING.md", r"Frontend Tests: ([\d,]+) ✅", "vitest_tests"),
+    ("docs/TESTING.md", r"Frontend Tests: [\d,]+ ✅ \(([\d,]+) vitest files\)", "vitest_files"),
+    ("docs/TESTING.md", r"\+ ([\d,]+) ✅ \([\d,]+ Playwright spec files", "playwright_tests"),
+    ("docs/TESTING.md", r"\(([\d,]+) Playwright spec files", "playwright_files"),
+    ("docs/TESTING.md", r"Current count: \*\*([\d,]+) files\*\*", "pytest_test_files"),
     ("docs/TESTING.md", r"Test Structure \(([\d,]+) Python files", "pytest_test_files"),
     ("docs/TESTING.md", r"Python files, ([\d,]+) tests\)", "pytest_tests"),
+    ("docs/TESTING.md", r"Frontend Test Structure \(([\d,]+) vitest files", "vitest_files"),
     (
         "docs/TESTING.md",
-        r"Frontend Test Structure \(11 vitest files, ([\d,]+) tests\)",
+        r"Frontend Test Structure \([\d,]+ vitest files, ([\d,]+) tests\)",
         "vitest_tests",
     ),
     ("docs/TESTING.md", r"dispatcher \+ state \(([\d,]+) tests\)", "chat_manager_tests"),
+    ("docs/TESTING.md", r"Headless E2E Tests \(([\d,]+) Playwright files", "playwright_files"),
+    ("docs/TESTING.md", r"Playwright files, ([\d,]+) tests\)", "playwright_tests"),
+    ("docs/TESTING.md", r"All ([\d,]+) tests, headless", "playwright_tests"),
     # docs/CODE_AUDIT_GUIDE.md
     ("docs/CODE_AUDIT_GUIDE.md", r"\*\*Tests:\*\* ([\d,]+) Python ✅", "pytest_tests"),
     ("docs/CODE_AUDIT_GUIDE.md", r"Python ✅ \+ ([\d,]+) frontend vitest", "vitest_tests"),
+    ("docs/CODE_AUDIT_GUIDE.md", r"vitest ✅ \+ ([\d,]+) Playwright ✅", "playwright_tests"),
     ("docs/CODE_AUDIT_GUIDE.md", r"\*\*Python Test Files:\*\* ([\d,]+)", "pytest_test_files"),
+    (
+        "docs/CODE_AUDIT_GUIDE.md",
+        r"\*\*Frontend Test Files:\*\* ([\d,]+) vitest",
+        "vitest_files",
+    ),
+    ("docs/CODE_AUDIT_GUIDE.md", r"vitest \+ ([\d,]+) Playwright e2e", "playwright_files"),
     ("docs/CODE_AUDIT_GUIDE.md", r"tests/ \(([\d,]+) ไฟล์\)", "pytest_test_files"),
 ]
 
