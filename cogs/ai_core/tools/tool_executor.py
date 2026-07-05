@@ -163,13 +163,23 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
     return chunks
 
 
-async def _send_plain_fallback(channel: Any, name: str, message: str) -> Any:
+async def _send_plain_fallback(
+    channel: Any, name: str, message: str, pending: list[str] | None = None
+) -> Any:
     """Plain-text fallback send that honors Discord's 2000-char limit.
 
     Every fallback path previously sent ``**name**: message`` as ONE call —
     a long character message (or the prefix pushing a ~2000-char one over)
     400'd, and the surrounding except handler re-tried the same oversized
     send. Returns the last sent message (mirrors send_as_webhook's contract).
+
+    ``pending`` mirrors the webhook loops' pending_chunks resume: when the caller
+    passes a list, it is kept in sync with the still-UNDELIVERED chunks (seeded
+    with the full split, then trimmed after each successful send). If a
+    ``channel.send`` raises mid-loop, the caller's function-level handler reads
+    that tail and re-sends ONLY it, so chunks that already landed aren't
+    re-posted (Finding 1). This is itself a multi-send loop, so without it a
+    partial failure would bubble up to a handler that re-sent the whole message.
     """
     # ``name`` is AI-controlled (parsed from {{Name}} markers) with no upstream
     # length clamp. A pathologically long name would make len(prefix) >= 2000,
@@ -180,12 +190,19 @@ async def _send_plain_fallback(channel: Any, name: str, message: str) -> Any:
     name = name[:80]
     prefix = f"**{name}**: "
     chunk_limit = max(256, 2000 - len(prefix))
+    chunks = _safe_split_message(message, chunk_limit)
+    if pending is not None:
+        # Seed with the full set so an immediate chunk-0 failure still leaves the
+        # caller a correct (nothing-delivered-here) tail to resume from.
+        pending[:] = chunks
     last = None
-    for i, chunk in enumerate(_safe_split_message(message, chunk_limit)):
+    for i, chunk in enumerate(chunks):
         last = await channel.send(
             (prefix if i == 0 else "") + chunk,
             allowed_mentions=discord.AllowedMentions.none(),
         )
+        if pending is not None:
+            pending[:] = chunks[i + 1 :]
     return last
 
 
@@ -787,8 +804,12 @@ async def send_as_webhook(bot, channel, name, message):
         # all fallback paths — ``name`` is AI-controlled and may contain
         # raw ``<@everyone>``/``<@id>`` that the per-message regexes don't cover.
         if not hasattr(channel, "guild") or channel.guild is None:
-            await _send_plain_fallback(channel, name, message)
-            return None
+            # Return the delivered message so logic.py can stamp its id for
+            # edit/delete mirroring (Finding 2), and hand pending_chunks to the
+            # fallback so a mid-loop failure resumes from the tail in the outer
+            # handlers instead of re-sending delivered chunks (Finding 1).
+            pending_chunks = []
+            return await _send_plain_fallback(channel, name, message, pending_chunks)
 
         # Threads (and any other guild channel without webhook ownership)
         # have no .webhooks()/.create_webhook() — their webhooks live on the
@@ -796,13 +817,17 @@ async def send_as_webhook(bot, channel, name, message):
         # a Thread raised AttributeError, which is NOT in the except clauses
         # and killed the whole AI turn.
         if not hasattr(channel, "webhooks"):
-            await _send_plain_fallback(channel, name, message)
-            return None
+            # Same as the DM path: propagate the delivered message (Finding 2) and
+            # carry the undelivered tail for resume-on-failure (Finding 1).
+            pending_chunks = []
+            return await _send_plain_fallback(channel, name, message, pending_chunks)
 
         # Check bot permissions first
         if not channel.permissions_for(channel.guild.me).manage_webhooks:
-            await _send_plain_fallback(channel, name, message)
-            return None
+            # Same as the DM path: propagate the delivered message (Finding 2) and
+            # carry the undelivered tail for resume-on-failure (Finding 1).
+            pending_chunks = []
+            return await _send_plain_fallback(channel, name, message, pending_chunks)
 
         name = name[:80]
         webhook_name = f"AI: {name}"[:80]
@@ -1012,12 +1037,21 @@ async def send_as_webhook(bot, channel, name, message):
                 remaining = fresh_chunks[sent_chunks:]
                 if not remaining:
                     return sent_message
-                return await _send_plain_fallback(channel, name, "\n".join(remaining))
+                # Track the plain fallback's own progress so a second failure
+                # (mid plain-send) resumes from ITS tail in the outer handler
+                # rather than re-inflating to the full message (Finding 1).
+                pending_chunks = []
+                return await _send_plain_fallback(
+                    channel, name, "\n".join(remaining), pending_chunks
+                )
 
         # Fallback if no webhook could be found/created
         if pending_chunks is not None:
             message = "\n".join(pending_chunks)
-        return await _send_plain_fallback(channel, name, message)
+        # Track progress here too so a partial plain-send failure resumes from
+        # the tail in the outer handlers instead of re-sending delivered chunks.
+        pending_chunks = []
+        return await _send_plain_fallback(channel, name, message, pending_chunks)
 
     except discord.Forbidden:
         # ``channel.name`` doesn't exist on DMChannel — evaluating it inside

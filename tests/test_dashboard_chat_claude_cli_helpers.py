@@ -118,6 +118,58 @@ class TestCleanupImageDir:
 
         assert fresh.exists()
 
+    def test_keeps_inflight_files_even_when_old(self):
+        # Regression: a queued next-turn decodes its attachments to disk BEFORE
+        # it can acquire the per-conversation lock. If the lock-holder turn runs
+        # >60s, an age-only sweep would delete the queued turn's still-unread
+        # files. Registering them in _INFLIGHT_ATTACHMENTS must preserve them
+        # regardless of age.
+        conv_dir = cli._TEMP_IMAGE_ROOT / "conv-inflight"
+        conv_dir.mkdir(parents=True)
+        queued = conv_dir / "queued.png"
+        queued.write_bytes(b"x")
+        os.utime(queued, (time.time() - 120, time.time() - 120))  # old
+        cli._INFLIGHT_ATTACHMENTS.add(queued)
+        try:
+            cli._cleanup_image_dir("conv-inflight")
+            assert queued.exists()  # protected despite being past the cutoff
+        finally:
+            cli._INFLIGHT_ATTACHMENTS.discard(queued)
+
+    def test_reaps_orphan_but_keeps_inflight_sibling(self):
+        # An in-flight file is preserved while a genuinely-orphaned (unregistered
+        # + stale) sibling in the same dir is still reaped.
+        conv_dir = cli._TEMP_IMAGE_ROOT / "conv-mixed"
+        conv_dir.mkdir(parents=True)
+        queued = conv_dir / "queued.png"
+        orphan = conv_dir / "orphan.png"
+        for p in (queued, orphan):
+            p.write_bytes(b"x")
+            os.utime(p, (time.time() - 120, time.time() - 120))  # both old
+        cli._INFLIGHT_ATTACHMENTS.add(queued)
+        try:
+            cli._cleanup_image_dir("conv-mixed")
+            assert queued.exists()  # in-flight → kept
+            assert not orphan.exists()  # unregistered + stale → reaped
+        finally:
+            cli._INFLIGHT_ATTACHMENTS.discard(queued)
+
+
+class TestCleanupDocsDir:
+    def test_keeps_inflight_docs_even_when_old(self):
+        # Same in-flight guard as images, for the docs temp root.
+        conv_dir = cli._TEMP_DOCS_ROOT / "conv-inflight"
+        conv_dir.mkdir(parents=True)
+        queued = conv_dir / "queued.pdf"
+        queued.write_bytes(b"x")
+        os.utime(queued, (time.time() - 120, time.time() - 120))  # old
+        cli._INFLIGHT_ATTACHMENTS.add(queued)
+        try:
+            cli._cleanup_docs_dir("conv-inflight")
+            assert queued.exists()
+        finally:
+            cli._INFLIGHT_ATTACHMENTS.discard(queued)
+
 
 # ---------------------------------------------------------------------------
 # _save_inline_documents
@@ -1286,6 +1338,16 @@ class _BrokenStdin(_FakeStdin):
         raise BrokenPipeError("pipe gone")
 
 
+class _HangingWaitProc(_FakeProc):
+    """A child whose wait() never returns — wedged even after SIGKILL. Its
+    returncode therefore stays None, so any unbounded ``await proc.wait()`` in
+    the reap paths would hang the caller forever."""
+
+    async def wait(self) -> int:
+        await asyncio.sleep(3600)
+        return 0  # pragma: no cover - unreachable
+
+
 class TestRunClaudeSubprocessKillOnDisconnect:
     async def test_text_callback_raise_kills_proc(self, monkeypatch, tmp_path):
         stdout = _ndjson(
@@ -1356,6 +1418,50 @@ class TestRunClaudeSubprocessKillOnDisconnect:
                 on_text_delta=None,
                 on_thinking_delta=None,
                 timeout=0.2,
+            )
+        assert proc.killed is True
+
+    @pytest.mark.slow
+    async def test_outer_finally_bounds_wedged_wait(self, monkeypatch, tmp_path):
+        # Regression: a child that ignores SIGKILL and whose wait() never
+        # returns must NOT hang the coroutine in the OUTER finally while it
+        # still holds the per-conversation lock. The text callback raises to
+        # unwind into that finally with returncode still None; the bounded
+        # wait_for there must ABANDON the wedged child, not await it forever.
+        stdout = _ndjson(
+            {
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "hi"},
+                },
+            }
+        )
+        proc = _HangingWaitProc(stdout, [], 0)
+        monkeypatch.setattr(cli, "_CLAUDE_CLI_WORKDIR", tmp_path)
+
+        async def fake_exec(*_a, **_k):
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+        async def boom(_text: str) -> None:
+            raise ConnectionResetError("client gone")
+
+        # Generous outer bound: without the fix the inner ``await proc.wait()``
+        # hangs forever, so this wait_for surfaces the regression as a failure
+        # (TimeoutError) instead of a hung test. With the fix the turn unwinds
+        # with the original ConnectionResetError within the 5s reap bound.
+        with pytest.raises(ConnectionResetError):
+            await asyncio.wait_for(
+                cli._run_claude_subprocess(
+                    ["claude", "-p"],
+                    "hello",
+                    on_text_delta=boom,
+                    on_thinking_delta=None,
+                    timeout=30,
+                ),
+                timeout=20,
             )
         assert proc.killed is True
 

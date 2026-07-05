@@ -2567,6 +2567,62 @@ class TestSetRolePermFull:
             await cmd_set_role_perm(guild, origin, None, ["R", "embed_links", "true"])
         assert "ไม่สามารถตั้งค่า permission ได้" in str(origin.send.call_args)
 
+    @pytest.mark.asyncio
+    async def test_set_role_perm_by_id(self):
+        # A numeric role_name resolves ID-first via guild.get_role, mirroring
+        # cmd_delete_role / cmd_add_role / the cmd_set_channel_perm role block.
+        # Name-only resolution previously couldn't resolve a snowflake ID at all.
+        from cogs.ai_core.commands.server_commands import cmd_set_role_perm
+
+        role = MagicMock(spec=discord.Role)
+        role.name = "Members"
+        role.position = 1
+        role.__ge__ = MagicMock(return_value=False)
+        perms = MagicMock()
+        perms.embed_links = False
+        role.permissions = perms
+        role.edit = AsyncMock()
+        bot = MagicMock()
+        bot.top_role = MagicMock()
+        bot.top_role.position = 10
+        guild = MagicMock(spec=discord.Guild)
+        guild.get_role = MagicMock(return_value=role)
+        guild.me = bot
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+
+        # Numeric role_name skips the name match entirely (guild.get_role wins).
+        await cmd_set_role_perm(guild, origin, None, ["987654321", "embed_links", "true"])
+        guild.get_role.assert_called_once_with(987654321)
+        role.edit.assert_awaited_once()
+        assert "เรียบร้อยแล้ว" in str(origin.send.call_args)
+
+    @pytest.mark.asyncio
+    async def test_set_role_perm_duplicate_role_names(self):
+        # Two roles share the name "Members": cmd_set_role_perm must bail with the
+        # "specify an ID" advice instead of editing the first same-named role's
+        # GUILD-WIDE permissions (wrong-principal mutation). Mirrors the sibling
+        # role handlers' duplicate-name guard.
+        from cogs.ai_core.commands.server_commands import cmd_set_role_perm
+
+        role1 = MagicMock(spec=discord.Role)
+        role1.name = "Members"
+        role1.edit = AsyncMock()
+        role2 = MagicMock(spec=discord.Role)
+        role2.name = "Members"
+        role2.edit = AsyncMock()
+        guild = MagicMock(spec=discord.Guild)
+        guild.roles = [role1, role2]
+        origin = MagicMock(spec=discord.TextChannel)
+        origin.send = AsyncMock()
+
+        # The duplicate-name bail returns before any role match, so discord.utils.get
+        # is never reached — no patch needed.
+        await cmd_set_role_perm(guild, origin, None, ["Members", "embed_links", "true"])
+        assert "ID" in str(origin.send.call_args)
+        role1.edit.assert_not_awaited()
+        role2.edit.assert_not_awaited()
+
 
 class TestListChannelsMemberFilter:
     """cmd_list_channels filters by Member's view_channel permission."""

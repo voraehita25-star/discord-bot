@@ -281,6 +281,56 @@ class TestProcessAttachments:
         assert len(text_parts) == 1
         assert '{"key": "value"}' in text_parts[0]
 
+    @pytest.mark.asyncio
+    async def test_process_attachments_cp1252_even_length(self):
+        """A BOM-less, even-length cp1252 file must fall through to cp1252.
+
+        Regression: the decode chain used to include a bare 'utf-16' which,
+        without a BOM, decodes almost any even-length byte string into CJK
+        garbage and "succeeds" — so cp1252 was never reached. 'café' in Windows
+        cp1252 is b'caf\\xe9' (4 bytes, even, invalid UTF-8) and must come back
+        as 'café', not utf-16 mojibake.
+        """
+        from cogs.ai_core.media_processor import process_attachments
+
+        raw = "café".encode("cp1252")  # b"caf\xe9" — even length, no BOM
+        assert len(raw) % 2 == 0
+        assert raw[:2] not in (b"\xff\xfe", b"\xfe\xff")
+
+        mock_attachment = MagicMock()
+        mock_attachment.content_type = "text/plain"
+        mock_attachment.filename = "legacy.txt"
+        mock_attachment.size = len(raw)
+        mock_attachment.read = AsyncMock(return_value=raw)
+
+        image_parts, video_parts, text_parts = await process_attachments(
+            [mock_attachment], "TestUser"
+        )
+
+        assert len(text_parts) == 1
+        assert "café" in text_parts[0]
+
+    @pytest.mark.asyncio
+    async def test_process_attachments_bom_utf16_still_decodes(self):
+        """A genuine BOM'd UTF-16 file must still decode via the BOM-gated path."""
+        from cogs.ai_core.media_processor import process_attachments
+
+        raw = "Hello BOM".encode("utf-16")  # includes a UTF-16 BOM
+        assert raw[:2] in (b"\xff\xfe", b"\xfe\xff")
+
+        mock_attachment = MagicMock()
+        mock_attachment.content_type = "text/plain"
+        mock_attachment.filename = "utf16.txt"
+        mock_attachment.size = len(raw)
+        mock_attachment.read = AsyncMock(return_value=raw)
+
+        image_parts, video_parts, text_parts = await process_attachments(
+            [mock_attachment], "TestUser"
+        )
+
+        assert len(text_parts) == 1
+        assert "Hello BOM" in text_parts[0]
+
 
 class TestImageioAvailable:
     """Tests for IMAGEIO_AVAILABLE flag."""

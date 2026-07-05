@@ -1251,6 +1251,20 @@ class Database:
                     conn = None
             except asyncio.QueueEmpty:
                 pass
+            except BaseException:
+                # Cancellation strikes at an await, and CancelledError is a
+                # BaseException — so the ``except Exception`` clauses above (the
+                # probe and the stale close()) do NOT catch it. Without this, a
+                # cancel at either await (dashboard WS disconnect, command
+                # timeout, shutdown) would orphan the connection we already
+                # popped from the pool: never closed, yet still counted by
+                # _connection_count, which drifts _reinitialize_pool's slot math.
+                # Close + decrement + re-raise, mirroring the setup block below.
+                if conn is not None:
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(conn.close(), timeout=5)
+                    self._connection_count -= 1
+                raise
 
             # Create a new connection if needed, then run per-connection setup.
             # All of this is wrapped so that if any step fails AFTER we own a

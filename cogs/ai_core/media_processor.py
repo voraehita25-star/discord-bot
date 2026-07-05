@@ -800,7 +800,18 @@ async def process_attachments(
                 # code. Failing the loop through to that explicit replacement is
                 # the intended "decode with replacement as last resort" path.
                 content = None
-                for encoding in ["utf-8", "utf-8-sig", "utf-16", "cp1252"]:
+                # 'utf-16' is BOM-gated for the same reason 'latin-1' is excluded
+                # above: without a BOM Python's utf-16 codec assumes little-endian
+                # and decodes almost any even-length byte string into CJK garbage,
+                # which "succeeds" and shadows the cp1252 Windows-legacy fallback,
+                # making it dead code. Only attempt it when a real UTF-16 BOM is
+                # present so genuine BOM'd files still decode; BOM-less even-length
+                # files fall through to cp1252.
+                encodings = ["utf-8", "utf-8-sig"]
+                if text_data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+                    encodings.append("utf-16")
+                encodings.append("cp1252")
+                for encoding in encodings:
                     try:
                         content = text_data.decode(encoding)
                         break

@@ -585,6 +585,28 @@ class TestGracefulClose:
         await m._graceful_close(client)
         client.close.assert_awaited_once()
 
+    def test_close_grace_covers_streaming_worst_case(self):
+        """The grace window must cover a realistic worst-case STREAM, not just
+        the 120s non-streaming budget.
+
+        Regression: at 130s the grace only covered the non-streaming call, so a
+        multi-minute stream was still aborted mid-flight when the old client's
+        pool closed — and the resulting connection error was mis-charged to the
+        NEW endpoint. Streaming has no total cap (only per-chunk timeouts), so
+        the grace must clear the initial-chunk timeout plus a healthy run of
+        subsequent chunks.
+        """
+        from cogs.ai_core.api.api_failover import APIFailoverManager
+        from cogs.ai_core.data import constants
+
+        # Initial chunk + a generous number of subsequent chunks worth of stream.
+        realistic_stream_seconds = (
+            constants.STREAMING_TIMEOUT_INITIAL + 5 * constants.STREAMING_TIMEOUT_CHUNK
+        )
+        assert APIFailoverManager._CLIENT_CLOSE_GRACE_SECONDS >= realistic_stream_seconds
+        # And strictly more than the old value that only covered non-streaming.
+        assert APIFailoverManager._CLIENT_CLOSE_GRACE_SECONDS > 130.0
+
 
 class TestListeners:
     async def test_add_and_remove_listener(self):

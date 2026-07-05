@@ -434,6 +434,73 @@ class TestCopyHistory:
             result = await storage.copy_history(111, 222)
             assert result == 0
 
+    @pytest.mark.asyncio
+    async def test_copy_history_preserves_user_id(self):
+        """Copied rows must carry the source row's user_id, not NULL.
+
+        get_ai_history returns user_id in every row; copy_history previously
+        hardcoded None for the user_id column, permanently wiping per-user
+        attribution on a move. Capture the executemany rows and assert user_id
+        survives the read -> insert round trip.
+        """
+        from cogs.ai_core import storage
+
+        captured: dict[str, object] = {}
+
+        class _FakeCursor:
+            async def fetchone(self):
+                return (0,)  # COALESCE(MAX(local_id), 0) -> 0
+
+        class _FakeConn:
+            async def execute(self, *args):
+                return _FakeCursor()
+
+            async def executemany(self, sql, rows):
+                captured["rows"] = list(rows)
+
+            async def commit(self):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
+            mock_db.get_ai_history = AsyncMock(
+                return_value=[
+                    {
+                        "role": "user",
+                        "content": "hi",
+                        "message_id": 10,
+                        "user_id": 4242,
+                        "timestamp": "2026-01-01T00:00:00",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "yo",
+                        "message_id": 11,
+                        "user_id": None,
+                        "timestamp": "2026-01-01T00:00:01",
+                    },
+                ]
+            )
+            mock_db.get_write_connection = MagicMock(return_value=_FakeConn())
+
+            result = await storage.copy_history(111, 222)
+
+        assert result == 2
+        rows = captured["rows"]
+        # executemany columns:
+        # (channel_id, user_id, role, content, message_id, timestamp, local_id)
+        assert rows[0][1] == 4242  # real user_id preserved (was hardcoded None)
+        assert rows[1][1] is None  # a genuinely-null source user_id stays null
+        assert rows[0][0] == 222 and rows[0][2] == "user"  # other columns intact
+
 
 class TestMoveHistory:
     """Tests for move_history function."""
@@ -687,6 +754,79 @@ class TestLoadMetadata:
                 cached = storage._metadata_cache.get(channel_id)
             if cached is not None:
                 assert cached[1]["thinking_enabled"] is False
+        finally:
+            storage._metadata_cache.pop(channel_id, None)
+            storage._cache_generations.pop(channel_id, None)
+
+    @pytest.mark.asyncio
+    async def test_load_metadata_db_missing_row_falls_back_to_json(self):
+        """When a channel has no DB row, get_ai_metadata returns its synthetic
+        default ({"thinking_enabled": True, "system_instruction": None}), which is
+        always truthy. load_metadata must treat that as absent and fall back to the
+        per-channel JSON file like load_history, so legacy JSON metadata (e.g.
+        thinking_enabled=False) is honored instead of silently masked."""
+        from cogs.ai_core import storage
+
+        bot = MagicMock()
+        channel_id = 66_669
+
+        storage._metadata_cache.pop(channel_id, None)
+        storage._cache_generations.pop(channel_id, None)
+
+        try:
+            with (
+                patch.object(storage, "DATABASE_AVAILABLE", True),
+                patch.object(storage, "db") as mock_db,
+                patch.object(storage, "_load_metadata_json", new_callable=AsyncMock) as mock_json,
+            ):
+                # The exact "no row" default from database.get_ai_metadata.
+                mock_db.get_ai_metadata = AsyncMock(
+                    return_value={"thinking_enabled": True, "system_instruction": None}
+                )
+                mock_json.return_value = {"thinking_enabled": False}
+
+                result = await storage.load_metadata(bot, channel_id)
+
+            # JSON wins over the DB's always-truthy missing-row default.
+            assert result["thinking_enabled"] is False
+            mock_json.assert_awaited_once()
+        finally:
+            storage._metadata_cache.pop(channel_id, None)
+            storage._cache_generations.pop(channel_id, None)
+
+    @pytest.mark.asyncio
+    async def test_load_metadata_real_db_row_not_treated_as_missing(self):
+        """A real DB row must NOT be mistaken for the missing-row default just
+        because thinking_enabled is True: a real row always additionally carries
+        last_accessed, so it differs from the sentinel. The DB row wins and the
+        JSON fallback is not consulted."""
+        from cogs.ai_core import storage
+
+        bot = MagicMock()
+        channel_id = 66_670
+
+        storage._metadata_cache.pop(channel_id, None)
+        storage._cache_generations.pop(channel_id, None)
+
+        try:
+            with (
+                patch.object(storage, "DATABASE_AVAILABLE", True),
+                patch.object(storage, "db") as mock_db,
+                patch.object(storage, "_load_metadata_json", new_callable=AsyncMock) as mock_json,
+            ):
+                mock_db.get_ai_metadata = AsyncMock(
+                    return_value={
+                        "thinking_enabled": True,
+                        "system_instruction": None,
+                        "last_accessed": "2026-01-01T00:00:00",
+                    }
+                )
+                mock_json.return_value = {"thinking_enabled": False}
+
+                result = await storage.load_metadata(bot, channel_id)
+
+            assert result["thinking_enabled"] is True  # DB row wins
+            mock_json.assert_not_awaited()  # JSON fallback never consulted
         finally:
             storage._metadata_cache.pop(channel_id, None)
             storage._cache_generations.pop(channel_id, None)

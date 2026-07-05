@@ -165,6 +165,63 @@ class TestLoadConversation:
         assert [m["id"] for m in ws.last()["messages"]] == [2]
         assert ws.last()["truncated"] is True
 
+    @pytest.mark.asyncio
+    async def test_load_oversized_single_message_strips_images(self, ws, mock_db):
+        """When the NEWEST message ALONE exceeds the wire budget, its base64
+        images are stripped from the wire copy (with a marker) so the frame
+        stays deliverable and the conversation still opens — instead of shipping
+        an undeliverable >50MB frame the client silently drops. The stored DB
+        row must NOT be mutated."""
+        from cogs.ai_core.api.dashboard_handlers import handle_load_conversation
+
+        big_image = "data:image/png;base64," + "A" * 200
+        stored = [{"id": 7, "content": "look at this", "thinking": "", "images": [big_image]}]
+        mock_db.get_dashboard_conversation.return_value = {"id": "c1", "role_preset": "general"}
+        mock_db.get_dashboard_messages.return_value = stored
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers.MAX_HISTORY_RESPONSE_CHARS", 50),
+        ):
+            await handle_load_conversation(ws, {"id": "c1"})
+
+        loaded = ws.last()
+        assert loaded["type"] == "conversation_loaded"
+        assert loaded["truncated"] is True
+        # Conversation still opens with the single message present...
+        assert len(loaded["messages"]) == 1
+        wire = loaded["messages"][0]
+        # ...but the heavy images are stripped from the wire copy and marked.
+        assert wire["images"] == []
+        assert "[image too large to display]" in wire["content"]
+        # The stored DB row is untouched (only the outbound wire copy changed).
+        assert stored[0]["images"] == [big_image]
+        assert stored[0]["content"] == "look at this"
+
+    @pytest.mark.asyncio
+    async def test_load_oversized_single_message_no_images_ships_best_effort(self, ws, mock_db):
+        """A single over-budget message with NO images (pathologically large
+        text) has nothing safe to strip, so it's shipped best-effort and still
+        flagged truncated — the conversation is not silently lost to an empty
+        message list."""
+        from cogs.ai_core.api.dashboard_handlers import handle_load_conversation
+
+        mock_db.get_dashboard_conversation.return_value = {"id": "c1", "role_preset": "general"}
+        mock_db.get_dashboard_messages.return_value = [
+            {"id": 3, "content": "x" * 100, "thinking": ""}
+        ]
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_handlers.MAX_HISTORY_RESPONSE_CHARS", 50),
+        ):
+            await handle_load_conversation(ws, {"id": "c1"})
+
+        loaded = ws.last()
+        assert loaded["type"] == "conversation_loaded"
+        assert [m["id"] for m in loaded["messages"]] == [3]
+        assert loaded["truncated"] is True
+
 
 class TestDeleteConversation:
     @pytest.mark.asyncio

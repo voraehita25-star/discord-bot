@@ -271,6 +271,27 @@ class TestParseVoiceCommand:
         assert action == "leave"
         assert channel_id is None
 
+        # "disconnect from vc" still triggers leave (whole word present).
+        action, _ = parse_voice_command("please disconnect from the vc")
+        assert action == "leave"
+
+    def test_parse_disconnect_word_boundary(self):
+        """A narrative mention of disconnecting must NOT force-leave every VC.
+
+        Regression: "disconnect" was matched as a raw substring, so an owner
+        DM like "the bot keeps disconnecting, why?" silently disconnected all
+        voice clients instead of being answered by the AI.
+        """
+        from cogs.ai_core.voice import parse_voice_command
+
+        for phrase in (
+            "the bot keeps disconnecting from vc, why?",
+            "he disconnected from the call earlier",
+            "why did it get disconnected",
+        ):
+            action, _ = parse_voice_command(phrase)
+            assert action is None, f"substring false-positive on: {phrase!r}"
+
     def test_parse_no_command(self):
         """Test parse with no voice command."""
         from cogs.ai_core.voice import parse_voice_command

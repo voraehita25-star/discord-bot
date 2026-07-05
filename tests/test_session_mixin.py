@@ -557,8 +557,13 @@ class TestRoleplayAndUnrestrictedWiring:
             patch("cogs.ai_core.session_mixin.is_unrestricted", return_value=True),
         ):
             result = await instance.get_chat_session(103)
-        assert result["system_instruction"].startswith("SANDBOX_TEXT")
-        assert "FAUST_BASE" in result["system_instruction"]
+        # The override is now wrapped in stable sentinel markers (so a live
+        # CLAUDE2.md edit can be detected/removed as a whole block) and prepended
+        # ahead of the base persona.
+        instruction = result["system_instruction"]
+        assert "SANDBOX_TEXT" in instruction
+        assert "FAUST_BASE" in instruction
+        assert instruction.index("SANDBOX_TEXT") < instruction.index("FAUST_BASE")
 
     @pytest.mark.asyncio
     async def test_cli_mode_skips_unrestricted_body_injection(self):
@@ -586,3 +591,80 @@ class TestRoleplayAndUnrestrictedWiring:
             result = await instance.get_chat_session(104)
         assert "SANDBOX_TEXT" not in result["system_instruction"]
         assert "FAUST_BASE" in result["system_instruction"]
+
+    @pytest.mark.asyncio
+    async def test_unrestricted_disable_strips_stale_block_after_claude2_edit(self):
+        """Disabling unrestricted mode strips the whole injected block even if
+        CLAUDE2.md was edited (resolved text changed) since it was injected.
+
+        Regression: injection used to key on the CURRENT resolved text, so if
+        CLAUDE2.md changed between enable (text A) and disable (text B), the
+        disable path checked "B in instruction" -> False and stripped nothing,
+        leaving stale text A wedged in the system prompt (and persisted) forever.
+        """
+        instance = self._make_instance()
+        with (
+            patch(
+                "cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]
+            ),
+            patch(
+                "cogs.ai_core.session_mixin.load_metadata",
+                new_callable=AsyncMock,
+                return_value={"thinking_enabled": True},
+            ),
+            patch("cogs.ai_core.session_mixin.FAUST_INSTRUCTION", "FAUST_BASE"),
+            patch(
+                "cogs.ai_core.api.dashboard_config.resolve_unrestricted_system_text"
+            ) as mock_resolve,
+            patch("cogs.ai_core.session_mixin.is_unrestricted") as mock_unrestricted,
+        ):
+            # Enable with text A.
+            mock_resolve.return_value = "OVERRIDE_TEXT_A"
+            mock_unrestricted.return_value = True
+            result = await instance.get_chat_session(200)
+            assert "OVERRIDE_TEXT_A" in result["system_instruction"]
+
+            # CLAUDE2.md edited between inject and remove -> resolver returns text B.
+            mock_resolve.return_value = "OVERRIDE_TEXT_B"
+            mock_unrestricted.return_value = False
+            result = await instance.get_chat_session(200)
+
+        instruction = result["system_instruction"]
+        assert "OVERRIDE_TEXT_A" not in instruction  # stale block fully removed
+        assert "OVERRIDE_TEXT_B" not in instruction
+        assert "FAUST_BASE" in instruction
+
+    @pytest.mark.asyncio
+    async def test_unrestricted_reinject_after_edit_does_not_stack(self):
+        """A live CLAUDE2.md edit while unrestricted stays ON refreshes the block
+        in place instead of stacking a second copy.
+
+        Regression: keying on the current text meant "B in instruction" -> False
+        while an older A block was present, so B was prepended too and BOTH the
+        stale and the new override ended up in the system prompt.
+        """
+        instance = self._make_instance()
+        with (
+            patch(
+                "cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]
+            ),
+            patch(
+                "cogs.ai_core.session_mixin.load_metadata",
+                new_callable=AsyncMock,
+                return_value={"thinking_enabled": True},
+            ),
+            patch("cogs.ai_core.session_mixin.FAUST_INSTRUCTION", "FAUST_BASE"),
+            patch(
+                "cogs.ai_core.api.dashboard_config.resolve_unrestricted_system_text"
+            ) as mock_resolve,
+            patch("cogs.ai_core.session_mixin.is_unrestricted", return_value=True),
+        ):
+            mock_resolve.return_value = "OVERRIDE_TEXT_A"
+            await instance.get_chat_session(201)
+            mock_resolve.return_value = "OVERRIDE_TEXT_B"
+            result = await instance.get_chat_session(201)
+
+        instruction = result["system_instruction"]
+        assert "OVERRIDE_TEXT_A" not in instruction  # old text refreshed out
+        assert instruction.count("OVERRIDE_TEXT_B") == 1  # exactly one block, no stacking
+        assert "FAUST_BASE" in instruction

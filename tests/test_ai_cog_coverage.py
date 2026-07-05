@@ -1690,6 +1690,35 @@ class TestHandleWebhookMessage:
         cog.chat_manager.process_chat.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_restriction_check_precedes_webhooks_rest_call(self):
+        """A disallowed channel returns BEFORE the webhooks() REST call.
+
+        Regression: the constant-time restriction/allowlist check used to run
+        AFTER webhook verification, so every proxied message in a disallowed (or
+        no-Manage-Webhooks) channel fired a fresh failing webhooks() REST call —
+        and 403s count toward Discord's invalid-request ban threshold. The check
+        is now hoisted above the REST call. With an empty verify cache the old
+        code would have reached webhooks(); the new code must not.
+        """
+        cog = _make_cog()
+        cog.chat_manager.process_chat = AsyncMock()
+        msg = _make_message(webhook_id=777)
+        cog._webhook_verify_cache = {}  # empty -> old code would call webhooks()
+        msg.channel.webhooks = AsyncMock(return_value=[])
+        # Point every allowlist constant somewhere the message is NOT, so the
+        # restriction check resolves to "not allowed".
+        with (
+            patch("cogs.ai_core.ai_cog.GUILD_ID_RESTRICTED", 1),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_ALLOWED", 2),
+            patch("cogs.ai_core.ai_cog.GUILD_ID_MAIN", 3),
+            patch("cogs.ai_core.ai_cog.GUILD_ID_RP", 4),
+            patch("cogs.ai_core.ai_cog.CHANNEL_ID_RP_COMMAND", 5),
+        ):
+            await cog._handle_webhook_message(msg)
+        msg.channel.webhooks.assert_not_awaited()
+        cog.chat_manager.process_chat.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_verify_via_webhooks_application_id(self):
         cog = _make_cog()
         cog.chat_manager.process_chat = AsyncMock()
@@ -1767,12 +1796,16 @@ class TestHandleWebhookMessage:
         msg = _make_message(webhook_id=780)
         cog._webhook_verify_cache = {}
         msg.channel.webhooks = AsyncMock(side_effect=discord.Forbidden(MagicMock(), "no"))
-        await cog._handle_webhook_message(msg)
-        # logged set created and populated
-        assert msg.channel.id in cog._webhook_forbidden_logged
-        # second call: already logged path
-        msg.channel.webhooks = AsyncMock(side_effect=discord.Forbidden(MagicMock(), "no"))
-        await cog._handle_webhook_message(msg)
+        # Channel must be allowed so verification — and thus the webhooks() REST
+        # call — is reached: the restriction check now short-circuits disallowed
+        # channels BEFORE that call.
+        with patch("cogs.ai_core.ai_cog.GUILD_ID_MAIN", msg.guild.id):
+            await cog._handle_webhook_message(msg)
+            # logged set created and populated
+            assert msg.channel.id in cog._webhook_forbidden_logged
+            # second call: already logged path
+            msg.channel.webhooks = AsyncMock(side_effect=discord.Forbidden(MagicMock(), "no"))
+            await cog._handle_webhook_message(msg)
 
     @pytest.mark.asyncio
     async def test_http_exception_no_cache(self):

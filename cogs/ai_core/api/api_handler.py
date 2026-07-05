@@ -758,7 +758,24 @@ async def call_claude_api_streaming(
             logger.warning("⚡ Circuit breaker OPEN - skipping streaming API call")
             return "⚠️ ระบบ AI กำลังพักฟื้น กรุณาลองใหม่ในอีกสักครู่", "", []
 
-        placeholder_msg = await send_channel.send("💭 กำลังคิด...")
+        # The placeholder send is a Discord REST call, NOT an Anthropic call.
+        # A discord.Forbidden / Discord 5xx here must NOT be recorded on
+        # gemini_circuit (the breaker that gates EVERY Claude call) — a burst
+        # of Discord send failures could otherwise trip it OPEN bot-wide while
+        # Anthropic is perfectly healthy. Handle it separately: fall back to
+        # the non-streaming path without touching the breaker.
+        try:
+            placeholder_msg = await send_channel.send("💭 กำลังคิด...")
+        except Exception as send_error:
+            logger.warning(
+                "⚠️ Streaming placeholder send failed (Discord), falling back to normal API: %s",
+                send_error,
+            )
+            if fallback_func:
+                return await fallback_func(  # type: ignore[no-any-return]
+                    contents, config_params, channel_id, user_id, guild_id
+                )
+            return "", "", []
 
         # Convert contents to Claude format
         messages = convert_to_claude_messages(contents)
@@ -789,6 +806,20 @@ async def call_claude_api_streaming(
         return "", "", []
 
     while stream_attempt <= _CLAUDE_MAX_STREAM_RETRIES:
+        # Re-check the circuit breaker on EVERY attempt, mirroring the
+        # non-streaming sibling (call_claude_api). _CLAUDE_MAX_STREAM_RETRIES
+        # (6) exceeds the breaker's failure_threshold (5) and each failed
+        # attempt records a failure, so without this a single request's own
+        # retry sequence can trip the breaker OPEN at attempt 5 yet still fire
+        # attempt 6 at the sick endpoint — and concurrently-looping requests
+        # keep hammering a now-open breaker. Short-circuit here instead.
+        if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit and not gemini_circuit.can_execute():
+            logger.warning("⚡ Circuit breaker OPEN - skipping streaming API call")
+            if placeholder_msg:
+                with contextlib.suppress(Exception):
+                    await placeholder_msg.delete()
+            return "⚠️ ระบบ AI กำลังพักฟื้น กรุณาลองใหม่ในอีกสักครู่", "", []
+
         # Re-resolve the active client on EVERY attempt, not only after a
         # switch recorded inside this call: another request, a health probe,
         # or a manual dashboard switch may have popped (and, 130s later,

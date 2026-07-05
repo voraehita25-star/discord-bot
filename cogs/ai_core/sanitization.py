@@ -184,6 +184,9 @@ _MEMORY_CONFUSABLE_MAP = {
     "е": "e",
     "х": "x",
     "и": "i",
+    # U+0456 Cyrillic dotted i — pixel-identical to Latin 'i' (unlike U+0438 'и'
+    # above), so "іgnore previous" must map through to "ignore previous".
+    "і": "i",
     "ј": "j",
     "к": "k",
     "ӏ": "l",
@@ -206,11 +209,13 @@ _MEMORY_CONFUSABLE_MAP = {
     "Т": "T",
     "Х": "X",
     "Ј": "J",
+    "І": "I",  # U+0406 Cyrillic capital dotted I — homoglyph of Latin 'I'
     # Greek lowercase -> Latin lowercase
     "α": "a",
     "ο": "o",
     "ρ": "p",
     "υ": "y",
+    "ι": "i",  # U+03B9 Greek small iota — homoglyph of Latin 'i'
     # Greek uppercase -> Latin uppercase
     "Α": "A",
     "Β": "B",

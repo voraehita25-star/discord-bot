@@ -457,6 +457,19 @@ async def handle_chat_message_claude(
         await ws.send_json({"type": "error", "message": "Empty message"})
         return
 
+    # A documents-only turn (attachments but no typed text) is a legitimate
+    # submission. The official frontend already substitutes this exact
+    # placeholder (chat-manager.ts) so the backend has something to anchor the
+    # turn on; a non-standard WS client may send empty content instead. Without
+    # a text part, current_content gets no text block below and the turn is
+    # wrongly rejected at "no supported text or images" with no reply, while the
+    # document is still persisted (empty user row + a stray document_saved
+    # frame). Apply the same placeholder so the extracted document text (folded
+    # into user_context) gets a reply and the DB records a meaningful user row
+    # instead of an empty string. Mirrors the Gemini handler (dashboard_chat.py).
+    if not content and documents:
+        content = "[attached file(s) for you to review]"
+
     if not claude_client:
         await ws.send_json({"type": "error", "message": "Claude AI not available"})
         return

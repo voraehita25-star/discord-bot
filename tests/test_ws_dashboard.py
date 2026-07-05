@@ -220,6 +220,60 @@ class TestAuth:
         server.handle_delete_conversation.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_cross_origin_browser_rejected_despite_localhost_host(self, server):
+        """A cross-origin browser connection must be REJECTED even though its
+        Host header is localhost.
+
+        Regression: the gate was `not origin_allowed and not host_allowed`, but
+        a browser hitting ws://127.0.0.1 always sends the real target authority
+        as Host (localhost, unforgeable-as-anything-else), so host_allowed was
+        unconditionally True and the Origin allowlist never blocked anything. A
+        page at https://evil.com opening a WebSocket to the local server would
+        pass. The Origin header (which JS cannot forge) must be authoritative
+        for browser clients.
+        """
+        request = MagicMock()
+        # Browser sends a hostile Origin but the real localhost Host/authority.
+        request.headers = {"Origin": "https://evil.com", "Host": "127.0.0.1:8765"}
+        request.query = {}
+        transport = MagicMock()
+        transport.get_extra_info.return_value = ("127.0.0.1", 12345)
+        request.transport = transport
+
+        # A token must be configured so the request reaches the origin gate
+        # (the token-not-set gate returns 401 earlier and would mask this).
+        with patch.dict(os.environ, {"DASHBOARD_WS_TOKEN": "secret123"}):
+            resp = await server.websocket_handler(request)
+
+        assert getattr(resp, "status", None) == 403
+
+    @pytest.mark.asyncio
+    async def test_non_browser_no_origin_allowed_via_host(self, server):
+        """A non-browser client (no Origin header) still connects via the Host
+        check — the Tauri shell / CLI clients that JS attackers cannot spoof."""
+        import cogs.ai_core.api.ws_dashboard as ws_module
+
+        request = MagicMock()
+        request.headers = {"Host": "127.0.0.1:8765"}  # no Origin
+        request.query = {}
+        transport = MagicMock()
+        transport.get_extra_info.return_value = ("127.0.0.1", 12345)
+        request.transport = transport
+
+        handler_ws = _HandlerWS([])
+        server._auth_deadline = 0.1
+        # Token configured (so the token-not-set 401 gate passes); the no-Origin
+        # request must clear the origin gate via the Host check, not be 403'd.
+        with (
+            patch.dict(os.environ, {"DASHBOARD_WS_TOKEN": "secret123"}),
+            patch.object(ws_module.web, "WebSocketResponse", return_value=handler_ws),
+        ):
+            resp = await server.websocket_handler(request)
+
+        # Not a 403 origin rejection — the connection reached the WS-upgrade path.
+        assert getattr(resp, "status", None) != 403
+
+    @pytest.mark.asyncio
     async def test_privileged_frame_after_valid_auth_succeeds(self, server):
         """After a valid in-band auth frame, the same privileged frame is
         dispatched to its handler."""

@@ -334,11 +334,13 @@ class TestURLFetcherClientFetchFallback:
         mock_response.status = 200
         mock_response.headers = {"Content-Type": "text/html"}
         mock_response.text = AsyncMock(return_value=html_content)
-        # _fetch_fallback reads the body via ``resp.content.read()`` and then
-        # decodes the returned bytes. Hand it real bytes so the synchronous
-        # ``.decode()`` runs on bytes instead of an auto-created AsyncMock
-        # (whose ``.decode()`` would yield a never-awaited coroutine).
-        mock_response.content.read = AsyncMock(return_value=html_content.encode())
+        # _fetch_fallback drains the body via a capped ``resp.content.read()``
+        # loop and then decodes the bytes. Hand it real bytes followed by b""
+        # (EOF) so the loop terminates on the first window; without the EOF the
+        # loop would keep re-reading the same bytes up to the 5 MB cap. Real
+        # bytes (not an auto-created AsyncMock) so the synchronous ``.decode()``
+        # runs on bytes instead of a never-awaited coroutine.
+        mock_response.content.read = AsyncMock(side_effect=[html_content.encode(), b""])
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock()
 

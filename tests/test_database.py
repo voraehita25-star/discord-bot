@@ -544,6 +544,62 @@ class TestDatabaseGetConnection:
 
         # No error means commit succeeded
 
+    @pytest.mark.asyncio
+    async def test_cancel_during_probe_does_not_drift_connection_count(self):
+        """Cancellation while probing a pooled connection must not leak it.
+
+        Regression: the liveness probe (``SELECT 1``) and the stale-close ran
+        under ``except Exception``, but asyncio.CancelledError is a BaseException
+        — so a cancel at the probe await (dashboard WS disconnect, command
+        timeout, shutdown) skipped both handlers. The connection, already popped
+        from the pool, was neither closed nor decremented from _connection_count,
+        leaking an aiosqlite worker thread and drifting the counter upward (which
+        corrupts _reinitialize_pool's slot math). The cancel path must now close +
+        decrement + re-raise.
+        """
+        from utils.database.database import Database
+
+        # Build an isolated (non-singleton) instance so we fully control the pool
+        # and counter without disturbing the shared Database() used by other tests.
+        db = object.__new__(Database)
+        db._initialized = False
+        db.__init__()
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class WedgedConn:
+            def __init__(self):
+                self.closed = False
+
+            async def execute(self, *args, **kwargs):
+                # Block the probe here so the caller task can be cancelled at
+                # exactly this await, reproducing the real failure mode.
+                started.set()
+                await release.wait()
+                return MagicMock()
+
+            async def close(self):
+                self.closed = True
+
+        conn = WedgedConn()
+        db._get_conn_pool().put_nowait(conn)
+        db._connection_count = 1  # the pooled conn is accounted for
+
+        async def user():
+            async with db.get_connection():
+                pass  # pragma: no cover - cancelled before the body runs
+
+        task = asyncio.create_task(user())
+        await asyncio.wait_for(started.wait(), timeout=5)  # wait until inside the probe
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Closed + decremented, not leaked: counter back to 0 (no upward drift).
+        assert db._connection_count == 0
+        assert conn.closed is True
+
 
 class TestAIHistoryMethods:
     """Tests for AI history database methods."""

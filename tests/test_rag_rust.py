@@ -72,6 +72,41 @@ class TestRagEngineWrapperAdd:
 
         assert engine._entries["test1"]["timestamp"] == 12345.0
 
+    @patch("cogs.ai_core.memory.rag_rust.RUST_AVAILABLE", False)
+    def test_non_finite_timestamp_rejected(self):
+        """add() raises on NaN/Inf timestamp and add_batch() skips such entries.
+
+        Mirrors the Rust add()/add_batch() timestamp-finiteness guard so the
+        fallback can't silently store a NaN that json.dump would then serialize
+        into a file the Rust backend rejects wholesale on load.
+        """
+        import pytest
+
+        from cogs.ai_core.memory.rag_rust import RagEngineWrapper
+
+        engine = RagEngineWrapper(dimension=3)
+        with pytest.raises(ValueError, match="timestamp must be a finite number"):
+            engine.add("nan_ts", "bad", [0.1, 0.2, 0.3], timestamp=float("nan"))
+        with pytest.raises(ValueError, match="timestamp must be a finite number"):
+            engine.add("inf_ts", "bad", [0.1, 0.2, 0.3], timestamp=float("inf"))
+        assert engine.get_ids() == []
+
+        # add_batch drops the non-finite-timestamp entry and keeps the valid one,
+        # returning only the count actually stored (Rust silent-skip parity).
+        added = engine.add_batch(
+            [
+                {"id": "ok", "text": "good", "embedding": [0.1, 0.2, 0.3], "timestamp": 1.0},
+                {
+                    "id": "bad",
+                    "text": "nan",
+                    "embedding": [0.1, 0.2, 0.3],
+                    "timestamp": float("nan"),
+                },
+            ]
+        )
+        assert added == 1
+        assert engine.get_ids() == ["ok"]
+
 
 class TestRagEngineWrapperAddBatch:
     """Tests for add_batch method."""
@@ -249,6 +284,24 @@ class TestRagEngineWrapperSearch:
         results = engine.search([1.0, 0.0, 0.0], top_k=3)
 
         assert len(results) <= 3
+
+    @patch("cogs.ai_core.memory.rag_rust.RUST_AVAILABLE", False)
+    def test_search_rejects_wrong_dimension_query(self):
+        """A wrong-length query raises loudly instead of silently returning [].
+
+        Mirrors the Rust search() query-dimension guard: before this the fallback
+        raised a dimension ValueError inside _cosine_similarity that the per-entry
+        guard swallowed, so a mismatched query returned zero results with no error.
+        """
+        import pytest
+
+        from cogs.ai_core.memory.rag_rust import RagEngineWrapper
+
+        engine = RagEngineWrapper(dimension=3, similarity_threshold=0.0)
+        engine.add("a", "First", [1.0, 0.0, 0.0])
+
+        with pytest.raises(ValueError, match="Query dimension mismatch"):
+            engine.search([1.0, 0.0], top_k=5)
 
 
 class TestRagEngineWrapperPythonSearch:

@@ -1149,6 +1149,15 @@ async def _load_history_json(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
     return []
 
 
+# get_ai_metadata (utils/database/database.py) returns this EXACT dict when a
+# channel has no ai_metadata row — an always-truthy synthetic default. A real row
+# additionally carries "last_accessed", so it can never equal this sentinel.
+# Detecting it lets load_metadata fall back to legacy per-channel JSON like
+# load_history, instead of masking JSON metadata (e.g. thinking_enabled=False)
+# whenever the DB is available.
+_AI_METADATA_DB_DEFAULT: dict[str, Any] = {"thinking_enabled": True, "system_instruction": None}
+
+
 async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
     """Load session metadata from database or JSON file with caching.
 
@@ -1178,9 +1187,14 @@ async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
                     logger.debug("📋 Cache hit for metadata channel %s", channel_id)
                     return copy.deepcopy(cached_data)
 
+        db_metadata: dict[str, Any] | None = None
         if DATABASE_AVAILABLE:
-            metadata = await db.get_ai_metadata(channel_id)
-            if metadata:
+            db_metadata = await db.get_ai_metadata(channel_id)
+            # Only treat this as a real DB hit when it is NOT the "no row"
+            # synthetic default (see _AI_METADATA_DB_DEFAULT); otherwise fall
+            # through to the per-channel JSON file exactly like load_history so a
+            # legacy JSON metadata file is honored instead of silently ignored.
+            if db_metadata and db_metadata != _AI_METADATA_DB_DEFAULT:
                 # Cache a DEEP COPY rather than the live dict. Previously the
                 # cache held a reference to the same object returned to the
                 # caller; if any caller mutated the dict (e.g. updating
@@ -1191,7 +1205,7 @@ async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
                 with _cache_lock:
                     fresh = _cache_generations.get(channel_id, 0) == generation
                     if fresh:
-                        _metadata_cache[channel_id] = (now, copy.deepcopy(metadata))
+                        _metadata_cache[channel_id] = (now, copy.deepcopy(db_metadata))
                 if not fresh and not last_attempt:
                     continue  # re-read: the post-edit row is one SELECT away
                 if not fresh:
@@ -1202,9 +1216,10 @@ async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
                         _LOAD_HISTORY_MAX_ATTEMPTS,
                     )
                 logger.info("📋 Loaded metadata from database for channel %s", channel_id)
-                return copy.deepcopy(metadata)
+                return copy.deepcopy(db_metadata)
 
-        # Fallback to JSON file
+        # Fallback to JSON file. Also runs when the DB had no row (db_metadata is
+        # the synthetic default), so legacy per-channel JSON metadata still loads.
         metadata = await _load_metadata_json(bot, channel_id)
         if metadata:
             with _cache_lock:
@@ -1220,7 +1235,12 @@ async def load_metadata(bot: Bot, channel_id: int) -> dict[str, Any]:
                     channel_id,
                     _LOAD_HISTORY_MAX_ATTEMPTS,
                 )
-        return copy.deepcopy(metadata) if metadata else metadata
+            return copy.deepcopy(metadata)
+
+        # No JSON file either: fall back to the DB's synthetic default (thinking
+        # on) when the DB was available, preserving the prior contract that a
+        # channel with no stored metadata still yields the default; else {}.
+        return copy.deepcopy(db_metadata) if db_metadata else {}
 
     return {}  # unreachable: the last attempt always returns above
 
@@ -1421,6 +1441,10 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
             # DB returns 'content' directly, not 'parts'
             content = item.get("content", "")
             message_id = item.get("message_id")
+            # get_ai_history returns user_id in every row (database.py) — carry it
+            # through so the copy preserves per-user attribution. Dropping it here
+            # re-inserted user_id=NULL, permanently wiping attribution on a move.
+            user_id = item.get("user_id")
             # A missing/malformed timestamp must not insert NULL — NULL bypasses
             # the column's CURRENT_TIMESTAMP default (database.py:409) and sorts
             # inconsistently under ORDER BY timestamp. Same rule as
@@ -1430,7 +1454,7 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
             ).isoformat(timespec="seconds")
 
             if content:
-                rows_to_insert.append((role, content, message_id, timestamp))
+                rows_to_insert.append((role, content, message_id, timestamp, user_id))
 
         copied = 0
         if rows_to_insert:
@@ -1446,11 +1470,11 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
                 next_local_id = (row[0] if row else 0) + 1
 
                 insert_rows = []
-                for role, content, message_id, timestamp in rows_to_insert:
+                for role, content, message_id, timestamp, user_id in rows_to_insert:
                     insert_rows.append(
                         (
                             target_channel_id,
-                            None,  # user_id
+                            user_id,
                             role,
                             content,
                             message_id,

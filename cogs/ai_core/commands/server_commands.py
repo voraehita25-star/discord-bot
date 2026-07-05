@@ -997,17 +997,30 @@ async def cmd_set_role_perm(
 
     value = value_str == "true"
 
-    # Try exact match first; fall back to case-insensitive match if
-    # nothing found. ``cmd_delete_role`` already uses this pattern, so
-    # mirror it here for consistency — without the fallback, a user
-    # asking for ``Admin`` couldn't set perms on a role literally named
-    # ``admin``.
-    role = discord.utils.get(guild.roles, name=role_name)
-    if not role:
-        role_name_lower = role_name.lower()
-        role = next(
-            (r for r in guild.roles if r.name.lower() == role_name_lower),
-            None,
+    # Resolve the role ID-first, then fall back to a name match with a
+    # duplicate-name guard, mirroring cmd_add_role / cmd_delete_role / the role
+    # block of cmd_set_channel_perm: Discord allows a numeric role name AND
+    # multiple roles sharing a name. ID-first makes the "กรุณาระบุ ID แทน" advice
+    # below actually resolve; the guard stops a bare first-match from silently
+    # editing the wrong same-named role's GUILD-WIDE permissions (the hierarchy
+    # check below only blocks roles at/above the bot, not the wrong one below it).
+    role = None
+    _rid = _safe_int(role_name)
+    if _rid is not None:
+        role = guild.get_role(_rid)
+    if role is None:
+        role_matches = [r for r in guild.roles if r.name.lower() == role_name.lower()]
+        if len(role_matches) > 1:
+            # ACTION-ABORTING bail: no permission is changed. Prefix ❌ so the model
+            # gets the failure instead of an optimistic "Requested setting role
+            # permission …" (audit py-aicore-tools-3).
+            await origin_channel.send(
+                f"❌ ⚠️ พบยศชื่อ **{role_name}** จำนวน {len(role_matches)} ยศ! กรุณาระบุ ID แทนเพื่อความปลอดภัย",
+                allowed_mentions=_NO_MENTIONS,
+            )
+            return
+        role = discord.utils.get(guild.roles, name=role_name) or (
+            role_matches[0] if role_matches else None
         )
     if not role:
         await origin_channel.send(f"❌ ไม่พบยศ: **{role_name}**", allowed_mentions=_NO_MENTIONS)

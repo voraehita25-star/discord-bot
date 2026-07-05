@@ -51,6 +51,7 @@ def _dumps_utf8(obj: Any) -> str:
     """
     return json.dumps(obj, ensure_ascii=False)
 
+
 # Unicode bidirectional override marks that ``str.isprintable`` returns
 # True for (U+200E/U+200F LRM/RLM, U+202A-U+202E LRE/RLE/PDF/LRO/RLO,
 # U+2066-U+2069 LRI/RLI/FSI/PDI). When rendered in a conversation title
@@ -241,7 +242,34 @@ async def handle_load_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
             for _img in msg.get("images") or []:
                 if isinstance(_img, str):
                     size += len(_img)
-            if budgeted and budget - size < 0:
+            if budget - size < 0:
+                if budgeted:
+                    # An OLDER message pushed us over — drop it and everything
+                    # older (newest-first iteration makes the drop the oldest).
+                    truncated = True
+                    break
+                # The NEWEST message ALONE exceeds the frame budget. Shipping it
+                # whole would overflow the client's 50MB hard-drop cap
+                # (ws-client.ts MAX_MESSAGE_LENGTH), the client would silently
+                # discard the frame, and the conversation would never open. The
+                # base64 images dominate that size, so strip them from the WIRE
+                # COPY only (the stored DB row is untouched) and leave a marker
+                # so the bubble still renders — a degraded-but-openable
+                # conversation beats an undeliverable frame. With no images to
+                # strip (pathologically large text) there's nothing safe to trim
+                # without corrupting the message, so ship it best-effort.
+                if any(isinstance(_i, str) for _i in msg.get("images") or []):
+                    _marker = "[image too large to display]"
+                    _text = msg.get("content") or ""
+                    budgeted.append(
+                        {
+                            **msg,
+                            "images": [],
+                            "content": f"{_text}\n\n{_marker}" if _text else _marker,
+                        }
+                    )
+                else:
+                    budgeted.append(msg)
                 truncated = True
                 break
             budget -= size

@@ -158,7 +158,7 @@ def get_tool_definitions() -> list[dict]:
                             "role_name": {"type": "STRING", "description": "Name of the role"},
                             "permission": {
                                 "type": "STRING",
-                                "description": "Permission name (e.g. view_channel, send_messages, manage_messages)",
+                                "description": "Permission name (e.g. view_channel, send_messages)",
                             },
                             "value": {
                                 "type": "BOOLEAN",

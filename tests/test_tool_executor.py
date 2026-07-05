@@ -329,6 +329,85 @@ class TestSendAsWebhook:
         assert "<@!\u200b123>" in content
         assert "<@\u200b123>" not in content
 
+    @pytest.mark.asyncio
+    async def test_early_fallback_partial_failure_sends_only_tail(self):
+        """Finding 1: when an EARLY plain-fallback path (here no manage_webhooks)
+        fails AFTER delivering a chunk, the function-level handler must re-send
+        ONLY the undelivered tail \u2014 already-delivered chunks are NOT re-posted.
+        Before the fix, pending_chunks was None on this path so the handler
+        re-sent the full original message and duplicated the first chunk.
+        """
+        import discord
+
+        from cogs.ai_core.tools.tool_executor import send_as_webhook
+
+        bot = MagicMock()
+        channel = MagicMock()
+        channel.guild = MagicMock()
+        channel.guild.me = MagicMock()
+
+        permissions = MagicMock()
+        permissions.manage_webhooks = False  # forces the early plain-fallback path
+        channel.permissions_for.return_value = permissions
+
+        # chunk 0 ok, chunk 1 raises; the outer handler's tail re-send then ok.
+        # A 4th entry lets the OLD (buggy) full re-send run to completion so the
+        # count assertion fails cleanly rather than on StopIteration.
+        channel.send = AsyncMock(
+            side_effect=[
+                MagicMock(),
+                discord.HTTPException(MagicMock(), "boom"),
+                MagicMock(),
+                MagicMock(),
+            ]
+        )
+
+        first = "A" * 1490
+        tail = "B" * 1009
+        message = first + " " + tail  # splits into exactly two plain chunks
+
+        await send_as_webhook(bot, channel, "TestChar", message)
+
+        sent_text = "".join(str(c.args[0]) for c in channel.send.call_args_list)
+        # The already-delivered first chunk must appear EXACTLY once (not re-posted).
+        assert sent_text.count(first) == 1
+        # The undelivered tail is re-sent by the handler.
+        assert tail in sent_text
+
+    @pytest.mark.asyncio
+    async def test_dm_early_path_returns_delivered_message(self):
+        """Finding 2: the DM early path returns the delivered message object (not
+        None) so logic.py can stamp its id for edit/delete mirroring.
+        """
+        from cogs.ai_core.tools.tool_executor import send_as_webhook
+
+        bot = MagicMock()
+        channel = MagicMock()
+        channel.guild = None  # DM: no guild
+        sentinel = MagicMock()
+        channel.send = AsyncMock(return_value=sentinel)
+
+        result = await send_as_webhook(bot, channel, "TestChar", "Hello!")
+
+        assert result is sentinel
+
+    @pytest.mark.asyncio
+    async def test_thread_early_path_returns_delivered_message(self):
+        """Finding 2: the thread early path (channel has no .webhooks) also returns
+        the delivered message object rather than None.
+        """
+        from cogs.ai_core.tools.tool_executor import send_as_webhook
+
+        bot = MagicMock()
+        channel = MagicMock(spec=["guild", "send", "id"])  # no .webhooks attr
+        channel.guild = MagicMock()
+        sentinel = MagicMock()
+        channel.send = AsyncMock(return_value=sentinel)
+
+        result = await send_as_webhook(bot, channel, "TestChar", "Hello!")
+
+        assert result is sentinel
+
 
 class TestSafeSplitMessage:
     def test_no_orphaned_thai_mark_on_hard_cut(self):

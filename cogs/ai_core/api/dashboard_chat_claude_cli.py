@@ -817,6 +817,19 @@ _TEMP_IMAGE_ROOT = Path(__file__).resolve().parents[3] / "data" / "tmp" / "dashb
 # safe to nuke at any time (files are regenerated on the next turn if needed).
 _TEMP_DOCS_ROOT = Path(__file__).resolve().parents[3] / "data" / "tmp" / "dashboard_cli_docs"
 
+# Attachment paths written by turns that are still IN FLIGHT (saved to disk but
+# whose subprocess hasn't finished). A turn decodes its attachments BEFORE it
+# can acquire the per-conversation lock, so a queued turn's fresh files can sit
+# on disk for the entire duration a long-running lock-holder turn is busy
+# (thinking-mode turns are budgeted up to 1800s). The per-conversation cleanup
+# below must therefore NOT delete a file just because it's older than the 60s
+# wall-clock cutoff — an in-flight sibling turn may still need it. Registering
+# a turn's paths here lets the dir sweep skip anything a live turn still owns
+# while still reaping genuinely-orphaned files (unregistered + stale). The set
+# is process-local: a hard crash wipes it, after which the orphaned files fall
+# back to the age check on the next turn's sweep, so orphan cleanup survives.
+_INFLIGHT_ATTACHMENTS: set[Path] = set()
+
 # Allowed image MIME types — must match what the SDK backend accepts so users
 # don't get inconsistent behavior across the toggle.
 _SUPPORTED_IMAGE_MIME = {
@@ -1086,8 +1099,14 @@ def _save_inline_images(
 def _cleanup_image_dir(conversation_id: str) -> None:
     """Best-effort cleanup of the per-conversation temp image dir.
 
-    Skips files newer than 60 seconds so a concurrent next-turn that just
-    wrote fresh attachments doesn't get its files yanked mid-flight.
+    Only removes a file when it is BOTH not registered as in-flight by a live
+    turn AND older than the 60-second cutoff. The wall-clock age alone is not a
+    safe guard: a queued next-turn decodes its attachments to disk before it can
+    acquire the per-conversation lock, so a lock-holder turn that runs longer
+    than 60s would otherwise yank the queued turn's still-unread files purely by
+    age. ``_INFLIGHT_ATTACHMENTS`` names those live files so they're preserved
+    regardless of age, while genuinely-orphaned (unregistered + stale) files are
+    still reaped.
     """
     if not conversation_id:
         return
@@ -1099,6 +1118,9 @@ def _cleanup_image_dir(conversation_id: str) -> None:
         if target_dir.exists():
             remaining = 0
             for p in target_dir.iterdir():
+                if p in _INFLIGHT_ATTACHMENTS:
+                    remaining += 1
+                    continue
                 try:
                     if p.stat().st_mtime > cutoff:
                         remaining += 1
@@ -1226,8 +1248,10 @@ def _save_inline_documents(
 def _cleanup_docs_dir(conversation_id: str) -> None:
     """Best-effort cleanup of the per-conversation temp documents dir.
 
-    Skips files newer than 60 seconds so a concurrent next-turn that just
-    wrote fresh attachments doesn't get its files yanked mid-flight.
+    Only removes a file when it is BOTH not registered as in-flight by a live
+    turn AND older than the 60-second cutoff — see ``_cleanup_image_dir`` for
+    why the wall-clock age alone can yank a queued sibling turn's freshly
+    written attachments.
     """
     if not conversation_id:
         return
@@ -1239,6 +1263,9 @@ def _cleanup_docs_dir(conversation_id: str) -> None:
         if target_dir.exists():
             remaining = 0
             for p in target_dir.iterdir():
+                if p in _INFLIGHT_ATTACHMENTS:
+                    remaining += 1
+                    continue
                 try:
                     if p.stat().st_mtime > cutoff:
                         remaining += 1
@@ -2466,8 +2493,16 @@ async def _run_claude_subprocess(
         if proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
+            # Bound this reap like the post-kill wait ~40 lines above: a child
+            # still wedged after SIGKILL must be ABANDONED, not awaited forever.
+            # Both the rc=-1 abandon path and the stream-timeout path unwind
+            # through this finally with ``returncode is None``, so an unbounded
+            # ``await proc.wait()`` here would hang this coroutine while it still
+            # holds the per-conversation lock — queuing every later turn in the
+            # conversation indefinitely. suppress(Exception) swallows the
+            # wait_for TimeoutError so the wedged child is dropped, not hung on.
             with contextlib.suppress(Exception):
-                await proc.wait()
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
 
     # Perf + cache breadcrumb (#3, #4). ttft = time from sending the prompt to
     # the first visible token; `prewarmed` tells whether the cold-start was
@@ -2993,6 +3028,12 @@ async def handle_chat_message_claude_cli(
     # returns True for any holder, not just the current task — relying on
     # it to gate release() risked corrupting the lock state.
     lock_acquired = False
+    # Register this turn's just-written attachments as in-flight BEFORE we block
+    # on the lock: a long-running lock-holder's cleanup sweep must not delete
+    # them by age while we wait our turn (see _INFLIGHT_ATTACHMENTS). The finally
+    # unregisters them once we're done with the subprocess.
+    if image_paths or doc_paths:
+        _INFLIGHT_ATTACHMENTS.update(image_paths, doc_paths)
     try:
         if lock is not None:
             await lock.acquire()
@@ -3251,6 +3292,11 @@ async def handle_chat_message_claude_cli(
         for _attach in (*image_paths, *(doc_paths or [])):
             with contextlib.suppress(Exception, asyncio.CancelledError):
                 await asyncio.to_thread(_attach.unlink)
+        # This turn's files are deleted (or gone); stop protecting them from
+        # future sweeps so the set can't grow without bound. Discard is safe
+        # even for anonymous turns (nothing was registered) and never raises.
+        if image_paths or doc_paths:
+            _INFLIGHT_ATTACHMENTS.difference_update(image_paths, doc_paths)
         # Both helpers above skipped THIS turn's <60s files, so they couldn't
         # rmdir the per-conversation subdir; we unlinked those files just above,
         # so the subdir may now be empty. rmdir is best-effort and only succeeds

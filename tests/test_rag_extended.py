@@ -1405,6 +1405,24 @@ class TestFAISSIndexPersistence:
         loaded = rag.FAISSIndex(rag.EMBEDDING_DIM)
         assert loaded.load_from_disk() is False
 
+    def test_load_detects_dimension_mismatch(self, tmp_path, monkeypatch):
+        """A stale index whose dim != self.dimension is rejected and rebuilt."""
+        rag, d = self._redirect_paths(monkeypatch, tmp_path)
+        if not rag.FAISS_AVAILABLE:
+            pytest.skip("FAISS not installed")
+
+        # Save an index built at the real embedding dim (768). The UUID and
+        # ntotal==len(id_map) guards all pass, so the ONLY thing that can reject
+        # the load into a differently-dimensioned index is the dimension check.
+        idx = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        idx.build(np.array([_unit_vec(1), _unit_vec(2)]), [11, 22])
+        assert idx.save_to_disk() is True
+
+        loaded = rag.FAISSIndex(rag.EMBEDDING_DIM // 2)
+        assert loaded.load_from_disk() is False
+        assert loaded.id_map == []
+        assert loaded.index is None
+
 
 class TestEvictCache:
     """_evict_cache_if_needed cache-bounding behaviour."""
@@ -2428,6 +2446,37 @@ class TestEnsureIndex:
         await system._ensure_index(None)
         # No DB read because the early return fired.
         mock_db.get_all_rag_memories.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_full_rebuild_db_error_latches_built_empty(self, monkeypatch):
+        """A sqlite3.Error during full rebuild degrades to built-empty (no raise).
+
+        Mirrors the TimeoutError branch: instead of aborting the whole memory
+        retrieval, the index latches built-empty with the retry cool-down so the
+        rebuild is re-attempted rather than re-raised on every message.
+        """
+        import sqlite3
+
+        import cogs.ai_core.memory.rag as rag
+
+        system = _new_system()
+        system._faiss_index = rag.FAISSIndex(rag.EMBEDDING_DIM)
+        system._faiss_index.load_from_disk = lambda: False
+        system._index_built = False
+        system._rebuild_after = None
+        system._index_lock = __import__("asyncio").Lock()
+        monkeypatch.setattr(rag, "FAISS_AVAILABLE", True)
+        monkeypatch.setattr(rag, "_DB_AVAILABLE", True)
+        mock_db = MagicMock()
+        mock_db.get_all_rag_memories = AsyncMock(
+            side_effect=sqlite3.OperationalError("database is locked")
+        )
+        monkeypatch.setattr(rag, "db", mock_db)
+
+        # Must NOT raise — the widened handler catches sqlite3.Error like TimeoutError.
+        await system._ensure_index(None)
+        assert system._index_built is True
+        assert system._rebuild_after is not None
 
 
 class TestSaveTasks:

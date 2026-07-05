@@ -73,6 +73,48 @@ class TestRemoveMessageFromHistory:
             result = await cm.remove_message_from_history(50, 999)
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_removing_a_message_drops_compress_cache(self):
+        """A delete must invalidate the length-keyed auto-compress cache.
+
+        Regression: the cache is keyed only on source-history length, so a
+        delete + later same-length insert would otherwise serve a stale
+        compression still containing the deleted message — defeating the
+        delete-mirroring guarantee. Mirrors edit_message_in_history.
+        """
+        cm = _bare_manager(
+            {
+                50: {
+                    "history": [
+                        {"role": "user", "parts": ["hi"], "message_id": 10},
+                        {"role": "model", "parts": ["hello"]},
+                    ],
+                    "_compress_cache": {"src_len": 2, "history": [{"stale": True}]},
+                }
+            }
+        )
+        with patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=0)):
+            result = await cm.remove_message_from_history(50, 10)
+
+        assert result is True
+        assert "_compress_cache" not in cm.chats[50]
+
+    @pytest.mark.asyncio
+    async def test_no_match_keeps_compress_cache(self):
+        """A no-op delete (nothing removed in memory) must NOT drop the cache."""
+        cm = _bare_manager(
+            {
+                50: {
+                    "history": [{"role": "user", "parts": ["hi"], "message_id": 10}],
+                    "_compress_cache": {"src_len": 1, "history": []},
+                }
+            }
+        )
+        with patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=0)):
+            await cm.remove_message_from_history(50, 999)  # no such id
+
+        assert "_compress_cache" in cm.chats[50]
         assert len(cm.chats[50]["history"]) == 1  # unchanged
 
 

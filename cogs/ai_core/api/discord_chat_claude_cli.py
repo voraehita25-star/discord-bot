@@ -90,6 +90,19 @@ _CHANNEL_LOCKS: OrderedDict[int, asyncio.Lock] = OrderedDict()
 # Lock and serialisation was lost.
 _FALLBACK_LOCK = asyncio.Lock()
 
+# Per-channel reset generation counter. reset_channel_session() bumps this;
+# a turn captures it at start and refuses to _record_session() its forked
+# session id if the epoch moved while the subprocess was in flight.
+# reset_channel_session() deliberately takes NO channel lock (its callers —
+# !reset_ai, link_memory — must be able to wipe even while a long turn holds
+# it), so a reset can land mid-turn. Without this guard the completing turn
+# re-records a fork whose server-side context still holds the whole pre-wipe
+# conversation, resurrecting the "forgotten" history AND re-creating the
+# .jsonl on disk. Uncapped like _OVERLIMIT_LAST_WARN: it's one small int per
+# channel-ever-reset (rare, user-initiated), and evicting it could false-drop
+# an in-flight turn's legitimate recording.
+_CHANNEL_RESET_EPOCH: dict[int, int] = {}
+
 # Matches a role marker at the start of a line in arbitrary user text.
 # The flattened-prompt format (``# Conversation history\nUser: …\n
 # Assistant: …``) is vulnerable to a user message that contains
@@ -317,6 +330,9 @@ def reset_channel_session(channel_id: int) -> None:
     """
     _schedule_session_unlink(_CHANNEL_SESSIONS.pop(channel_id, None))
     _OVERLIMIT_LAST_WARN.pop(channel_id, None)
+    # Bump the reset epoch so any turn already in flight for this channel
+    # skips re-recording its (now forked-off) session id when it completes.
+    _CHANNEL_RESET_EPOCH[channel_id] = _CHANNEL_RESET_EPOCH.get(channel_id, 0) + 1
 
 
 def _flatten_contents_to_prompt(
@@ -770,6 +786,11 @@ async def call_claude_cli_streaming(
     async with lock:
         # First-turn ⇒ no session_id; subsequent turns reuse via --resume.
         session_id = _CHANNEL_SESSIONS.get(channel_id) if channel_id is not None else None
+        # Capture the reset epoch NOW — synchronous and adjacent to the
+        # session_id read (no await between, so a concurrent reset lands wholly
+        # before or after both). Compared again before _record_session so a
+        # reset that fires while this turn is in flight isn't silently undone.
+        reset_epoch = _CHANNEL_RESET_EPOCH.get(channel_id, 0) if channel_id is not None else 0
         turn_start = time.monotonic()
         logger.info(
             "💬 discord-cli start channel=%s resume=%s",
@@ -908,7 +929,21 @@ async def call_claude_cli_streaming(
                         with contextlib.suppress(asyncio.CancelledError):
                             await watcher
                 if channel_id is not None and new_session_id and not aborted:
-                    _record_session(channel_id, new_session_id)
+                    if _CHANNEL_RESET_EPOCH.get(channel_id, 0) != reset_epoch:
+                        # A reset_channel_session() landed while this turn was
+                        # in flight. Recording the fork would resurrect the
+                        # wiped context (its server-side session still holds
+                        # every pre-wipe turn) and re-create the transcript on
+                        # disk. Drop it: unlink the fork and leave the channel
+                        # session-less so the next turn starts fresh.
+                        logger.info(
+                            "discord-cli reset during turn channel=%s; dropping forked session %s",
+                            channel_id,
+                            (new_session_id or "")[:8] or "none",
+                        )
+                        _schedule_session_unlink(new_session_id)
+                    else:
+                        _record_session(channel_id, new_session_id)
                 elif aborted and channel_id is not None:
                     # Cancelled mid-stream: the subprocess still ran to completion
                     # server-side, but we return empty (the SDK-path contract) and
@@ -1090,6 +1125,10 @@ async def call_claude_cli(
     lock = _get_channel_lock(channel_id) if channel_id is not None else _FALLBACK_LOCK
     async with lock:
         session_id = _CHANNEL_SESSIONS.get(channel_id) if channel_id is not None else None
+        # Capture the reset epoch NOW (see the streaming sibling for the full
+        # rationale): compared before _record_session so a reset landing
+        # mid-turn isn't silently undone by re-recording the forked session.
+        reset_epoch = _CHANNEL_RESET_EPOCH.get(channel_id, 0) if channel_id is not None else 0
         turn_start = time.monotonic()
         logger.info(
             "💬 discord-cli start (non-stream) channel=%s resume=%s",
@@ -1212,7 +1251,19 @@ async def call_claude_cli(
                         with contextlib.suppress(asyncio.CancelledError):
                             await watcher
                 if channel_id is not None and new_session_id and not aborted:
-                    _record_session(channel_id, new_session_id)
+                    if _CHANNEL_RESET_EPOCH.get(channel_id, 0) != reset_epoch:
+                        # A reset landed mid-turn (see the streaming sibling):
+                        # drop the fork instead of resurrecting the wiped
+                        # context and re-creating the transcript on disk.
+                        logger.info(
+                            "discord-cli reset during turn (non-stream) channel=%s; "
+                            "dropping forked session %s",
+                            channel_id,
+                            (new_session_id or "")[:8] or "none",
+                        )
+                        _schedule_session_unlink(new_session_id)
+                    else:
+                        _record_session(channel_id, new_session_id)
                 if not aborted:
                     logger.info(
                         "✅ discord-cli done (non-stream) channel=%s attempt=%d "

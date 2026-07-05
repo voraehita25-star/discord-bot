@@ -543,6 +543,23 @@ class FAISSIndex:
                 self.id_map = []
                 return False
 
+            # Validate the loaded index dimension. A stale index.bin written
+            # for a different embedding dim (e.g. after an EMBEDDING_DIM change)
+            # otherwise passes the UUID + length guards and loads "successfully"
+            # here, then every search raises inside FAISS with no self-heal.
+            # Discard the on-disk state and rebuild from DB exactly like the
+            # length-mismatch branch below.
+            if self.index.d != self.dimension:
+                logger.error(
+                    "🔥 FAISS index dimension mismatch (%d vs %d) — "
+                    "discarding on-disk state and rebuilding from DB",
+                    self.index.d,
+                    self.dimension,
+                )
+                self.index = None
+                self.id_map = []
+                return False
+
             # Validate length match — a partial-rename crash between
             # save_to_disk's two ``temp_*.replace(...)`` calls leaves a new
             # index pointing at an old id_map (or vice versa). Detecting
@@ -1006,6 +1023,17 @@ class MemorySystem:
                                 "RAG cache eager-load timed out; falling back to lazy population"
                             )
                             return
+                        except (sqlite3.Error, OSError):
+                            # A transient DB error (e.g. "database is locked") must
+                            # degrade like the timeout branch above rather than bubble
+                            # up and abort the whole memory-retrieval step. FAISS is
+                            # already loaded from disk (_index_built stays True); leave
+                            # the cache cold and let lazy-load fill it on first hit.
+                            # aiosqlite raises the stdlib sqlite3.* exception types.
+                            logger.warning(
+                                "RAG cache eager-load DB query failed; falling back to lazy population"
+                            )
+                            return
                         eager_load_cap = max(self.MAX_CACHE_SIZE, 1000)
                         for mem in all_memories[:eager_load_cap]:
                             mem_id = mem.get("id")
@@ -1109,6 +1137,18 @@ class MemorySystem:
                 logger.warning(
                     "RAG full-rebuild DB query timed out; marking index as "
                     "built-empty (retry in 300s)"
+                )
+                self._index_built = True
+                self._rebuild_after = time.monotonic() + 300.0
+                return
+            except (sqlite3.Error, OSError):
+                # A transient DB error (locked DB, disk I/O) must degrade like the
+                # timeout branch above instead of bubbling up and aborting the whole
+                # memory-retrieval step on every message. Latch built-empty with the
+                # same cool-down so the rebuild is retried rather than re-raised on
+                # each search. aiosqlite raises the stdlib sqlite3.* exception types.
+                logger.warning(
+                    "RAG full-rebuild DB query failed; marking index as built-empty (retry in 300s)"
                 )
                 self._index_built = True
                 self._rebuild_after = time.monotonic() + 300.0

@@ -41,10 +41,12 @@ def _clean_channel_state() -> Any:
     _CHANNEL_SESSIONS.clear()
     cli_mod._CHANNEL_LOCKS.clear()
     cli_mod._OVERLIMIT_LAST_WARN.clear()
+    cli_mod._CHANNEL_RESET_EPOCH.clear()
     yield
     _CHANNEL_SESSIONS.clear()
     cli_mod._CHANNEL_LOCKS.clear()
     cli_mod._OVERLIMIT_LAST_WARN.clear()
+    cli_mod._CHANNEL_RESET_EPOCH.clear()
 
 
 class TestFlattenContentsToPrompt:
@@ -1676,3 +1678,157 @@ class TestResolveDiscordSystemPromptFile:
         monkeypatch.setenv("DISCORD_CLI_UNRESTRICTED_MODE", "gated")
         # No channel id → cannot be unrestricted → no overlay.
         assert cli_mod._resolve_discord_system_prompt_file(None) is None
+
+
+class TestResetEpochGuardsInFlightTurn:
+    """FINDING 3: reset_channel_session() takes no channel lock, so a reset can
+    land WHILE a turn is in flight. A turn that started before the reset must
+    NOT re-record its forked session id afterwards — the fork's server-side
+    context still holds the entire pre-wipe conversation, so recording it would
+    resurrect the "forgotten" history and re-create the transcript on disk.
+    """
+
+    def test_reset_channel_session_bumps_epoch(self) -> None:
+        assert cli_mod._CHANNEL_RESET_EPOCH.get(7, 0) == 0
+        reset_channel_session(7)
+        assert cli_mod._CHANNEL_RESET_EPOCH[7] == 1
+        reset_channel_session(7)
+        assert cli_mod._CHANNEL_RESET_EPOCH[7] == 2
+
+    @pytest.mark.asyncio
+    async def test_streaming_skips_record_when_reset_lands_mid_turn(self) -> None:
+        _CHANNEL_SESSIONS[700] = "pre-wipe-session"
+        placeholder = MagicMock()
+        placeholder.edit = AsyncMock()
+        placeholder.delete = AsyncMock()
+        send_channel = MagicMock()
+        send_channel.send = AsyncMock(return_value=placeholder)
+
+        async def fake_subprocess(
+            argv: list[str],
+            stdin_payload: str,
+            *,
+            on_text_delta: Any,
+            on_thinking_delta: Any,
+            on_thinking_block_start: Any = None,
+            on_thinking_block_stop: Any = None,
+            timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
+        ) -> tuple[str, dict[str, Any] | None]:
+            await on_text_delta("partial reply")
+            # A concurrent reset lands mid-turn: it takes no channel lock, so it
+            # wipes history and pops _CHANNEL_SESSIONS while we're still running.
+            reset_channel_session(700)
+            # The turn then completes, forking a NEW session id whose server-side
+            # context still contains the whole pre-wipe conversation.
+            return "forked-session-abc", {"input_tokens": 5, "output_tokens": 3}
+
+        unlink_mock = MagicMock()
+        with (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_run_claude_subprocess", side_effect=fake_subprocess),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="/usr/bin/claude",
+            ),
+            patch.object(cli_mod, "_schedule_session_unlink", unlink_mock),
+        ):
+            text, _, _ = await call_claude_cli_streaming(
+                contents=[{"role": "user", "parts": ["hi"]}],
+                config_params={"system_instruction": "be brief"},
+                send_channel=send_channel,
+                channel_id=700,
+            )
+
+        # The reply text itself still reaches the user this turn...
+        assert text == "partial reply"
+        # ...but the forked session must NOT be recorded: the channel stays
+        # session-less so the next turn starts fresh instead of --resuming the
+        # resurrected context.
+        assert 700 not in _CHANNEL_SESSIONS
+        # And the fork's on-disk transcript is scheduled for unlink.
+        unlink_mock.assert_any_call("forked-session-abc")
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_skips_record_when_reset_lands_mid_turn(self) -> None:
+        _CHANNEL_SESSIONS[701] = "pre-wipe-session"
+
+        async def fake_subprocess(
+            argv: list[str],
+            stdin_payload: str,
+            *,
+            on_text_delta: Any,
+            on_thinking_delta: Any,
+            on_thinking_block_start: Any = None,
+            on_thinking_block_stop: Any = None,
+            timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
+        ) -> tuple[str, dict[str, Any] | None]:
+            await on_text_delta("done")
+            reset_channel_session(701)
+            return "forked-session-def", {"input_tokens": 5, "output_tokens": 3}
+
+        unlink_mock = MagicMock()
+        with (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_run_claude_subprocess", side_effect=fake_subprocess),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="/usr/bin/claude",
+            ),
+            patch.object(cli_mod, "_schedule_session_unlink", unlink_mock),
+        ):
+            text, _, _ = await call_claude_cli(
+                contents=[{"role": "user", "parts": ["hi"]}],
+                config_params={"system_instruction": "be brief"},
+                channel_id=701,
+            )
+
+        assert text == "done"
+        assert 701 not in _CHANNEL_SESSIONS
+        unlink_mock.assert_any_call("forked-session-def")
+
+    @pytest.mark.asyncio
+    async def test_streaming_records_normally_when_no_reset(self) -> None:
+        """Positive control: with the epoch machinery present but no reset, a
+        turn records its session id exactly as before (guard is inert)."""
+        placeholder = MagicMock()
+        placeholder.edit = AsyncMock()
+        placeholder.delete = AsyncMock()
+        send_channel = MagicMock()
+        send_channel.send = AsyncMock(return_value=placeholder)
+
+        async def fake_subprocess(
+            argv: list[str],
+            stdin_payload: str,
+            *,
+            on_text_delta: Any,
+            on_thinking_delta: Any,
+            on_thinking_block_start: Any = None,
+            on_thinking_block_stop: Any = None,
+            timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
+        ) -> tuple[str, dict[str, Any] | None]:
+            await on_text_delta("hello")
+            return "fresh-session-ghi", {"input_tokens": 5, "output_tokens": 3}
+
+        with (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_run_claude_subprocess", side_effect=fake_subprocess),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="/usr/bin/claude",
+            ),
+        ):
+            text, _, _ = await call_claude_cli_streaming(
+                contents=[{"role": "user", "parts": ["hi"]}],
+                config_params={"system_instruction": "be brief"},
+                send_channel=send_channel,
+                channel_id=702,
+            )
+
+        assert text == "hello"
+        assert _CHANNEL_SESSIONS[702] == "fresh-session-ghi"

@@ -2,7 +2,7 @@
 Tests for cogs.ai_core.api.api_handler module.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -488,18 +488,6 @@ class TestRoleplayDataImport:
             return
 
         # Should be imported from data module
-
-
-class TestEscalationFramings:
-    """Tests for escalation framings import."""
-
-    def test_escalation_framings_imported(self):
-        """Test ESCALATION_FRAMINGS is imported."""
-        try:
-            from cogs.ai_core.api.api_handler import ESCALATION_FRAMINGS
-        except ImportError:
-            pytest.skip("api_handler not available")
-            return
 
 
 class TestApiBuildConfigEdgeCases:
@@ -1246,3 +1234,76 @@ class TestClassifySearchIntent:
         from cogs.ai_core.api.api_handler import classify_search_intent
 
         assert classify_search_intent("Good morning!") is False
+
+
+class TestStreamingPlaceholderSendBreaker:
+    """FINDING 1: the placeholder ``send_channel.send`` is a Discord REST call.
+    A discord.Forbidden / Discord 5xx there must NOT be recorded on
+    gemini_circuit (the breaker gating every Claude call) — a burst of Discord
+    send failures could otherwise trip it OPEN bot-wide while Anthropic is
+    healthy. The fallback-to-normal-API behaviour must still be preserved."""
+
+    @pytest.mark.asyncio
+    async def test_discord_send_failure_does_not_trip_breaker(self):
+        from cogs.ai_core.api.api_handler import call_claude_api_streaming
+
+        breaker = MagicMock()
+        breaker.can_execute.return_value = True
+        send_channel = MagicMock()
+        send_channel.send = AsyncMock(side_effect=RuntimeError("discord 503"))
+        fallback_mock = AsyncMock(return_value=("fallback text", "", []))
+
+        with (
+            patch("cogs.ai_core.api.api_handler.CIRCUIT_BREAKER_AVAILABLE", True),
+            patch("cogs.ai_core.api.api_handler.gemini_circuit", breaker),
+        ):
+            result = await call_claude_api_streaming(
+                MagicMock(),
+                "claude-opus-4-7",
+                [{"role": "user", "parts": [{"text": "hi"}]}],
+                {"system_instruction": "Test", "max_tokens": 100},
+                send_channel,
+                fallback_func=fallback_mock,
+            )
+
+        # Falls back to the non-streaming path...
+        assert result[0] == "fallback text"
+        fallback_mock.assert_awaited_once()
+        # ...but the Discord send failure must NOT count against the AI breaker.
+        breaker.record_failure.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_genuine_setup_failure_still_records_breaker(self):
+        """A genuine API-setup failure (e.g. content conversion) after the send
+        succeeds must still record on the breaker — the exemption is only for
+        the Discord placeholder send."""
+        from cogs.ai_core.api.api_handler import call_claude_api_streaming
+
+        breaker = MagicMock()
+        breaker.can_execute.return_value = True
+        placeholder = MagicMock()
+        placeholder.delete = AsyncMock()
+        send_channel = MagicMock()
+        send_channel.send = AsyncMock(return_value=placeholder)
+        fallback_mock = AsyncMock(return_value=("fallback text", "", []))
+
+        with (
+            patch("cogs.ai_core.api.api_handler.CIRCUIT_BREAKER_AVAILABLE", True),
+            patch("cogs.ai_core.api.api_handler.gemini_circuit", breaker),
+            patch(
+                "cogs.ai_core.api.api_handler.convert_to_claude_messages",
+                side_effect=RuntimeError("bad contents"),
+            ),
+        ):
+            result = await call_claude_api_streaming(
+                MagicMock(),
+                "claude-opus-4-7",
+                [{"role": "user", "parts": [{"text": "hi"}]}],
+                {"system_instruction": "Test", "max_tokens": 100},
+                send_channel,
+                fallback_func=fallback_mock,
+            )
+
+        assert result[0] == "fallback text"
+        fallback_mock.assert_awaited_once()
+        breaker.record_failure.assert_called_once()

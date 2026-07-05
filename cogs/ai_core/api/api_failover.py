@@ -188,13 +188,22 @@ class APIFailoverManager:
     # consumed by ``EndpointHealth.is_healthy`` — change both together.
     FAILURE_THRESHOLD = _FAILURE_THRESHOLD  # consecutive failures before switching
     # Grace period before closing a popped client. Must cover the WORST
-    # legal in-flight request, not the p99: this codebase budgets 120s for
-    # non-streaming calls (api_handler api_timeout / constants.API_TIMEOUT)
-    # — closing the old client's pool at 5s aborted those mid-flight and
-    # fed the resulting connection errors back into failover accounting
-    # against the NEW endpoint. One lingering client object for ~2 minutes
-    # is a trivial fd cost.
-    _CLIENT_CLOSE_GRACE_SECONDS = 130.0
+    # legal in-flight request, not the p99: closing the old client's pool
+    # aborts anything mid-flight and feeds the resulting connection errors
+    # back into failover accounting against the NEW endpoint (a phantom
+    # failure that can nudge it toward a bounce-back switch).
+    #
+    # The binding case is STREAMING, not the 120s non-streaming budget: the
+    # streaming path (api_handler.call_claude_api_streaming) has no total-
+    # duration cap — only per-chunk timeouts (STREAMING_TIMEOUT_INITIAL=120s
+    # for the first chunk, STREAMING_TIMEOUT_CHUNK=45s each after) — so a long
+    # reply (large CLAUDE_MAX_TOKENS output) can legally stream for many
+    # minutes. The previous 130s value only covered the non-streaming call and
+    # left real multi-minute streams exposed. 600s covers realistic worst-case
+    # streams while one lingering client object is a trivial fd cost on this
+    # single-user bot; a stream that somehow outruns even this is separately
+    # bounded by the per-chunk timeouts.
+    _CLIENT_CLOSE_GRACE_SECONDS = 600.0
 
     def __init__(self) -> None:
         self._endpoints: dict[EndpointType, EndpointConfig] = {}

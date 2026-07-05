@@ -111,6 +111,13 @@ class RagEngineWrapper:
                 raise ValueError("importance must be non-negative")
             if any(not math.isfinite(v) for v in embedding):
                 raise ValueError("embedding contains non-finite values (NaN/Inf)")
+            # Timestamp must be finite too — mirror the Rust add() guard (lib.rs:197).
+            # A NaN/Inf timestamp was otherwise stored silently, and the fallback's
+            # json.dump (allow_nan=True default) then serializes a literal NaN into a
+            # file the Rust backend rejects WHOLESALE on load. add_batch skips such
+            # entries via this same ValueError, matching Rust add_batch (lib.rs:222).
+            if not math.isfinite(timestamp):
+                raise ValueError("timestamp must be a finite number")
             with self._entries_lock:
                 self._entries[entry_id] = {
                     "id": entry_id,
@@ -205,6 +212,15 @@ class RagEngineWrapper:
         time_decay_factor: float,
     ) -> list[dict[str, Any]]:
         """Pure Python fallback for search."""
+        # Reject a wrong-length query up front to match the Rust search() contract
+        # (lib.rs:252-258). Without this a mismatched query raised a dimension
+        # ValueError inside _cosine_similarity that the per-entry guard swallowed,
+        # so the fallback returned silently-empty instead of the loud PyValueError
+        # the Rust backend gives. Checked before the finite guard to mirror Rust order.
+        if len(query_embedding) != self.dimension:
+            raise ValueError(
+                f"Query dimension mismatch: expected {self.dimension}, got {len(query_embedding)}"
+            )
         # Reject non-finite query vectors up front to match the Rust search()
         # contract (lib.rs:204-208). An Inf in the query yields an Inf score
         # that passes the threshold filter and corrupts rank order; without
@@ -382,9 +398,7 @@ class RagEngineWrapper:
                     # the NaN into a file the Rust backend then rejects
                     # WHOLESALE. add() already blocks these values; load() was
                     # the one ingestion gap.
-                    if not all(
-                        isinstance(v, (int, float)) and math.isfinite(v) for v in embedding
-                    ):
+                    if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in embedding):
                         logger.warning(
                             "Skipping RAG entry %r: embedding contains non-numeric or "
                             "non-finite values",

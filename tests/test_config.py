@@ -69,9 +69,6 @@ class TestBotSettings:
             assert settings.auto_disconnect_delay == 180
             assert settings.default_volume == 0.5
             assert settings.max_queue_size == 500
-            assert settings.ai_history_limit_default == 5000
-            assert settings.ai_history_limit_main == 10000
-            assert settings.ai_history_limit_rp == 20000
             assert settings.ai_session_timeout == 3600
 
     def test_env_values_loaded(self):
@@ -168,16 +165,6 @@ class TestBotSettings:
         assert Path(data_dir).exists()
         assert Path(temp_dir).exists()
         assert Path(logs_dir).exists()
-
-    def test_ai_history_limits(self):
-        """Test AI history limit values."""
-        from config import BotSettings
-
-        settings = BotSettings()
-
-        # Check that RP has highest limit
-        assert settings.ai_history_limit_rp > settings.ai_history_limit_main
-        assert settings.ai_history_limit_main > settings.ai_history_limit_default
 
 
 class TestGlobalSettings:

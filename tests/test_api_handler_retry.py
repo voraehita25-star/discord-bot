@@ -192,3 +192,77 @@ class TestClaudeCoreRetry:
         assert result[0] == "Recovered via stream"
         assert client.messages.stream.call_count == 3
         fallback_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_streaming_rechecks_breaker_each_attempt_and_short_circuits(self):
+        """FINDING 2: the streaming retry loop must re-check the circuit breaker
+        on EVERY attempt, mirroring call_claude_api. _CLAUDE_MAX_STREAM_RETRIES
+        (6) exceeds the breaker threshold (5) and each failed attempt records a
+        failure, so a request's own retries can open the breaker mid-loop; the
+        next attempt must short-circuit rather than fire at the sick endpoint."""
+        from cogs.ai_core.api.api_handler import (
+            _CLAUDE_MAX_STREAM_RETRIES,
+            call_claude_api_streaming,
+        )
+
+        class FakeBreaker:
+            """Minimal breaker mirroring the real failure-threshold semantics."""
+
+            threshold = 5
+
+            def __init__(self):
+                self.failures = 0
+
+            def can_execute(self):
+                return self.failures < self.threshold
+
+            def record_failure(self):
+                self.failures += 1
+
+            def record_success(self):
+                self.failures = 0
+
+        breaker = FakeBreaker()
+
+        client = MagicMock()
+        client.messages = MagicMock()
+        # Every attempt fails transiently, driving record_failure() each time.
+        client.messages.stream = MagicMock(
+            side_effect=[OSError(f"busy-{i}") for i in range(1, _CLAUDE_MAX_STREAM_RETRIES + 2)]
+        )
+
+        placeholder = MagicMock()
+        placeholder.edit = AsyncMock()
+        placeholder.delete = AsyncMock()
+        send_channel = MagicMock()
+        send_channel.send = AsyncMock(return_value=placeholder)
+        # If the per-attempt re-check were missing, the loop would exhaust and
+        # fall back here instead of short-circuiting — so the fallback firing is
+        # itself the regression signal.
+        fallback_mock = AsyncMock(side_effect=AssertionError("must short-circuit, not fall back"))
+        sleep_mock = AsyncMock()
+
+        with (
+            patch(
+                "cogs.ai_core.api.api_handler.convert_to_claude_messages",
+                return_value=[{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+            ),
+            patch("cogs.ai_core.api.api_handler.CIRCUIT_BREAKER_AVAILABLE", True),
+            patch("cogs.ai_core.api.api_handler.gemini_circuit", breaker),
+            patch("cogs.ai_core.api.api_handler.asyncio.sleep", new=sleep_mock),
+        ):
+            result = await call_claude_api_streaming(
+                client,
+                "claude-opus-4-7",
+                [{"role": "user", "parts": [{"text": "hello"}]}],
+                {"system_instruction": "Test", "max_tokens": 100},
+                send_channel,
+                fallback_func=fallback_mock,
+            )
+
+        # The breaker opens after the 5th failed attempt; attempt 6 short-circuits
+        # to the "pause/recover" message rather than hitting the endpoint again.
+        assert result[0] == "⚠️ ระบบ AI กำลังพักฟื้น กรุณาลองใหม่ในอีกสักครู่"
+        assert client.messages.stream.call_count == FakeBreaker.threshold
+        assert client.messages.stream.call_count < _CLAUDE_MAX_STREAM_RETRIES
+        fallback_mock.assert_not_awaited()

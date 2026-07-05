@@ -91,12 +91,7 @@ class BotSettings:
     default_volume: float = 0.5
     max_queue_size: int = 500
 
-    # AI Settings - optimized for Claude 200K context window
-    # NOTE: These are message storage limits, not token limits
-    # For token-based context limits, see cogs/ai_core/data/constants.py
-    ai_history_limit_default: int = 5000  # 5k messages for regular channels
-    ai_history_limit_main: int = 10000  # 10k for main server
-    ai_history_limit_rp: int = 20000  # 20k for roleplay (critical for continuity)
+    # AI Settings
     ai_session_timeout: int = 3600  # 1 hour
 
     # Paths — anchored to project root to avoid CWD dependency
@@ -147,11 +142,7 @@ class BotSettings:
 
     def __repr__(self) -> str:
         """Custom repr that redacts sensitive fields."""
-        return (
-            f"BotSettings(claude_model={self.claude_model!r}, "
-            f"data_dir={self.data_dir!r}, "
-            f"ai_history_limit_default={self.ai_history_limit_default})"
-        )
+        return f"BotSettings(claude_model={self.claude_model!r}, data_dir={self.data_dir!r})"
 
 
 class FeatureFlags:

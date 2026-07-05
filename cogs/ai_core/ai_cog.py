@@ -900,6 +900,23 @@ class AI(commands.Cog):
         if webhook_channel is None:
             return
 
+        # Restriction Logic. This is a pure-constant check (guild/channel IDs
+        # only) whose outcome is independent of webhook verification, so run it
+        # BEFORE the webhooks() REST call below: in a disallowed channel — or one
+        # where we lack Manage Webhooks — every proxied message would otherwise
+        # fire a fresh failing 403, and 403s count toward Discord's
+        # invalid-request ban threshold.
+        allowed = False
+        if (
+            (message.guild.id == GUILD_ID_RESTRICTED and message.channel.id == CHANNEL_ID_ALLOWED)
+            or message.guild.id == GUILD_ID_MAIN
+            or (message.guild.id == GUILD_ID_RP and message.channel.id == CHANNEL_ID_RP_COMMAND)
+        ):
+            allowed = True
+
+        if not allowed:
+            return
+
         # Check cache first to avoid rate-limited webhook API calls
         cached = self._webhook_verify_cache.get(webhook_id)
         if cached and cached[1] > time.time():
@@ -983,18 +1000,6 @@ class AI(commands.Cog):
                 )
 
         if not is_known_proxy:
-            return
-
-        # Restriction Logic
-        allowed = False
-        if (
-            (message.guild.id == GUILD_ID_RESTRICTED and message.channel.id == CHANNEL_ID_ALLOWED)
-            or message.guild.id == GUILD_ID_MAIN
-            or (message.guild.id == GUILD_ID_RP and message.channel.id == CHANNEL_ID_RP_COMMAND)
-        ):
-            allowed = True
-
-        if not allowed:
             return
 
         # Check prefix and command manually. Resolve via the bot's command

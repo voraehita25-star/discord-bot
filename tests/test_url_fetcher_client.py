@@ -378,6 +378,44 @@ class TestFetchFallbackGuards:
         assert "fetch_time_ms" in result
 
     @pytest.mark.asyncio
+    async def test_content_too_large_rejected_across_chunks(self, monkeypatch):
+        """A >5MB body delivered across many small reads is drained and rejected.
+
+        Regression: aiohttp's StreamReader.read(n) returns only what is currently
+        buffered (~one 64 KiB flow-control window), NOT n bytes. The old single
+        ``read(cap + 1)`` therefore saw just the first window — it neither reached
+        the cap (so the >5MB rejection was unreachable) nor read the rest (the page
+        was silently parsed truncated). The capped-read loop must keep reading past
+        the first window, exceed the cap, and reject. The existing test above hands
+        back the whole body in one read(); this one forces the chunked path.
+        """
+        from utils.web.url_fetcher_client import URLFetcherClient
+
+        monkeypatch.setattr("utils.web.url_fetcher._is_private_url", AsyncMock(return_value=False))
+
+        max_size = 5 * 1024 * 1024
+        window = b"x" * (64 * 1024)  # one ~64 KiB flow-control window per read
+        # A few more windows than the cap needs; the loop stops as soon as it
+        # overshoots, so it won't exhaust the list.
+        windows = [window] * (max_size // len(window) + 4)
+
+        client = URLFetcherClient()
+        resp = _make_cm_response(status=200, headers={"Content-Type": "text/html"})
+        resp.content = MagicMock()
+        resp.content.read = AsyncMock(side_effect=windows)
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=resp)
+        client._session = mock_session
+
+        result = await client._fetch_fallback("http://example.com")
+
+        assert "Content too large" in result["error"]
+        assert "fetch_time_ms" in result
+        # The old code read exactly once; the capped-read loop must read the body
+        # across multiple windows before it can detect the overflow.
+        assert resp.content.read.await_count > 1
+
+    @pytest.mark.asyncio
     async def test_html_parsing_extracts_title_and_content(self, monkeypatch):
         """A 200 text/html body has title/description/main content extracted."""
         from utils.web.url_fetcher_client import URLFetcherClient
@@ -392,7 +430,8 @@ class TestFetchFallbackGuards:
         client = URLFetcherClient()
         resp = _make_cm_response(status=200, headers={"Content-Type": "text/html"})
         resp.content = MagicMock()
-        resp.content.read = AsyncMock(return_value=html)
+        # Body on the first read, then b"" (EOF) — the capped-read loop drains to EOF.
+        resp.content.read = AsyncMock(side_effect=[html, b""])
         mock_session = MagicMock()
         mock_session.get = MagicMock(return_value=resp)
         client._session = mock_session
@@ -415,7 +454,8 @@ class TestFetchFallbackGuards:
         client = URLFetcherClient()
         resp = _make_cm_response(status=200, headers={"Content-Type": "application/json"})
         resp.content = MagicMock()
-        resp.content.read = AsyncMock(return_value=body)
+        # Body on the first read, then b"" (EOF) — the capped-read loop drains to EOF.
+        resp.content.read = AsyncMock(side_effect=[body, b""])
         mock_session = MagicMock()
         mock_session.get = MagicMock(return_value=resp)
         client._session = mock_session
@@ -444,7 +484,8 @@ class TestFetchFallbackGuards:
             status=200, headers={"Content-Type": "application/x-text/html-weird"}
         )
         resp.content = MagicMock()
-        resp.content.read = AsyncMock(return_value=body)
+        # Body on the first read, then b"" (EOF) — the capped-read loop drains to EOF.
+        resp.content.read = AsyncMock(side_effect=[body, b""])
         mock_session = MagicMock()
         mock_session.get = MagicMock(return_value=resp)
         client._session = mock_session
@@ -565,7 +606,7 @@ class TestFetchFallbackNoHelperSSRF:
         client = URLFetcherClient()
         resp = _make_cm_response(status=200, headers={"Content-Type": "text/plain"})
         resp.content = MagicMock()
-        resp.content.read = AsyncMock(return_value=b"public body")
+        resp.content.read = AsyncMock(side_effect=[b"public body", b""])  # body, then EOF
         mock_session = MagicMock()
         mock_session.get = MagicMock(return_value=resp)
         client._session = mock_session

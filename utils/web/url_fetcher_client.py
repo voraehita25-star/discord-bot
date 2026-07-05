@@ -349,11 +349,25 @@ class URLFetcherClient:
                     result["error"] = f"HTTP {resp.status}"
                 else:
                     # Limit response size to 5MB to prevent memory exhaustion.
-                    # Read one extra byte so an over-cap body is detected and
-                    # rejected rather than silently parsed as a truncated page
-                    # (matches url_fetcher.py's overflow contract).
+                    # aiohttp's StreamReader.read(n) returns only what's already
+                    # buffered (~one ~64 KiB flow-control window), NOT n bytes, so
+                    # a single read(cap + 1) silently truncated any larger body AND
+                    # made this over-cap rejection unreachable. Drain to cap+1 in a
+                    # loop (one extra byte distinguishes overflow from exactly-at-cap).
+                    # This mirrors url_fetcher.py's _read_capped but is inlined so
+                    # the aiohttp fallback path keeps working even when
+                    # utils.web.url_fetcher can't be imported (same reason the SSRF
+                    # helper import above has an inline fallback).
                     MAX_RESPONSE_SIZE = 5 * 1024 * 1024
-                    raw_bytes = await resp.content.read(MAX_RESPONSE_SIZE + 1)
+                    chunks: list[bytes] = []
+                    total = 0
+                    while total <= MAX_RESPONSE_SIZE:
+                        chunk = await resp.content.read(MAX_RESPONSE_SIZE + 1 - total)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        total += len(chunk)
+                    raw_bytes = b"".join(chunks)
                     if len(raw_bytes) > MAX_RESPONSE_SIZE:
                         result["error"] = f"[Content too large: >{MAX_RESPONSE_SIZE} bytes]"
                         result["fetch_time_ms"] = int((time.time() - start) * 1000)

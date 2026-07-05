@@ -133,13 +133,17 @@ def parse_voice_command(message: str) -> tuple[str | None, int | None]:
         "เข้ามาใน",
     ]
 
-    # Leave patterns
-    leave_patterns = ["ออกจาก vc", "leave vc", "leave voice", "ออกจากห้อง", "ออก vc", "disconnect"]
+    # Leave patterns. The Thai patterns and multi-word English phrases are
+    # matched as substrings; the bare English word "disconnect" is matched with
+    # word boundaries so a narrative mention ("the bot keeps disconnecting",
+    # "he disconnected") doesn't silently force-disconnect every voice client.
+    leave_patterns = ["ออกจาก vc", "leave vc", "leave voice", "ออกจากห้อง", "ออก vc"]
 
     # Check for leave
-    for pattern in leave_patterns:
-        if pattern in msg_lower:
-            return "leave", None
+    if any(pattern in msg_lower for pattern in leave_patterns) or re.search(
+        r"\bdisconnect\b", msg_lower
+    ):
+        return "leave", None
 
     # Check for join - extract channel ID
     for pattern in join_patterns:

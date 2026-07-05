@@ -791,7 +791,20 @@ class DashboardWebSocketServer:
 
         host_allowed = _is_safe_host(host)
 
-        if not origin_allowed and not host_allowed:
+        # When a browser opens a cross-origin WebSocket it ALWAYS sends an Origin
+        # header, and JS cannot forge it — so the Origin is authoritative for any
+        # browser client and must be on the allowlist. The Host header is not a
+        # substitute: for a direct connection to this local server the browser
+        # sends the real target authority (127.0.0.1:<port>), so Host is
+        # unconditionally "localhost" and OR-ing it in let any cross-origin page
+        # (e.g. https://evil.com hitting ws://127.0.0.1) pass. Only fall back to
+        # the Host check when there is no Origin at all (native/non-browser
+        # clients such as the Tauri shell or a CLI, which JS-based attackers
+        # cannot impersonate). The mandatory DASHBOARD_WS_TOKEN still backstops
+        # every sensitive action.
+        connection_allowed = origin_allowed if origin else host_allowed
+
+        if not connection_allowed:
             logger.warning(
                 "⚠️ Rejected WebSocket connection from origin: %s, host: %s", origin, host
             )

@@ -259,9 +259,7 @@ if _GAME_KW_ASCII_DIGIT:
         + "|".join(re.escape(k) for k in _GAME_KW_ASCII_DIGIT)
         + r")(?!\w|[:.,]\d)"
     )
-_GAME_KW_ASCII_RE = (
-    re.compile("|".join(_GAME_KW_PARTS), re.IGNORECASE) if _GAME_KW_PARTS else None
-)
+_GAME_KW_ASCII_RE = re.compile("|".join(_GAME_KW_PARTS), re.IGNORECASE) if _GAME_KW_PARTS else None
 
 
 def _is_game_search_query(text: str) -> bool:
@@ -973,6 +971,13 @@ class ChatManager(SessionMixin, ResponseMixin):
             if len(kept) != len(history):
                 session["history"] = kept
                 removed_in_memory = True
+                # Drop the length-keyed auto-compress cache (process_chat): a
+                # delete followed by a later insert that nets to the same length
+                # would otherwise leave the cache serving a stale compression that
+                # still contains this deleted message — defeating the
+                # delete-mirroring guarantee above. Mirrors edit_message_in_history
+                # / remove_history_content.
+                session.pop("_compress_cache", None)
 
         deleted_rows = await delete_message_by_id(channel_id, message_id)
         return removed_in_memory or deleted_rows > 0
@@ -1554,20 +1559,26 @@ class ChatManager(SessionMixin, ResponseMixin):
                         try:
                             # Extract entity names from message (look for {{Name}} patterns)
                             entity_names = re.findall(r"\{\{([^}]+)\}\}", display_message)
-                            # Also search for known character names in the message
+                            # Also search for known character names in the message.
                             if not entity_names:
-                                # Search entities mentioned in text.
-                                # 100-char slice is intentional: the entity search
-                                # index uses prefix matching, and longer queries
-                                # add latency without improving recall for the
-                                # short character names we're looking for.
-                                entities = await entity_memory.search_entities(
-                                    display_message[:100],
+                                # Find stored entities whose NAME appears in the
+                                # message. search_entities does the opposite —
+                                # it matches rows whose name/facts CONTAIN the
+                                # query as a substring, so passing the whole
+                                # message inverted the direction and never
+                                # matched a normal multi-word message. Instead
+                                # pull the channel's known entities (most-used
+                                # first) and keep those actually mentioned.
+                                lowered_message = display_message.lower()
+                                known_entities = await entity_memory.get_all_entities(
                                     channel_id=channel_id,
                                     guild_id=guild_id,
-                                    limit=ENTITY_TOP_K,
                                 )
-                                entity_names = [e.name for e in entities]
+                                entity_names = [
+                                    e.name
+                                    for e in known_entities
+                                    if e.name and e.name.lower() in lowered_message
+                                ][:ENTITY_TOP_K]
 
                             if entity_names:
                                 entity_context = await entity_memory.get_entities_for_prompt(
@@ -1596,8 +1607,15 @@ class ChatManager(SessionMixin, ResponseMixin):
                         memory_context += rag_context
 
                     # Build prompt with context
-                    # For DM (guild_id is None), add voice status and chat history access
-                    if guild_id is None:
+                    # For DM (guild_id is None), add voice status and chat history
+                    # access — but ONLY for the creator. This enrichment exposes
+                    # cross-guild metadata (every guild/channel name + id + message
+                    # counts via the history index, and live voice occupancy across
+                    # all guilds via voice status). A non-owner can reach process_chat
+                    # in a DM through the ungated !chat / !ask command path, so gate
+                    # the whole block on is_creator; everyone else gets a plain reply
+                    # with no cross-guild disclosure.
+                    if guild_id is None and is_creator:
                         voice_status = self._get_voice_status()
 
                         # Check if user is requesting specific channel history

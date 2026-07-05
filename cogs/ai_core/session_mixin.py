@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -28,6 +29,21 @@ from .storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Stable sentinel markers wrapping the injected UNRESTRICTED-mode override.
+# Injection/removal keys on these markers, NOT on the resolved override text:
+# resolve_unrestricted_system_text() re-reads CLAUDE2.md per call, so if the file
+# is edited live between inject (text A) and a later resolution (text B), keying
+# on the current text would fail to see the existing block — double-injecting on
+# enable and, on disable, stripping only B while leaving stale A wedged in the
+# system prompt forever. The markers let us detect / replace / remove the whole
+# block regardless of what text it currently holds.
+_UNRESTRICTED_BEGIN = "<<<UNRESTRICTED_OVERRIDE_BEGIN>>>"
+_UNRESTRICTED_END = "<<<UNRESTRICTED_OVERRIDE_END>>>"
+_UNRESTRICTED_BLOCK_RE = re.compile(
+    re.escape(_UNRESTRICTED_BEGIN) + ".*?" + re.escape(_UNRESTRICTED_END) + r"\n*",
+    re.DOTALL,
+)
 
 if TYPE_CHECKING:
     from discord.ext.commands import Bot
@@ -242,18 +258,29 @@ class SessionMixin:
 
             unrestricted_text = resolve_unrestricted_system_text()
             current_instruction = self.chats[channel_id].get("system_instruction", "")
-            already_injected = bool(unrestricted_text and unrestricted_text in current_instruction)
+            # Detect a prior injection by its sentinel markers, not by the current
+            # resolved text — CLAUDE2.md may have been edited since it was injected.
+            already_injected = _UNRESTRICTED_BEGIN in current_instruction
             if is_unrestricted(channel_id):
-                if not already_injected and unrestricted_text:
-                    logger.info("🔓 Injecting UNRESTRICTED MODE for channel %s", channel_id)
-                    self.chats[channel_id]["system_instruction"] = (
-                        unrestricted_text + current_instruction
-                    )
-            # Remove unrestricted instruction if it was previously injected
+                if unrestricted_text:
+                    block = f"{_UNRESTRICTED_BEGIN}\n{unrestricted_text}\n{_UNRESTRICTED_END}\n"
+                    if already_injected:
+                        # Refresh in place so a live CLAUDE2.md edit replaces the
+                        # existing block instead of stacking a second copy. Use a
+                        # replacement function so backslashes / \g<..> in the
+                        # override text aren't reinterpreted by re.sub.
+                        self.chats[channel_id]["system_instruction"] = _UNRESTRICTED_BLOCK_RE.sub(
+                            lambda _m: block, current_instruction, count=1
+                        )
+                    else:
+                        logger.info("🔓 Injecting UNRESTRICTED MODE for channel %s", channel_id)
+                        self.chats[channel_id]["system_instruction"] = block + current_instruction
+            # Remove unrestricted instruction if it was previously injected. Strip
+            # the whole marked block so a stale (pre-edit) override can't linger.
             elif already_injected:
                 logger.info("🔒 Removing UNRESTRICTED MODE for channel %s", channel_id)
-                self.chats[channel_id]["system_instruction"] = current_instruction.replace(
-                    unrestricted_text, ""
+                self.chats[channel_id]["system_instruction"] = _UNRESTRICTED_BLOCK_RE.sub(
+                    "", current_instruction, count=1
                 )
 
         # Update Last Accessed Time
