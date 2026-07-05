@@ -740,32 +740,9 @@ class Database:
                 "BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END"
             )
 
-            # AI Analytics Table
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS ai_analytics (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    channel_id INTEGER NOT NULL,
-                    guild_id INTEGER,
-                    input_length INTEGER,
-                    output_length INTEGER,
-                    response_time_ms REAL,
-                    intent TEXT,
-                    model TEXT DEFAULT 'claude-opus-4-8',
-                    tool_calls INTEGER DEFAULT 0,
-                    cache_hit BOOLEAN DEFAULT 0,
-                    error TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_ai_analytics_user
-                ON ai_analytics(user_id, created_at DESC)
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_ai_analytics_guild
-                ON ai_analytics(guild_id, created_at DESC)
-            """)
+            # (The ai_analytics table was removed — the analytics subsystem that
+            # wrote it was dead-wired and deleted. Existing DBs drop the table
+            # via migration 017; fresh DBs never create it.)
 
             # Token Usage Tracking Table (Phase 1 Enhancement)
             await conn.execute("""

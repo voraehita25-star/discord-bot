@@ -1,69 +1,11 @@
--- Migration 011: Fix ai_analytics.model default to Claude while preserving
--- historical per-row model values.
-
--- Idempotent re-apply guard: a crash between INSERT and RENAME below
--- would otherwise leave ai_analytics_new orphaned on disk and the rerun
--- would fail with "table already exists". Migrations 003/007/010 added
--- this guard; 011 was missed.
-DROP TABLE IF EXISTS ai_analytics_new;
-CREATE TABLE ai_analytics_new (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    channel_id INTEGER NOT NULL,
-    guild_id INTEGER,
-    input_length INTEGER,
-    output_length INTEGER,
-    response_time_ms REAL,
-    intent TEXT,
-    model TEXT DEFAULT 'claude-opus-4-6',
-    tool_calls INTEGER DEFAULT 0,
-    cache_hit BOOLEAN DEFAULT 0,
-    error TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-INSERT INTO ai_analytics_new (
-    id,
-    user_id,
-    channel_id,
-    guild_id,
-    input_length,
-    output_length,
-    response_time_ms,
-    intent,
-    model,
-    tool_calls,
-    cache_hit,
-    error,
-    created_at
-)
-SELECT
-    id,
-    user_id,
-    channel_id,
-    guild_id,
-    input_length,
-    output_length,
-    response_time_ms,
-    intent,
-    COALESCE(NULLIF(model, ''), 'claude-opus-4-6'),
-    tool_calls,
-    cache_hit,
-    error,
-    created_at
-FROM ai_analytics;
-
-DROP TABLE IF EXISTS ai_analytics;
-
-ALTER TABLE ai_analytics_new RENAME TO ai_analytics;
-
-CREATE INDEX IF NOT EXISTS idx_ai_analytics_user
-    ON ai_analytics(user_id, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_ai_analytics_guild
-    ON ai_analytics(guild_id, created_at DESC);
-
--- Channel-scoped analytics (per-conversation drilldown) hit this table
--- often; without this index the lookup degrades to a full scan.
-CREATE INDEX IF NOT EXISTS idx_ai_analytics_channel
-    ON ai_analytics(channel_id, created_at DESC);
+-- Migration 011: (retired) previously rebuilt ai_analytics to fix its model
+-- default while preserving historical per-row values.
+--
+-- The ai_analytics table and its analytics subsystem were removed (the
+-- subsystem was dead-wired and never recorded anything in production). On a
+-- FRESH database ai_analytics is no longer created by schema init, so this
+-- migration's old CREATE / INSERT-SELECT FROM ai_analytics / RENAME body would
+-- fail with "no such table". It is now a no-op; migration 017 drops the table
+-- on any EXISTING database that still has it. Kept as a numbered no-op so the
+-- version sequence and already-applied schema_version rows stay intact.
+SELECT 1;

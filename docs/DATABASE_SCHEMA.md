@@ -311,25 +311,11 @@ Index: `idx_music_queue_guild(guild_id, position)`
 
 ### Analytics & Monitoring
 
-#### ai_analytics
-
-| Column           | Type     | Constraints               |
-| ---------------- | -------- | ------------------------- |
-| id               | INTEGER  | PRIMARY KEY AUTOINCREMENT |
-| user_id          | INTEGER  | NOT NULL                  |
-| channel_id       | INTEGER  | NOT NULL                  |
-| guild_id         | INTEGER  |                           |
-| input_length     | INTEGER  |                           |
-| output_length    | INTEGER  |                           |
-| response_time_ms | REAL     |                           |
-| intent           | TEXT     |                           |
-| model            | TEXT     | DEFAULT 'claude-opus-4-8' (was `'gemini'`, bumped via migrations 012 → 016) |
-| tool_calls       | INTEGER  | DEFAULT 0                 |
-| cache_hit        | BOOLEAN  | DEFAULT 0                 |
-| error            | TEXT     |                           |
-| created_at       | DATETIME | DEFAULT CURRENT_TIMESTAMP |
-
-Indexes: `idx_ai_analytics_user(user_id, created_at DESC)`, `idx_ai_analytics_guild(guild_id, created_at DESC)`, `idx_ai_analytics_channel(channel_id, created_at DESC)`
+> The `ai_analytics` table was **removed** (migration 017). Its analytics
+> subsystem was dead-wired — no production code path ever recorded a row — so
+> the table and its module were deleted. Existing databases drop it on the next
+> startup via migration 017; fresh databases never create it. Token accounting
+> lives in `token_usage` (below).
 
 #### token_usage
 

@@ -15,7 +15,6 @@ KNOWN_TABLES: frozenset[str] = frozenset(
         "ai_long_term_memory",
         "knowledge_entries",
         "audit_log",
-        "ai_analytics",
         "token_usage",
         "dashboard_conversations",
         "dashboard_messages",
