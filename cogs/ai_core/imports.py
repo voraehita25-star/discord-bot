@@ -124,20 +124,6 @@ except ImportError:
 # 3. Cache & Memory
 # ==========================================
 try:
-    from .cache.analytics import get_ai_stats, log_ai_interaction
-
-    ANALYTICS_AVAILABLE = True
-except ImportError:
-    ANALYTICS_AVAILABLE = False
-
-try:
-    from .cache.ai_cache import ai_cache
-
-    CACHE_AVAILABLE = True
-except ImportError:
-    CACHE_AVAILABLE = False
-
-try:
     from .memory.history_manager import history_manager
 
     HISTORY_MANAGER_AVAILABLE = True

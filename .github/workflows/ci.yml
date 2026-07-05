@@ -199,7 +199,6 @@ jobs:
         import utils.database
         import utils.monitoring.logger
         import cogs.ai_core.storage
-        import cogs.ai_core.cache.ai_cache
         import cogs.ai_core.imports
         import cogs.ai_core.api.api_handler
         print('All core module imports OK')
@@ -526,7 +525,6 @@ jobs:
         import time
         modules = [
             'cogs.ai_core.storage',
-            'cogs.ai_core.cache.ai_cache',
             'cogs.ai_core.imports',
             'utils.database',
             'utils.monitoring.metrics',

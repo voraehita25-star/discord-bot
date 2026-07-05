@@ -4,7 +4,7 @@ Core AI functionality for the Discord Bot.
 
 Reorganized into subdirectories (v3.3.7):
 - api/       - Claude API handlers
-- cache/     - Caching and analytics
+- cache/     - Token usage tracking
 - commands/  - Debug, memory, server commands
 - core/      - Performance, message queue
 - data/      - Constants and configuration
@@ -21,8 +21,6 @@ from .ai_cog import AI
 from .api import build_api_config, call_claude_api
 
 # Backward compatibility re-exports from new locations
-from .cache.ai_cache import AICache, ai_cache
-from .cache.analytics import AIAnalytics, ai_analytics
 from .commands import DebugCommands, MemoryCommands, ServerCommands
 from .core import PERFORMANCE_SAMPLES_MAX
 
@@ -65,8 +63,6 @@ __all__ = [
     "PERFORMANCE_SAMPLES_MAX",
     "ROLEPLAY_ASSISTANT_INSTRUCTION",
     "SERVER_AVATARS",
-    "AIAnalytics",
-    "AICache",
     # Modular components
     "DebugCommands",
     "HistoryManager",
@@ -77,8 +73,6 @@ __all__ = [
     "RequestDeduplicator",
     "ResponseMixin",
     "ServerCommands",
-    "ai_analytics",
-    "ai_cache",
     # New subdirectory exports
     "build_api_config",
     "call_claude_api",

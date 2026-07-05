@@ -228,37 +228,6 @@ class TestFeedbackCollection:
         assert hasattr(stats, "total_feedback")
 
 
-class TestCacheIntegration:
-    """Tests for AI cache integration."""
-
-    @pytest.mark.asyncio
-    async def test_cache_operations(self):
-        """Test cache get/set operations."""
-        from cogs.ai_core.cache.ai_cache import ai_cache
-
-        test_message = "Hello, how are you?"
-        test_response = "This is a cached response that is long enough to cache"
-
-        # Set cache (uses message, response, context_hash, intent)
-        ai_cache.set(test_message, test_response, context_hash="test123")
-
-        # Get cache (uses message, context_hash)
-        cached = ai_cache.get(test_message, context_hash="test123")
-
-        # Should match
-        assert cached == test_response
-
-    @pytest.mark.asyncio
-    async def test_cache_stats(self):
-        """Test cache statistics."""
-        from cogs.ai_core.cache.ai_cache import ai_cache
-
-        stats = ai_cache.get_stats()
-
-        assert hasattr(stats, "total_entries")
-        assert hasattr(stats, "hit_rate")
-
-
 class TestTypingOrNoop:
     """Tests for the fail-safe typing helper ``_typing_or_noop``.
 

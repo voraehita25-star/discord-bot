@@ -771,7 +771,6 @@ class TestCogLoadRegion:
         cog = _make_cog_r1()
         cog.cleanup_task = None
         cog._pending_request_cleanup_task = None
-        cog._cache_cleanup_task = None
 
         archiver = MagicMock()
         archiver.init_schema = AsyncMock()
@@ -797,7 +796,6 @@ class TestCogLoadRegion:
         cog = _make_cog_r1()
         cog.cleanup_task = None
         cog._pending_request_cleanup_task = None
-        cog._cache_cleanup_task = None
 
         archiver = MagicMock()
         archiver.init_schema = AsyncMock(side_effect=RuntimeError("schema fail"))
@@ -819,19 +817,15 @@ class TestCogLoadRegion:
         assert log.exception.called
 
     @pytest.mark.asyncio
-    async def test_cog_load_cache_and_tokentracker_importerror(self):
+    async def test_cog_load_tokentracker_importerror(self):
         cog = _make_cog_r1()
         cog.cleanup_task = None
         cog._pending_request_cleanup_task = None
-        cog._cache_cleanup_task = None
 
         real_import = __import__
 
         def _blocking_import(name, *args, **kwargs):
-            if name in (
-                "cogs.ai_core.cache.ai_cache",
-                "cogs.ai_core.cache.token_tracker",
-            ):
+            if name == "cogs.ai_core.cache.token_tracker":
                 raise ImportError(f"blocked {name}")
             return real_import(name, *args, **kwargs)
 
@@ -842,10 +836,10 @@ class TestCogLoadRegion:
             patch.dict("os.environ", {"MEMORY_CONSOLIDATOR_AUTOSTART": ""}, clear=False),
             patch("builtins.__import__", side_effect=_blocking_import),
         ):
-            # ImportError on both optional caches must be swallowed (pass).
+            # ImportError on the optional token_tracker must be swallowed (pass).
             await cog.cog_load()
-        # cog_load completed without raising despite ImportErrors
-        assert cog._cache_cleanup_task is None
+        # cog_load completed without raising despite the ImportError
+        assert cog._pending_request_cleanup_task is not None
 
 
 # ----------------------------------------------------------------------
@@ -860,7 +854,6 @@ class TestCogUnloadRegion:
 
         cog.cleanup_task = _FakeTask(done=False)
         cog._pending_request_cleanup_task = _FakeTask(done=False)
-        cog._cache_cleanup_task = _FakeTask(done=False)
         bg = _FakeTask(done=False)
         cog._bg_tasks = {bg}
 
@@ -878,7 +871,6 @@ class TestCogUnloadRegion:
 
         cog.cleanup_task.cancel.assert_called_once()
         cog._pending_request_cleanup_task.cancel.assert_called_once()
-        cog._cache_cleanup_task.cancel.assert_called_once()
         bg.cancel.assert_called_once()
         cog.chat_manager.save_all_sessions.assert_awaited_once()
         rag.stop_periodic_save.assert_awaited_once()
@@ -888,16 +880,14 @@ class TestCogUnloadRegion:
         cog = _make_cog_r1()
         cog.cleanup_task = None
         cog._pending_request_cleanup_task = None
-        cog._cache_cleanup_task = None
         cog._bg_tasks = set()
 
         rag = MagicMock()
         rag.stop_periodic_save = AsyncMock()
         rag.force_save_index = AsyncMock()
 
-        # token_tracker.stop raises (286-287); consolidator stop raises
-        # (299-300); flush_l2_pending raises (312-314); db flush raises
-        # (322-323). All four must be swallowed/logged, not propagated.
+        # token_tracker.stop raises; consolidator stop raises; db flush raises.
+        # All three must be swallowed/logged, not propagated.
         tt = MagicMock()
         tt.stop_cleanup_task = AsyncMock(side_effect=RuntimeError("tt boom"))
         tt_mod = MagicMock(token_tracker=tt)
@@ -905,9 +895,6 @@ class TestCogUnloadRegion:
         archiver = MagicMock()
         archiver.stop_background_task = AsyncMock(side_effect=RuntimeError("arch boom"))
         consol_mod = MagicMock(summary_archiver=archiver)
-
-        cache_mod = MagicMock()
-        cache_mod.flush_l2_pending = AsyncMock(side_effect=RuntimeError("flush boom"))
 
         fake_db = MagicMock()
         fake_db.flush_pending_exports = AsyncMock(side_effect=RuntimeError("db boom"))
@@ -922,7 +909,6 @@ class TestCogUnloadRegion:
                 {
                     "cogs.ai_core.cache.token_tracker": tt_mod,
                     "cogs.ai_core.memory.memory_consolidator": consol_mod,
-                    "cogs.ai_core.cache.ai_cache": cache_mod,
                     "utils.database": db_mod,
                 },
             ),
@@ -932,43 +918,6 @@ class TestCogUnloadRegion:
             await cog.cog_unload()
 
         cog.chat_manager.save_all_sessions.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_cog_unload_flush_l2_reports_count(self):
-        cog = _make_cog_r1()
-        cog.cleanup_task = None
-        cog._pending_request_cleanup_task = None
-        cog._cache_cleanup_task = None
-        cog._bg_tasks = set()
-
-        rag = MagicMock()
-        rag.stop_periodic_save = AsyncMock()
-        rag.force_save_index = AsyncMock()
-
-        cache_mod = MagicMock()
-        cache_mod.flush_l2_pending = AsyncMock(return_value=3)  # >0 → log info
-
-        fake_db = MagicMock()
-        fake_db.flush_pending_exports = AsyncMock()
-        db_mod = MagicMock(db=fake_db)
-
-        with (
-            patch("cogs.ai_core.ai_cog.rag_system", rag),
-            patch("cogs.ai_core.ai_cog.stop_webhook_cache_cleanup", new=AsyncMock()),
-            patch("cogs.ai_core.ai_cog.rate_limiter") as rl,
-            patch.dict(
-                "sys.modules",
-                {
-                    "cogs.ai_core.cache.ai_cache": cache_mod,
-                    "utils.database": db_mod,
-                },
-            ),
-        ):
-            rl.stop_cleanup_task = AsyncMock()
-            await cog.cog_unload()
-
-        cache_mod.flush_l2_pending.assert_awaited_once()
-        fake_db.flush_pending_exports.assert_awaited_once()
 
 
 # ----------------------------------------------------------------------

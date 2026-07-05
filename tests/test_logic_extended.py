@@ -421,12 +421,6 @@ class TestFeatureAvailability:
 
         assert isinstance(GUARDRAILS_AVAILABLE, bool)
 
-    def test_cache_availability_flag(self):
-        """Test CACHE_AVAILABLE is defined."""
-        from cogs.ai_core.logic import CACHE_AVAILABLE
-
-        assert isinstance(CACHE_AVAILABLE, bool)
-
     def test_circuit_breaker_availability_flag(self):
         """Test CIRCUIT_BREAKER_AVAILABLE is defined."""
         from cogs.ai_core.logic import CIRCUIT_BREAKER_AVAILABLE

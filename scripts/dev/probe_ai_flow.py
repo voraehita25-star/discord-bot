@@ -271,28 +271,6 @@ def probe_webhook_cache_ttl() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 9. cache.ai_cache: get / set / TTL
-# ---------------------------------------------------------------------------
-async def probe_ai_cache() -> None:
-    print("\n[ai_cache] basic get/set behavior")
-    try:
-        from cogs.ai_core.cache.ai_cache import ai_cache
-    except ImportError as e:
-        print(f"  [SKIP] {e}")
-        return
-
-    msg = "what time is it?"
-    resp = "it is 12:00"
-    ai_cache.set(msg, resp, context_hash=None, intent="time_query")
-    got = ai_cache.get(msg, context_hash=None, intent="time_query")
-    check("set then get returns the cached response", got == resp, f"got: {got!r}")
-
-    # Same message different intent should miss
-    miss = ai_cache.get(msg, context_hash=None, intent="weather_query")
-    check("different intent yields cache miss", miss is None, f"got: {miss!r}")
-
-
-# ---------------------------------------------------------------------------
 # 10. tool_executor: DM context permission denial
 # ---------------------------------------------------------------------------
 async def probe_tool_executor_dm() -> None:
@@ -336,7 +314,6 @@ async def main_async() -> None:
     await probe_ai_logic_flow()
     await probe_rag_roundtrip()
     probe_webhook_cache_ttl()
-    await probe_ai_cache()
     await probe_tool_executor_dm()
 
 

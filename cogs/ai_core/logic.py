@@ -110,12 +110,11 @@ from .data.constants import (
 )
 from .emoji import convert_discord_emojis, extract_discord_emojis, fetch_emoji_images
 
-# Centralized optional dependencies. CACHE_AVAILABLE / FALLBACK_AVAILABLE /
+# Centralized optional dependencies. FALLBACK_AVAILABLE /
 # TOKEN_TRACKER_AVAILABLE aren't referenced locally but are part of this
 # module's public surface (tests import them via
 # ``from cogs.ai_core.logic import X``).
 from .imports import (  # noqa: F401 - public re-exports
-    CACHE_AVAILABLE,
     CIRCUIT_BREAKER_AVAILABLE,
     FALLBACK_AVAILABLE,
     FEEDBACK_AVAILABLE,

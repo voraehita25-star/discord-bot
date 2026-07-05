@@ -112,7 +112,6 @@ class AI(commands.Cog):
         self.chat_manager: ChatManager = ChatManager(bot)
         self.cleanup_task: asyncio.Task | None = None
         self._pending_request_cleanup_task: asyncio.Task | None = None
-        self._cache_cleanup_task: asyncio.Task | None = None
         # Strong references for fire-and-forget background bookkeeping tasks
         # (token tracker init, etc.) so they aren't GC'd before completion.
         # Initialised here so the attribute is always present without the
@@ -190,7 +189,7 @@ class AI(commands.Cog):
     async def cog_load(self) -> None:
         """Called when the cog is loaded - safe place for async initialization."""
         # Cancel any leftover tasks from a previous load (e.g. hot-reload via !reload)
-        for task_attr in ("cleanup_task", "_pending_request_cleanup_task", "_cache_cleanup_task"):
+        for task_attr in ("cleanup_task", "_pending_request_cleanup_task"):
             old = getattr(self, task_attr, None)
             if old is not None and not old.done():
                 old.cancel()
@@ -245,15 +244,6 @@ class AI(commands.Cog):
         )
         self._pending_request_cleanup_task.add_done_callback(self._on_bg_task_done)
 
-        # Start AI cache background cleanup (every hour)
-        try:
-            from cogs.ai_core.cache.ai_cache import ai_cache
-
-            self._cache_cleanup_task = asyncio.create_task(ai_cache.start_cleanup_loop())
-            self._cache_cleanup_task.add_done_callback(self._on_bg_task_done)
-        except ImportError:
-            pass
-
         # Pre-populate token tracker quota cache from DB. Without this, hourly
         # / daily limits reset to "fully available" on every restart even if
         # the user just spent their quota seconds before the bot bounced.
@@ -304,12 +294,6 @@ class AI(commands.Cog):
             self._pending_request_cleanup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._pending_request_cleanup_task
-
-        # Cancel cache cleanup task
-        if self._cache_cleanup_task:
-            self._cache_cleanup_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._cache_cleanup_task
 
         # Cancel any background bookkeeping tasks tracked in _bg_tasks
         # (e.g. token_tracker.init_from_db). They're best-effort, so
@@ -380,17 +364,6 @@ class AI(commands.Cog):
             await self.chat_manager.save_all_sessions()
         except Exception:
             logger.exception("save_all_sessions failed during cog_unload")
-
-        # Flush pending L2 SQLite cache writes so anything queued via
-        # _post_set_hook actually lands on disk before the loop closes.
-        try:
-            from .cache.ai_cache import flush_l2_pending
-
-            flushed = await flush_l2_pending(timeout=5.0)
-            if flushed:
-                logger.info("💾 Flushed %d pending L2 cache writes", flushed)
-        except Exception as e:
-            logger.warning("Failed to flush L2 cache: %s", e)
 
         # Flush pending database exports to prevent "Task was destroyed" warning
         try:
@@ -1824,7 +1797,6 @@ class AI(commands.Cog):
 
         Displays:
         - Performance metrics
-        - Cache statistics
         - Memory usage
         - Active sessions
         """
@@ -1840,20 +1812,6 @@ class AI(commands.Cog):
             value=f"```\nActive: {active_sessions}\nMessages: {total_history:,}```",
             inline=True,
         )
-
-        # 2. Cache Stats
-        try:
-            from cogs.ai_core.cache.ai_cache import ai_cache
-
-            stats = ai_cache.get_stats()
-            cache_info = (
-                f"Entries: {stats.total_entries}\n"
-                f"Hit Rate: {stats.hit_rate:.1%}\n"
-                f"Memory: {stats.memory_estimate_kb:.0f}KB"
-            )
-        except ImportError:
-            cache_info = "N/A"
-        embed.add_field(name="💾 Cache", value=f"```\n{cache_info}```", inline=True)
 
         # 3. RAG Stats
         try:

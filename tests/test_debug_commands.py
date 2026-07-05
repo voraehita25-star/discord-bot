@@ -37,15 +37,6 @@ class TestAIDebugCog:
 
         assert hasattr(cog, "ai_perf")
 
-    def test_cog_has_ai_cache_clear_command(self):
-        """Test cog has ai_cache_clear command."""
-        from cogs.ai_core.commands.debug_commands import AIDebug
-
-        mock_bot = MagicMock(spec=commands.Bot)
-        cog = AIDebug(mock_bot)
-
-        assert hasattr(cog, "ai_cache_clear")
-
 
 class TestGetChatManager:
     """Tests for _get_chat_manager method."""
@@ -206,32 +197,6 @@ class TestAIPerfCommand:
         mock_ctx.send.assert_called_once()
 
 
-class TestAICacheClearCommand:
-    """Tests for ai_cache_clear command."""
-
-    @pytest.mark.asyncio
-    async def test_ai_cache_clear_success(self):
-        """Test ai_cache_clear success."""
-        from cogs.ai_core.commands.debug_commands import AIDebug
-
-        mock_bot = MagicMock(spec=commands.Bot)
-        cog = AIDebug(mock_bot)
-
-        mock_ctx = MagicMock()
-        mock_ctx.send = AsyncMock()
-
-        mock_cache = MagicMock()
-        mock_cache.invalidate.return_value = 5
-
-        with patch.dict(
-            "sys.modules", {"cogs.ai_core.cache.ai_cache": MagicMock(ai_cache=mock_cache)}
-        ):
-            with patch("cogs.ai_core.cache.ai_cache.ai_cache", mock_cache, create=True):
-                await cog.ai_cache_clear.callback(cog, mock_ctx)
-
-        mock_ctx.send.assert_called()
-
-
 class TestCommandAttributes:
     """Tests for command attributes."""
 
@@ -252,15 +217,6 @@ class TestCommandAttributes:
         cog = AIDebug(mock_bot)
 
         assert cog.ai_perf.name == "ai_perf"
-
-    def test_ai_cache_clear_command_name(self):
-        """Test ai_cache_clear command has correct name."""
-        from cogs.ai_core.commands.debug_commands import AIDebug
-
-        mock_bot = MagicMock(spec=commands.Bot)
-        cog = AIDebug(mock_bot)
-
-        assert cog.ai_cache_clear.name == "ai_cache_clear"
 
 
 class TestSetupFunction:
@@ -331,9 +287,7 @@ class TestAIDebugCog:
         # Check for expected command methods
         assert hasattr(cog, "ai_debug")
         assert hasattr(cog, "ai_perf")
-        assert hasattr(cog, "ai_cache_clear")
         assert hasattr(cog, "ai_trace")
-        assert hasattr(cog, "ai_stats_cmd")
         assert hasattr(cog, "ai_tokens_cmd")
 
 
@@ -503,59 +457,6 @@ class TestAIPerfCommand:
         assert "150.5ms" in call_args
 
 
-class TestAICacheClearCommand:
-    """Tests for ai_cache_clear command."""
-
-    async def test_ai_cache_clear_success(self):
-        """Test ai_cache_clear command success."""
-        try:
-            from cogs.ai_core.commands.debug_commands import AIDebug
-        except ImportError:
-            pytest.skip("debug_commands not available")
-            return
-
-        mock_bot = MagicMock(spec=commands.Bot)
-        cog = AIDebug(mock_bot)
-
-        mock_ctx = MagicMock()
-        mock_ctx.send = AsyncMock()
-
-        mock_cache = MagicMock()
-        mock_cache.invalidate.return_value = 5
-
-        with patch.dict(
-            "sys.modules", {"cogs.ai_core.cache.ai_cache": MagicMock(ai_cache=mock_cache)}
-        ):
-            with patch("cogs.ai_core.commands.debug_commands.ai_cache", mock_cache, create=True):
-                # Import and re-mock within context
-                pass
-
-        # Test import error path
-        with patch.object(cog, "ai_cache_clear") as mock_cmd:
-            mock_cmd.callback = AsyncMock()
-
-    async def test_ai_cache_clear_import_error(self):
-        """Test ai_cache_clear handles ImportError."""
-        try:
-            from cogs.ai_core.commands.debug_commands import AIDebug
-        except ImportError:
-            pytest.skip("debug_commands not available")
-            return
-
-        mock_bot = MagicMock(spec=commands.Bot)
-        AIDebug(mock_bot)
-
-        mock_ctx = MagicMock()
-        mock_ctx.send = AsyncMock()
-
-        # Simulate ImportError by having get_cog work but cache import fail
-
-        # Call with mocked import to raise ImportError
-        with patch("builtins.__import__", side_effect=ImportError):
-            # The command itself handles the import internally
-            pass
-
-
 class TestAITraceCommand:
     """Tests for ai_trace command."""
 
@@ -642,26 +543,6 @@ class TestAITraceCommand:
         mock_ctx.send.assert_called_once()
 
 
-class TestAIStatsCommand:
-    """Tests for ai_stats_cmd command."""
-
-    async def test_ai_stats_import_error(self):
-        """Test ai_stats_cmd handles ImportError."""
-        try:
-            from cogs.ai_core.commands.debug_commands import AIDebug
-        except ImportError:
-            pytest.skip("debug_commands not available")
-            return
-
-        mock_bot = MagicMock(spec=commands.Bot)
-        AIDebug(mock_bot)
-
-        mock_ctx = MagicMock()
-        mock_ctx.send = AsyncMock()
-
-        # Test will call the command and it handles import error internally
-
-
 class TestAITokensCommand:
     """Tests for ai_tokens_cmd command."""
 
@@ -743,7 +624,6 @@ class TestCommandDecorators:
         # Check command names
         assert cog.ai_debug.name == "ai_debug"
         assert cog.ai_perf.name == "ai_perf"
-        assert cog.ai_cache_clear.name == "ai_cache_clear"
         assert cog.ai_trace.name == "ai_trace"
 
 
@@ -818,8 +698,8 @@ class TestEdgeCases:
 
 # ======================================================================
 # Coverage-completion tests (append-only): drives the import-error and
-# error branches, the active-session debug panels, and the ai_stats /
-# ai_tokens command bodies that the earlier tests don't reach.
+# error branches, the active-session debug panels, and the ai_tokens
+# command body that the earlier tests don't reach.
 # ======================================================================
 
 
@@ -871,38 +751,6 @@ class TestAIDebugBranches:
         sent_embed = ctx.send.call_args.kwargs["embed"]
         session_field = next(f for f in sent_embed.fields if f.name == "📝 Session")
         assert "150" in session_field.value
-
-    async def test_cache_stats_import_error(self):
-        """90-91: ai_cache import fails -> 'Cache not available'."""
-        cog = _make_cog()
-        ctx = _make_ctx()
-        cog._get_chat_manager = MagicMock(return_value=None)
-
-        with patch.dict(sys.modules, {"cogs.ai_core.cache.ai_cache": None}):
-            await cog.ai_debug.callback(cog, ctx)
-
-        sent_embed = ctx.send.call_args.kwargs["embed"]
-        cache_field = next(f for f in sent_embed.fields if f.name == "💾 Cache")
-        assert "Cache not available" in cache_field.value
-
-    async def test_cache_stats_attribute_error_degrades(self):
-        """92-96: CacheStats schema drift -> 'Cache stats unavailable'."""
-        cog = _make_cog()
-        ctx = _make_ctx()
-        cog._get_chat_manager = MagicMock(return_value=None)
-
-        # get_stats returns an object missing fields -> AttributeError when
-        # the f-string reads stats.total_entries.
-        bad_stats = object()
-        fake_cache_mod = MagicMock()
-        fake_cache_mod.ai_cache.get_stats.return_value = bad_stats
-
-        with patch.dict(sys.modules, {"cogs.ai_core.cache.ai_cache": fake_cache_mod}):
-            await cog.ai_debug.callback(cog, ctx)
-
-        sent_embed = ctx.send.call_args.kwargs["embed"]
-        cache_field = next(f for f in sent_embed.fields if f.name == "💾 Cache")
-        assert "Cache stats unavailable" in cache_field.value
 
     async def test_rag_import_error(self):
         """115-116: rag_system import fails -> 'RAG not available'."""
@@ -992,117 +840,6 @@ class TestAIDebugBranches:
         ctx.send.assert_called_once()
         sent_embed = ctx.send.call_args.kwargs["embed"]
         assert all(f.name != "👤 Entity Memory" for f in sent_embed.fields)
-
-
-class TestAICacheClearBranches:
-    """ai_cache_clear success + ImportError branches (212-218)."""
-
-    async def test_cache_clear_success(self):
-        """215-216: invalidate count reported."""
-        cog = _make_cog()
-        ctx = _make_ctx()
-
-        fake_mod = MagicMock()
-        fake_mod.ai_cache.invalidate.return_value = 7
-        with patch.dict(sys.modules, {"cogs.ai_core.cache.ai_cache": fake_mod}):
-            await cog.ai_cache_clear.callback(cog, ctx)
-
-        ctx.send.assert_called_once_with("✅ Cleared 7 cache entries")
-
-    async def test_cache_clear_import_error(self):
-        """217-218: import fails -> 'Cache not available'."""
-        cog = _make_cog()
-        ctx = _make_ctx()
-
-        with patch.dict(sys.modules, {"cogs.ai_core.cache.ai_cache": None}):
-            await cog.ai_cache_clear.callback(cog, ctx)
-
-        ctx.send.assert_called_once_with("❌ Cache not available")
-
-
-class TestAIStatsCommandFull:
-    """ai_stats_cmd body (308-371)."""
-
-    async def test_stats_import_error(self):
-        """312-314: analytics import fails -> message + early return."""
-        cog = _make_cog()
-        ctx = _make_ctx()
-
-        with patch.dict(sys.modules, {"cogs.ai_core.cache.analytics": None}):
-            await cog.ai_stats_cmd.callback(cog, ctx)
-
-        ctx.send.assert_called_once_with("❌ Analytics not available")
-
-    async def test_stats_full_payload(self):
-        """308-371: all optional panels (latency, quality, intent) rendered."""
-        cog = _make_cog()
-        ctx = _make_ctx()
-
-        stats = {
-            "summary": {
-                "total_interactions": 1234,
-                "avg_response_time_ms": 250.0,
-                "cache_hit_rate": 0.42,
-                "error_rate": 0.01,
-                "interactions_per_hour": 12.5,
-            },
-            "latency_percentiles": {
-                "count": 100,
-                "p50": 200.0,
-                "p95": 400.0,
-                "p99": 600.0,
-                "min": 50.0,
-                "max": 800.0,
-            },
-            "tokens": {"input": 1000, "output": 500, "total": 1500},
-            "quality": {
-                "total_ratings": 10,
-                "average_score": 4.5,
-                "positive_reactions": 8,
-                "negative_reactions": 2,
-            },
-            "intent_accuracy": {"total_feedback": 5, "accuracy": 0.8},
-        }
-        fake_mod = MagicMock()
-        fake_mod.get_detailed_ai_stats.return_value = stats
-        with patch.dict(sys.modules, {"cogs.ai_core.cache.analytics": fake_mod}):
-            await cog.ai_stats_cmd.callback(cog, ctx)
-
-        ctx.send.assert_called_once()
-        sent_embed = ctx.send.call_args.kwargs["embed"]
-        names = {f.name for f in sent_embed.fields}
-        assert "📈 Summary" in names
-        assert "⏱️ Latency Percentiles" in names
-        assert "🔢 Token Usage (Est.)" in names
-        assert "⭐ Quality" in names
-        assert "🎯 Intent Accuracy" in names
-
-    async def test_stats_optional_panels_skipped(self):
-        """Counts of 0 skip latency/quality/intent panels (327/350 still hit)."""
-        cog = _make_cog()
-        ctx = _make_ctx()
-
-        stats = {
-            "summary": {},
-            "latency_percentiles": {"count": 0},
-            "tokens": {},
-            "quality": {"total_ratings": 0},
-            "intent_accuracy": {"total_feedback": 0},
-        }
-        fake_mod = MagicMock()
-        fake_mod.get_detailed_ai_stats.return_value = stats
-        with patch.dict(sys.modules, {"cogs.ai_core.cache.analytics": fake_mod}):
-            await cog.ai_stats_cmd.callback(cog, ctx)
-
-        ctx.send.assert_called_once()
-        sent_embed = ctx.send.call_args.kwargs["embed"]
-        names = {f.name for f in sent_embed.fields}
-        # Required panels present, optional zero-count panels absent.
-        assert "📈 Summary" in names
-        assert "🔢 Token Usage (Est.)" in names
-        assert "⏱️ Latency Percentiles" not in names
-        assert "⭐ Quality" not in names
-        assert "🎯 Intent Accuracy" not in names
 
 
 class TestAITokensCommandFull:

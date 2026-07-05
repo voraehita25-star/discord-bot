@@ -19,7 +19,6 @@ _MODULES_WITH_DOCSTRINGS = [
     "cogs.ai_core.storage",
     "cogs.ai_core.logic",
     "cogs.ai_core.ai_cog",
-    "cogs.ai_core.cache.ai_cache",
     "cogs.ai_core.memory.consolidator",
     "cogs.ai_core.memory.rag",
     "cogs.ai_core.memory.long_term_memory",
@@ -67,7 +66,6 @@ def test_module_imports(module_path: str):
 
 _SINGLETONS = [
     # (module_path, attribute_name)
-    ("cogs.ai_core.cache.ai_cache", "ai_cache"),
     ("cogs.ai_core.cache.token_tracker", "token_tracker"),
     ("cogs.ai_core.memory.consolidator", "memory_consolidator"),
     ("cogs.ai_core.memory.rag", "rag_system"),

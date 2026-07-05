@@ -32,8 +32,6 @@ AVAILABILITY_FLAGS = [
     "URL_FETCHER_AVAILABLE",
     "GUARDRAILS_AVAILABLE",
     "INTENT_DETECTOR_AVAILABLE",
-    "ANALYTICS_AVAILABLE",
-    "CACHE_AVAILABLE",
     "HISTORY_MANAGER_AVAILABLE",
     "CIRCUIT_BREAKER_AVAILABLE",
     "TOKEN_TRACKER_AVAILABLE",
@@ -234,19 +232,6 @@ class TestAvailabilityInvariants:
         if imports.INTENT_DETECTOR_AVAILABLE:
             assert imports.detect_intent is not None
             assert imports.Intent is not None
-
-    def test_analytics_invariant(self):
-        from cogs.ai_core import imports
-
-        if imports.ANALYTICS_AVAILABLE:
-            assert callable(imports.get_ai_stats)
-            assert callable(imports.log_ai_interaction)
-
-    def test_cache_invariant(self):
-        from cogs.ai_core import imports
-
-        if imports.CACHE_AVAILABLE:
-            assert imports.ai_cache is not None
 
 
 class TestUrlFetcherFallback:
@@ -455,14 +440,6 @@ class TestSimpleFlagFallbacks:
     def test_intent_detector_flag_false(self):
         m = _reload_imports_blocking({"processing.intent_detector"})
         assert m.INTENT_DETECTOR_AVAILABLE is False
-
-    def test_analytics_flag_false(self):
-        m = _reload_imports_blocking({"cache.analytics"})
-        assert m.ANALYTICS_AVAILABLE is False
-
-    def test_cache_flag_false(self):
-        m = _reload_imports_blocking({"cache.ai_cache"})
-        assert m.CACHE_AVAILABLE is False
 
     def test_history_manager_flag_false_and_none(self):
         m = _reload_imports_blocking({"memory.history_manager"})

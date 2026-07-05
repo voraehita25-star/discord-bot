@@ -37,7 +37,6 @@ class AIDebug(commands.Cog):
 
         Displays:
         - Context size (tokens)
-        - Cache statistics
         - RAG system status
         - Current session info
         """
@@ -78,27 +77,6 @@ class AIDebug(commands.Cog):
             ),
             inline=True,
         )
-
-        # 2. Cache Stats
-        try:
-            from cogs.ai_core.cache.ai_cache import ai_cache
-
-            stats = ai_cache.get_stats()
-            cache_info = (
-                f"Entries: {stats.total_entries}\n"
-                f"Hits: {stats.hits} ({stats.hit_rate:.1%})\n"
-                f"Semantic: {stats.semantic_hits}\n"
-                f"Memory: {stats.memory_estimate_kb:.1f}KB"
-            )
-        except ImportError:
-            cache_info = "Cache not available"
-        except (AttributeError, KeyError, TypeError) as e:
-            # Don't let a CacheStats schema drift (missing/renamed field) take
-            # down the entire !ai_debug command — degrade just this panel.
-            self.logger.debug("Cache stats panel unavailable: %s", e)
-            cache_info = "Cache stats unavailable"
-
-        embed.add_field(name="💾 Cache", value=f"```\n{cache_info}```", inline=True)
 
         # 3. RAG System Status
         try:
@@ -218,18 +196,6 @@ class AIDebug(commands.Cog):
 
         await ctx.send("\n".join(lines) if len(lines) > 1 else "No performance data yet")
 
-    @commands.command(name="ai_cache_clear")
-    @commands.is_owner()
-    async def ai_cache_clear(self, ctx: Context) -> None:
-        """Clear the AI response cache."""
-        try:
-            from cogs.ai_core.cache.ai_cache import ai_cache
-
-            count = ai_cache.invalidate()
-            await ctx.send(f"✅ Cleared {count} cache entries")
-        except ImportError:
-            await ctx.send("❌ Cache not available")
-
     @commands.command(name="ai_trace")
     @commands.is_owner()
     async def ai_trace(self, ctx: Context) -> None:
@@ -311,86 +277,6 @@ class AIDebug(commands.Cog):
             )
 
         embed.set_footer(text=f"Channel: {channel_id}")
-        await ctx.send(embed=embed)
-
-    @commands.command(name="ai_stats")
-    @commands.is_owner()
-    async def ai_stats_cmd(self, ctx: Context) -> None:
-        """
-        Show comprehensive AI statistics.
-
-        Includes latency percentiles, intent accuracy, and token usage.
-        """
-        try:
-            from cogs.ai_core.cache.analytics import get_detailed_ai_stats
-        except ImportError:
-            await ctx.send("❌ Analytics not available")
-            return
-
-        try:
-            stats = get_detailed_ai_stats()
-        except Exception as e:
-            # Mirror !ai_tokens: a runtime stats failure replies gracefully
-            # instead of propagating an uncaught error to the command framework.
-            self.logger.warning("Failed to fetch detailed AI stats: %s", e)
-            await ctx.send(f"❌ ดึงสถิติ AI ไม่สำเร็จ: {type(e).__name__}")
-            return
-
-        embed = discord.Embed(title="📊 Comprehensive AI Statistics", color=discord.Color.green())
-
-        # Summary
-        summary = stats.get("summary", {})
-        summary_text = (
-            f"Total: {summary.get('total_interactions', 0):,}\n"
-            f"Avg Response: {summary.get('avg_response_time_ms', 0):.0f}ms\n"
-            f"Cache Rate: {summary.get('cache_hit_rate', 0):.1%}\n"
-            f"Error Rate: {summary.get('error_rate', 0):.1%}\n"
-            f"Per Hour: {summary.get('interactions_per_hour', 0):.1f}"
-        )
-        embed.add_field(name="📈 Summary", value=f"```\n{summary_text}```", inline=False)
-
-        # Latency Percentiles
-        latency = stats.get("latency_percentiles", {})
-        if latency.get("count", 0) > 0:
-            latency_text = (
-                f"p50: {latency.get('p50', 0):.0f}ms\n"
-                f"p95: {latency.get('p95', 0):.0f}ms\n"
-                f"p99: {latency.get('p99', 0):.0f}ms\n"
-                f"Min: {latency.get('min', 0):.0f}ms\n"
-                f"Max: {latency.get('max', 0):.0f}ms"
-            )
-            embed.add_field(
-                name="⏱️ Latency Percentiles", value=f"```\n{latency_text}```", inline=True
-            )
-
-        # Token Usage
-        tokens = stats.get("tokens", {})
-        tokens_text = (
-            f"Input: {tokens.get('input', 0):,}\n"
-            f"Output: {tokens.get('output', 0):,}\n"
-            f"Total: {tokens.get('total', 0):,}"
-        )
-        embed.add_field(name="🔢 Token Usage (Est.)", value=f"```\n{tokens_text}```", inline=True)
-
-        # Quality
-        quality = stats.get("quality", {})
-        if quality.get("total_ratings", 0) > 0:
-            quality_text = (
-                f"Avg Score: {quality.get('average_score', 0):.2f}\n"
-                f"👍: {quality.get('positive_reactions', 0)}\n"
-                f"👎: {quality.get('negative_reactions', 0)}"
-            )
-            embed.add_field(name="⭐ Quality", value=f"```\n{quality_text}```", inline=True)
-
-        # Intent Accuracy
-        intent = stats.get("intent_accuracy", {})
-        if intent.get("total_feedback", 0) > 0:
-            intent_text = (
-                f"Accuracy: {intent.get('accuracy', 0):.1%}\n"
-                f"Feedback: {intent.get('total_feedback', 0)}"
-            )
-            embed.add_field(name="🎯 Intent Accuracy", value=f"```\n{intent_text}```", inline=True)
-
         await ctx.send(embed=embed)
 
     @commands.command(name="ai_tokens")

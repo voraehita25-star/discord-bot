@@ -848,17 +848,11 @@ class TestDashboardCmd:
             return_value={"api_call": {"count": 2, "avg_ms": 12.0}}
         )
 
-        cache_stats = MagicMock()
-        cache_stats.total_entries = 5
-        cache_stats.hit_rate = 0.5
-        cache_stats.memory_estimate_kb = 100.0
         with (
-            patch("cogs.ai_core.cache.ai_cache.ai_cache") as ai_cache,
             patch("cogs.ai_core.memory.rag.rag_system") as rag,
             patch("utils.reliability.rate_limiter.rate_limiter") as rl,
             patch("utils.reliability.circuit_breaker.gemini_circuit") as cb,
         ):
-            ai_cache.get_stats.return_value = cache_stats
             rag.get_stats.return_value = {
                 "faiss_available": True,
                 "index_size": 10,
@@ -879,17 +873,11 @@ class TestDashboardCmd:
         ctx = _make_ctx()
         cog.chat_manager.chats = {}
         cog.chat_manager.get_performance_stats = MagicMock(return_value={})
-        cache_stats = MagicMock()
-        cache_stats.total_entries = 0
-        cache_stats.hit_rate = 0.0
-        cache_stats.memory_estimate_kb = 0.0
         with (
-            patch("cogs.ai_core.cache.ai_cache.ai_cache") as ai_cache,
             patch("cogs.ai_core.memory.rag.rag_system") as rag,
             patch("utils.reliability.rate_limiter.rate_limiter") as rl,
             patch("utils.reliability.circuit_breaker.gemini_circuit") as cb,
         ):
-            ai_cache.get_stats.return_value = cache_stats
             rag.get_stats.return_value = {
                 "faiss_available": False,
                 "index_size": 0,
@@ -909,17 +897,11 @@ class TestDashboardCmd:
         cog.chat_manager.get_performance_stats = MagicMock(
             return_value={long_key: {"count": 1, "avg_ms": 1.0}}
         )
-        cache_stats = MagicMock()
-        cache_stats.total_entries = 0
-        cache_stats.hit_rate = 0.0
-        cache_stats.memory_estimate_kb = 0.0
         with (
-            patch("cogs.ai_core.cache.ai_cache.ai_cache") as ai_cache,
             patch("cogs.ai_core.memory.rag.rag_system") as rag,
             patch("utils.reliability.rate_limiter.rate_limiter") as rl,
             patch("utils.reliability.circuit_breaker.gemini_circuit") as cb,
         ):
-            ai_cache.get_stats.return_value = cache_stats
             rag.get_stats.return_value = {
                 "faiss_available": True,
                 "index_size": 0,
@@ -2469,20 +2451,15 @@ def _import_blocker(*blocked):
 
 class TestDashboardImportFallbacks:
     @pytest.mark.asyncio
-    async def test_cache_and_rag_import_error(self):
+    async def test_rag_import_error(self):
         cog = _make_cog()
         ctx = _make_ctx()
         cog.chat_manager.chats = {}
         cog.chat_manager.get_performance_stats = MagicMock(return_value={})
-        blocker = _import_blocker(
-            "cogs.ai_core.cache.ai_cache",
-            "cogs.ai_core.memory.rag",
-        )
+        blocker = _import_blocker("cogs.ai_core.memory.rag")
         with patch("builtins.__import__", side_effect=blocker):
             await cog.dashboard_cmd.callback(cog, ctx)
         embed = ctx.send.call_args.kwargs["embed"]
-        cache_field = next(f for f in embed.fields if f.name == "💾 Cache")
-        assert "N/A" in cache_field.value
         rag_field = next(f for f in embed.fields if f.name == "🧠 RAG Memory")
         assert "N/A" in rag_field.value
 
@@ -2643,20 +2620,14 @@ class TestDashboardRateLimiterCircuitFallback:
         ctx = _make_ctx()
         cog.chat_manager.chats = {}
         cog.chat_manager.get_performance_stats = MagicMock(return_value={})
-        cache_stats = MagicMock()
-        cache_stats.total_entries = 0
-        cache_stats.hit_rate = 0.0
-        cache_stats.memory_estimate_kb = 0.0
         blocker = _import_blocker(
             "utils.reliability.rate_limiter",
             "utils.reliability.circuit_breaker",
         )
         with (
-            patch("cogs.ai_core.cache.ai_cache.ai_cache") as ai_cache,
             patch("cogs.ai_core.memory.rag.rag_system") as rag,
             patch("builtins.__import__", side_effect=blocker),
         ):
-            ai_cache.get_stats.return_value = cache_stats
             rag.get_stats.return_value = {
                 "faiss_available": False,
                 "index_size": 0,
