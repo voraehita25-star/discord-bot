@@ -205,7 +205,6 @@ class AIDebug(commands.Cog):
         Displays:
         - Prompt sent
         - Tokens used
-        - Cache status
         - RAG results
         - Processing stages
         """
@@ -259,10 +258,6 @@ class AIDebug(commands.Cog):
                 value=f"```\nInput: {input_tokens}\nOutput: {output_tokens}```",
                 inline=True,
             )
-
-            # Cache status
-            cache_status = "HIT ✅" if last_trace.get("cache_hit") else "MISS"
-            embed.add_field(name="💾 Cache", value=f"```\n{cache_status}```", inline=True)
 
             # RAG results
             rag_count = last_trace.get("rag_results", 0)

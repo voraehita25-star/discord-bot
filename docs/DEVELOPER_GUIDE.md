@@ -122,10 +122,8 @@ BOT/
 │       │   ├── unrestricted.py # Per-channel unrestricted-mode registry (persona injection)
 │       │   └── intent_detector.py # Message intent classification
 │       │
-│       └── cache/            # 📊 Caching & Analytics
+│       └── cache/            # 📊 Token usage tracking
 │           ├── __init__.py
-│           ├── ai_cache.py   # LRU response cache
-│           ├── analytics.py  # Usage metrics & logging
 │           └── token_tracker.py # Token usage tracking
 │
 ├── utils/                    # 🛠️ Utilities

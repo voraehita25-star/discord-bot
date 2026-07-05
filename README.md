@@ -105,7 +105,7 @@ discord-bot/
 │   │   ├── tools/          # ⚡ AI function calling
 │   │   ├── memory/         # 🧠 Memory systems (incl. Rust RAG)
 │   │   ├── processing/     # 🔄 Intent detection, unrestricted-mode gating
-│   │   ├── cache/          # 📊 Caching & analytics
+│   │   ├── cache/          # 📊 Token usage tracking
 │   │   └── data/           # Prompts & constants
 │   ├── music/          # Music player module
 │   └── spotify_handler.py

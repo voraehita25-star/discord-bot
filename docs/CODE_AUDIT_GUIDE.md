@@ -103,13 +103,11 @@ python -m pytest tests/ --collect-only -q
 
 ---
 
-### cogs/ai_core/cache/ (4 ไฟล์)
+### cogs/ai_core/cache/ (2 ไฟล์)
 
 | ไฟล์ | คำอธิบาย |
 | --- | --- |
 | `__init__.py` | Package init |
-| `ai_cache.py` | LRU cache for AI responses |
-| `analytics.py` | AI usage analytics |
 | `token_tracker.py` | Token usage tracking |
 
 ---

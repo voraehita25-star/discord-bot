@@ -7,7 +7,7 @@ from pathlib import Path
 # prevented by mode=ro on connect (below), not by anchoring.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-for db in ["data/bot_database.db", "data/ai_cache_l2.db"]:
+for db in ["data/bot_database.db"]:
     db_path = _PROJECT_ROOT / db
     try:
         # closing() guarantees the connection is closed: sqlite3's own context

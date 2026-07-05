@@ -2,18 +2,17 @@
 
 ## Overview
 
-โปรเจคใช้ SQLite 2 ฐานข้อมูล ทำงานใน WAL mode สำหรับ concurrency:
+โปรเจคใช้ SQLite 1 ฐานข้อมูล ทำงานใน WAL mode สำหรับ concurrency:
 
 | Database          | Tables | Purpose                                         |
 | ----------------- | ------ | ----------------------------------------------- |
-| `bot_database.db` | 20     | Main database (AI, music, dashboard, analytics) — 18 created at init + `conversation_summaries` (lazy) + `schema_version` (migrations) |
-| `ai_cache_l2.db`  | 1      | Persistent L2 cache (survives restarts)         |
+| `bot_database.db` | 19     | Main database (AI, music, dashboard) — 17 created at init + `conversation_summaries` (lazy) + `schema_version` (migrations) |
 
 Connection Pool: 32 concurrent connections, 16-slot reuse queue, 30s acquire timeout
 
 ---
 
-## bot_database.db (20 Tables)
+## bot_database.db (19 Tables)
 
 ### AI Chat
 
@@ -382,34 +381,13 @@ Indexes: `idx_audit_log_created(created_at DESC)`, `idx_audit_log_guild(guild_id
 
 ---
 
-## ai_cache_l2.db (1 Table)
-
-### cache_entries
-
-Persistent L2 cache — อุ่น L1 in-memory cache หลัง restart
-
-| Column   | Type    | Constraints |
-| -------- | ------- | ----------- |
-| key      | TEXT    | PRIMARY KEY |
-| response | TEXT    | NOT NULL    |
-| intent   | TEXT    | DEFAULT ''  |
-| norm_msg | TEXT    | DEFAULT ''  |
-| ctx_hash | TEXT    | DEFAULT ''  |
-| created  | REAL    | NOT NULL    |
-| hits     | INTEGER | DEFAULT 0   |
-
-Index: `idx_cache_created(created)`
-Max entries: 20,000 (LRU eviction)
-
----
-
 ## Statistics
 
 | Metric                 | Count                                            |
 | ---------------------- | ------------------------------------------------ |
-| Total tables           | 20 (18 created at init + lazy `conversation_summaries` + migrations `schema_version`) |
+| Total tables           | 19 (17 created at init + lazy `conversation_summaries` + migrations `schema_version`) |
 | Total indexes          | 38+ (incl. partial `idx_dashboard_messages_pinned`, tag indexes, entity multi-column) |
 | Foreign keys           | 2 (dashboard_messages → dashboard_conversations; dashboard_conversation_tags → dashboard_conversations) |
 | Composite primary keys | 2 (user_stats, dashboard_conversation_tags) |
 | Unique constraints     | 1 (entity_memories) |
-| WAL mode               | Both databases                                   |
+| WAL mode               | Enabled (`bot_database.db`)                       |

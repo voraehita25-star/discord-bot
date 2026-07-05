@@ -87,10 +87,8 @@ cogs/ai_core/
 │   ├── unrestricted.py    # Per-channel unrestricted-mode registry (persona injection)
 │   └── intent_detector.py # Intent classification
 │
-└── cache/             # 📊 Caching & Analytics
+└── cache/             # 📊 Token usage tracking
     ├── __init__.py
-    ├── ai_cache.py    # LRU response cache
-    ├── analytics.py   # Metrics & tracking
     └── token_tracker.py # Token usage tracking
 ```
 
@@ -104,8 +102,6 @@ cogs/ai_core/
 | `RagEngineWrapper` | `memory/rag_rust.py` | 🦀 Rust RAG with Python fallback (10-25x faster) |
 | `HistoryManager` | `memory/history_manager.py` | Smart context trimming |
 | `EntityMemoryManager` | `memory/entity_memory.py` | Character facts storage |
-| `AICache` | `cache/ai_cache.py` | Response caching |
-| `AIAnalytics` | `cache/analytics.py` | Usage metrics |
 | `PerformanceTracker` | `core/performance.py` | Performance metrics tracking |
 | `MessageQueue` | `core/message_queue.py` | Message queue management |
 

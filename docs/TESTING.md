@@ -40,7 +40,7 @@ tests/
 ├── conftest.py              # Shared fixtures (mock bot, temp DB, env/singleton reset)
 ├── test_boilerplate.py      # Parametrized structural tests (docstrings, singletons)
 ├── test_*.py                # 125 more test files (consolidated + coverage/regression suites)
-│   ├── AI Core              # ~25 test files (ai_cache, ai_cog, logic, storage, dashboard_chat*, etc.)
+│   ├── AI Core              # ~25 test files (ai_cog, logic, storage, dashboard_chat*, etc.)
 │   ├── Music                # ~6 test files (music_cog, music_queue, spotify, ytdl, etc.)
 │   ├── Dashboard            # 2 test files (dashboard_handlers — 48 tests; dashboard_ai_history — 225 tests)
 │   ├── Database             # 1 test file (consolidated from 3)
