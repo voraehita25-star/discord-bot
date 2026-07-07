@@ -257,7 +257,7 @@ jobs:
 
     - name: Run Go linter
       # Third-party — SHA-pin.
-      uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20  # v9
+      uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9
       with:
         # Pin to a specific linter binary version. ``v2.12.1`` is the
         # binary release tag, not a floating branch — the action resolves
