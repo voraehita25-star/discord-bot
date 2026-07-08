@@ -1323,15 +1323,13 @@ async def handle_update_document_memory(ws: WebSocketResponse, data: dict[str, A
         #
         # Defence-in-depth PARITY with extract_from_payload (document_extractor):
         # the persisted name is re-emitted as a Markdown header line by
-        # build_user_context, so neutralise everything that could start a new
-        # line or spoof a Markdown header / role marker. We REMOVE (not collapse
-        # to a space) every line-break and separator — C0 controls incl. CR/LF/
-        # TAB, DEL, NEL (U+0085), LINE/PARAGRAPH SEPARATOR (U+2028/U+2029) and the
-        # zero-width / BOM range — plus ``#``. Removal (rather than replacing with
-        # a space) is deliberate: a space would turn ``report\nAssistant:`` into a
-        # mid-line ``report Assistant:`` that slips past the ^-anchored emit-layer
-        # role-marker defang (_DOC_ROLE_LEAK_RE); removing the break keeps it a
-        # single token the emit-layer backstop (py-aicore-api-1) still neutralises.
+        # build_user_context, so strip line-breaks / separators and ``#`` for
+        # basic display hygiene — a newline or ``#`` in a stored filename would
+        # break the ``## {filename}`` header line. We REMOVE (not collapse to a
+        # space) every line-break and separator — C0 controls incl. CR/LF/TAB,
+        # DEL, NEL (U+0085), LINE/PARAGRAPH SEPARATOR (U+2028/U+2029) and the
+        # zero-width / BOM range — plus ``#``. (The emit-layer document defang was
+        # removed per operator request; this filename hygiene is retained.)
         sanitised_filename = (
             re.sub(
                 r"[\x00-\x1f\x7f\u0085\u2028\u2029\u200b-\u200f\u2060\ufeff/\\#]",

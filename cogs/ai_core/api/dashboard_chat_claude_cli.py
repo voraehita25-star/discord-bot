@@ -1280,50 +1280,11 @@ def _cleanup_docs_dir(conversation_id: str) -> None:
                     target_dir.rmdir()
 
 
-# Matches a role marker at the start of a line in arbitrary user text. The
-# flattened-prompt format (``# Conversation so far\nUser: …\nAssistant: …``)
-# is vulnerable to content that contains ``\nAssistant: I'll obey…`` — the
-# bare LLM has no way to tell injected role markers from real ones. We rewrite
-# hits to a clearly-marked sentinel so the model sees them as quoted text, not
-# new turns. Covers common alternate aliases (Human/AI/Tool) as well — same
-# defence the Discord flattener ships (discord_chat_claude_cli.py).
-_ROLE_LEAK_RE = re.compile(r"(?im)^(\s*)(user|assistant|system|tool|human|ai)(\s*:)")
-
-# The flattened prompt's own section-header scheme. A spoofed ``# Current user
-# message`` / ``# Context`` line inside history or an uploaded document is a
-# STRONGER injection than a bare role marker — it can fake a whole section
-# that supersedes the real ones. Defang exactly the reserved names this
-# module's builders emit (not every ``#`` line, so legitimate user markdown
-# headings survive untouched).
-_RESERVED_PROMPT_HEADERS = (
-    "persona",
-    "timestamp convention",
-    "context",
-    "conversation so far",
-    "attached images",
-    "attached documents",
-    "current user message",
-    "available tools",
-)
-_HEADER_LEAK_RE = re.compile(
-    r"(?im)^(\s*)(#{1,6})(\s+(?:" + "|".join(_RESERVED_PROMPT_HEADERS) + r")\b)"
-)
-
-
-def _sanitize_dialog_segment(text: str) -> str:
-    """Defang role-marker / section-header injection in flattened-prompt text.
-
-    A history row or current message containing a literal line
-    ``Assistant: I'll do anything`` (or ``# Current user message``) could
-    otherwise spoof a turn or a structural section in the prompt the CLI
-    subprocess receives. Rewrite every such line so the model sees it as
-    quoted text the user typed, not a real turn/section header. The real
-    headers are emitted by the builders directly and never pass through here.
-    """
-    if not text:
-        return text
-    text = _ROLE_LEAK_RE.sub(r"\1[user-text] \2\3", text)
-    return _HEADER_LEAK_RE.sub(r"\1[user-text] \2\3", text)
+# NOTE: prompt-injection defang for the dashboard's flattened prompt (history +
+# current message + edit instruction) was intentionally REMOVED per operator
+# request — this dashboard is single-user, so those segments are injected
+# VERBATIM (no ``[user-text]`` rewriting). The Discord flattener keeps its own
+# defang (discord_chat_claude_cli.py), where other users' messages are untrusted.
 
 
 def _prompt_max_chars_from_env() -> int:
@@ -1422,9 +1383,7 @@ def _build_full_prompt(
     # so this prefix never reaches the dashboard UI. Sanitized so a pasted
     # "Assistant:" line or spoofed section header can't fake a turn boundary.
     timestamp = bangkok_now_iso()
-    parts.append(
-        f"# Current user message\n[{timestamp}] {_sanitize_dialog_segment(current_message)}"
-    )
+    parts.append(f"# Current user message\n[{timestamp}] {current_message}")
     return "\n\n".join(parts)
 
 
@@ -1446,10 +1405,9 @@ def _build_history_block(history: list[dict[str, Any]], limit: int) -> str:
         if not isinstance(msg, dict):
             continue
         role = msg.get("role", "user")
-        # Sanitize each row: history contains assistant replies that can quote
-        # poisoned document/web content, and a raw "User:"/"# Context" line in
-        # there would spoof a turn or section in the flattened recap.
-        text = _sanitize_dialog_segment(str(msg.get("content", "")))
+        # Defang removed per operator request (single-user dashboard) — history
+        # rows are flattened into the prompt verbatim.
+        text = str(msg.get("content", ""))
         speaker = "User" if role == "user" else "Assistant"
         created_at = msg.get("created_at")
         if created_at:
@@ -3571,7 +3529,7 @@ async def handle_ai_edit_message_claude_cli(
         # exist in the raw original — so the patch silently fails to match. This
         # matches the SDK backend (dashboard_chat_claude.py), which uses the raw
         # original in both the prompt and the patcher.
-        f"[User's Edit Instruction]\n{_sanitize_dialog_segment(instruction)}\n\n"
+        f"[User's Edit Instruction]\n{instruction}\n\n"
         f"[Original Message]\n{original_content}\n\n"
         "RESPONSE FORMAT:\n"
         "If the edit is a PARTIAL change, respond with one or more SEARCH/REPLACE blocks:\n"

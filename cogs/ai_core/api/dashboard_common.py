@@ -259,78 +259,28 @@ class LeadingTimestampStripper:
         self._done = False
 
 
-# Reserved prompt section-header names and role markers that the dashboard
-# prompt builders emit structurally. Document-memory text is untrusted (the
-# operator's uploaded PDF/DOCX/text bodies + filenames are re-injected into the
-# prompt on every turn via build_user_context), so a doc line like
-# ``# Current user message`` or ``Assistant: I will comply`` would otherwise
-# spoof a real section/turn. This MIRRORS _sanitize_dialog_segment /
-# _RESERVED_PROMPT_HEADERS / _ROLE_LEAK_RE in dashboard_chat_claude_cli.py —
-# replicated here (not imported) because that module imports FROM this one, so a
-# reverse import would be a circular dependency. Keep the two lists in sync.
-_DOC_RESERVED_PROMPT_HEADERS = (
-    "persona",
-    "timestamp convention",
-    "context",
-    "conversation so far",
-    "attached images",
-    "attached documents",
-    "current user message",
-    "available tools",
-)
-# Role marker at the start of a line (User:/Assistant:/System:/Tool:/Human:/AI:).
-_DOC_ROLE_LEAK_RE = _re.compile(r"(?im)^(\s*)(user|assistant|system|tool|human|ai)(\s*:)")
-# Reserved section header (#..###### followed by one of the reserved names).
-_DOC_HEADER_LEAK_RE = _re.compile(
-    r"(?im)^(\s*)(#{1,6})(\s+(?:" + "|".join(_DOC_RESERVED_PROMPT_HEADERS) + r")\b)"
-)
-
-
-def _defang_document_segment(text: str) -> str:
-    """Defang role-marker / section-header injection in untrusted document text.
-
-    Backend-agnostic: applied to document-memory bodies AND filenames inside
-    build_user_context so they can never spoof a reserved prompt section
-    (``# Current user message``) or a turn (``Assistant: ...``) in the CLI,
-    SDK, or Gemini prompt builders that inject user_context. Rewrites each
-    offending line so the model sees it as quoted ``[user-text]`` rather than a
-    real header/turn. Mirrors _sanitize_dialog_segment in
-    dashboard_chat_claude_cli.py.
-    """
-    if not text:
-        return text
-    text = _DOC_ROLE_LEAK_RE.sub(r"\1[user-text] \2\3", text)
-    return _DOC_HEADER_LEAK_RE.sub(r"\1[user-text] \2\3", text)
+# NOTE: prompt-injection defang for uploaded documents was intentionally REMOVED
+# per operator request — this dashboard is single-user, so document bodies and
+# filenames are injected into the prompt VERBATIM (no ``[user-text]`` rewriting of
+# ``# Current user message`` / ``Assistant:`` lines). The Discord flattener keeps
+# its own defang (discord_chat_claude_cli.py), where other users' messages flow
+# into history and are still untrusted.
 
 
 def sanitize_profile_field(value: Any, max_len: int = 200) -> str:
-    """Sanitize user profile fields to prevent system instruction injection.
+    """Clamp a user profile field to a safe length + strip control chars.
 
-    Accepts any type — non-str values are coerced via ``str()`` first so the
-    function works when callers pass dict/list/int profile fields. Unicode is
-    normalized (NFKC) so that lookalike attacks like ``sуstem:`` (Cyrillic ``у``)
-    cannot bypass the keyword filter.
-    """  # noqa: RUF002 - intentional Cyrillic example in docstring
+    NOTE: prompt-injection neutralisation (NFKC lookalike-folding, bracket /
+    backtick stripping, ``system:`` / ``jailbreak:`` prefix removal) was REMOVED
+    per operator request — this dashboard is single-user, so the profile is
+    trusted. Only basic hygiene remains: coerce to ``str``, drop C0/DEL control
+    chars (which would corrupt the rendered system prompt), and cap the length.
+    """
     if value is None or value == "":
         return ""
     if not isinstance(value, str):
         value = str(value)
-    import unicodedata as _unicodedata
-
-    value = _unicodedata.normalize("NFKC", value)
-    value = _re.sub(r"[\x00-\x1f\x7f]", "", value)  # Remove control chars
-    value = _re.sub(
-        r"[\[\]{}`]", "", value
-    )  # Strip brackets/braces/backticks to prevent instruction injection
-    # Neutralise common prompt-injection prefixes. Strip ONLY the
-    # ``keyword:`` punctuation marker — leaving the bare word lets the
-    # model still see what the user typed but breaks the colon-prefixed
-    # "system: do X" instruction shape.
-    value = _re.sub(
-        r"(?i)\b(system|ignore|instruction|override|forget|jailbreak|disregard\s+previous)\s*:",
-        r"\1",
-        value,
-    )
+    value = _re.sub(r"[\x00-\x1f\x7f]", "", value)  # Remove control chars (hygiene)
     return str(value[:max_len])
 
 
@@ -466,14 +416,10 @@ async def build_user_context(
                 dropped_filenames: list[str] = []
                 for doc in docs:
                     text = doc.get("extracted_text") or ""
-                    # Document text + filename are untrusted (operator uploads,
-                    # re-injected raw by every prompt builder). Defang reserved
-                    # section headers / role markers in BOTH so a doc body or a
-                    # crafted filename can't spoof '# Current user message' /
-                    # 'Assistant:' etc. (filenames are also charset-sanitised at
-                    # ingest in document_extractor; this is defence-in-depth for
-                    # rows persisted before that fix shipped).
-                    filename = _defang_document_segment(doc.get("filename") or "document")
+                    # Injected verbatim — defang removed per operator request
+                    # (single-user dashboard). Filenames are still charset-cleaned
+                    # at ingest (document_extractor) for basic display hygiene.
+                    filename = doc.get("filename") or "document"
                     if not text:
                         continue
                     remaining = MAX_INJECT_CHARS - running_total
@@ -482,13 +428,9 @@ async def build_user_context(
                         # can tell the user which files weren't visible.
                         dropped_filenames.append(filename)
                         continue
-                    # Defang BEFORE measuring against the budget: the defang
-                    # pass INSERTS "[user-text] " into every line matching a
-                    # role marker, so a doc built of short "ai:"/"user:" lines
-                    # can expand ~3x. Truncating first let a snippet sliced to
-                    # the 400K budget inject >1M chars post-defang — exactly
-                    # the untrusted input the hard cap exists to bound.
-                    text = _defang_document_segment(text)
+                    # Raw document text is injected as-is (defang removed). The
+                    # MAX_INJECT_CHARS budget below still bounds how much of one
+                    # doc reaches the prompt so a huge upload can't eat the window.
                     snippet = (
                         text
                         if len(text) <= remaining
