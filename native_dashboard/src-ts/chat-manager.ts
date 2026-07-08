@@ -123,6 +123,15 @@ function chatFileCount(value: unknown): number {
     return typeof value === 'number' && isFinite(value) ? value : 0;
 }
 
+// Mirror the backend context-window defaults (cogs/ai_core/api/dashboard_config.py:
+// CLAUDE_CONTEXT_WINDOW / GEMINI_CONTEXT_WINDOW, both default 1_000_000). Used only
+// as the denominator for the synthetic persistent-document footprint the meter
+// paints before the first real reading; every real token_usage frame carries the
+// true window from the backend. Kept per-provider so the estimate stays correct if
+// either backend window is reconfigured.
+const CLAUDE_CONTEXT_WINDOW = 1_000_000;
+const GEMINI_CONTEXT_WINDOW = 1_000_000;
+
 /** Conservative PDF reflow: merges only obvious per-glyph orphan lines
  * (1-4 Thai / 1-3 Latin chars sandwiched between longer lines). Mirrors
  * the Python backend's `_rejoin_pdf_lines` which now runs alongside
@@ -1141,15 +1150,32 @@ export class ChatManager {
                 }
                 break;
 
-            case 'conversation_documents':
+            case 'conversation_documents': {
                 // Populate the 📎 Files modal with the conversation-scoped
                 // document list. Also updates the chat-header badge so the
                 // count stays accurate.
-                this.renderChatFilesModal(
-                    data.conversation_id as string | undefined,
-                    (data.documents as ChatFileEntry[]) || [],
+                const convId = data.conversation_id as string | undefined;
+                const docs = (data.documents as ChatFileEntry[]) || [];
+                this.renderChatFilesModal(convId, docs);
+                // Feed the persistent-document footprint into the context-window
+                // meter so attached files are reflected on OPEN, before the first
+                // turn. This frame already arrives on conversation open (via
+                // refreshChatFilesBadge), on attach, and on delete. Computed here
+                // (not inside renderChatFilesModal, which early-returns for a
+                // non-current conversation) so the footprint is stored per-conv;
+                // `isCurrent` gates the repaint to the on-screen conversation.
+                const totalChars = docs.reduce((s, d) => s + chatFileCount(d.char_count), 0);
+                const cw = this.aiProvider === 'claude'
+                    ? CLAUDE_CONTEXT_WINDOW
+                    : GEMINI_CONTEXT_WINDOW;
+                this.contextWindow.setDocumentFootprint(
+                    convId ?? null,
+                    totalChars,
+                    cw,
+                    !!convId && this.currentConversation?.id === convId,
                 );
                 break;
+            }
 
             case 'document_memory_deleted':
                 // Server confirmed a delete. Drop the row locally without

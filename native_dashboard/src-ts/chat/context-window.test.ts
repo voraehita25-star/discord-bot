@@ -232,3 +232,65 @@ describe('ContextWindowIndicator pending attached-file estimate', () => {
         expect(fill.style.width).toBe('50%');
     });
 });
+
+describe('ContextWindowIndicator persistent-document footprint', () => {
+    it('paints a synthetic bar when a conversation has docs but no reading', () => {
+        const cw = new ContextWindowIndicator();
+        // 100k chars / 4 = 25k tokens; /100k window = 25%.
+        cw.setDocumentFootprint('c1', 100_000, 100_000, true);
+        const indicator = document.getElementById('context-window-indicator')!;
+        const fill = document.getElementById('context-bar-fill')!;
+        expect(indicator.style.display).toBe('flex');
+        expect(fill.style.width).toBe('25%');
+    });
+
+    it('does NOT double-count the footprint with pendingDocTokens (no prior reading)', () => {
+        const cw = new ContextWindowIndicator();
+        cw.addPendingDocumentChars('c1', 100_000);   // no cache -> stored, not painted
+        cw.setDocumentFootprint('c1', 100_000, 100_000, true);  // footprint only -> 25%, not 50%
+        const fill = document.getElementById('context-bar-fill')!;
+        expect(fill.style.width).toBe('25%');
+    });
+
+    it('is superseded by a later real reading (cache wins over footprint)', () => {
+        const cw = new ContextWindowIndicator();
+        cw.setDocumentFootprint('c1', 100_000, 100_000, true);   // synthetic 25%
+        cw.update('c1', mkUsage(40_000, 100_000));               // real reading 40%
+        cw.update('c2', mkUsage(10_000, 100_000));               // switch away
+        cw.restore('c1');                                        // back -> real reading, not footprint
+        const fill = document.getElementById('context-bar-fill')!;
+        expect(fill.style.width).toBe('40%');
+    });
+
+    it('is authoritative — a smaller total REPLACES (does not accumulate)', () => {
+        const cw = new ContextWindowIndicator();
+        cw.setDocumentFootprint('c1', 200_000, 100_000, true);   // 50k -> 50%
+        cw.setDocumentFootprint('c1', 40_000, 100_000, true);    // 10k -> 10% (a doc was deleted)
+        const fill = document.getElementById('context-bar-fill')!;
+        expect(fill.style.width).toBe('10%');
+    });
+
+    it('hides the bar when the footprint drops to 0 with no cached reading', () => {
+        const cw = new ContextWindowIndicator();
+        cw.setDocumentFootprint('c1', 100_000, 100_000, true);
+        cw.setDocumentFootprint('c1', 0, 100_000, true);         // all docs removed
+        const indicator = document.getElementById('context-window-indicator')!;
+        expect(indicator.style.display).toBe('none');
+    });
+
+    it('stores without painting when not current; restore paints it later', () => {
+        const cw = new ContextWindowIndicator();
+        cw.setDocumentFootprint('c1', 100_000, 100_000, false);  // stored, not on screen
+        expect(document.getElementById('context-window-indicator')!.style.display).toBe('none');
+        cw.restore('c1');                                        // switch to it
+        expect(document.getElementById('context-bar-fill')!.style.width).toBe('25%');
+    });
+
+    it('forget() drops the footprint so restore() no longer paints it', () => {
+        const cw = new ContextWindowIndicator();
+        cw.setDocumentFootprint('c1', 100_000, 100_000, false);
+        cw.forget('c1');
+        cw.restore('c1');
+        expect(document.getElementById('context-window-indicator')!.style.display).toBe('none');
+    });
+});

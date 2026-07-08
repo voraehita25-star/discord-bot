@@ -143,6 +143,57 @@ class TestLoadConversation:
             await handle_load_conversation(ws, {"id": "c1"})
         assert ws.last()["type"] == "conversation_loaded"
 
+    @staticmethod
+    def _mock_doc_char_sum(mock_db, total):
+        """Wire mock_db.get_connection() so the doc-memory SUM(char_count)
+        aggregate returns ``total`` (as an async context manager)."""
+        cursor = MagicMock()
+        cursor.fetchone = AsyncMock(return_value=(total,))
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value=cursor)
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=conn)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        mock_db.get_connection = MagicMock(return_value=cm)
+
+    @pytest.mark.asyncio
+    async def test_load_estimate_includes_document_memories(self, ws, mock_db):
+        """The context-window estimate on OPEN folds in persistent document
+        memories so attached files are counted before the first turn (the meter
+        previously counted only chat history, so files looked 'uncounted')."""
+        from cogs.ai_core.api.dashboard_handlers import handle_load_conversation
+
+        mock_db.get_dashboard_conversation.return_value = {"id": "c1", "role_preset": "general"}
+        mock_db.get_dashboard_messages.return_value = []
+        self._mock_doc_char_sum(mock_db, 30_000)
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_load_conversation(ws, {"id": "c1"})
+        loaded = ws.last()
+        assert loaded["type"] == "conversation_loaded"
+        # 30_000 doc chars // 3 = 10_000 tokens contributed by documents alone.
+        assert loaded["token_usage"]["input_tokens"] >= 10_000
+
+    @pytest.mark.asyncio
+    async def test_load_estimate_caps_document_contribution(self, ws, mock_db):
+        """A huge document library can't inflate the bar past the prompt
+        builder's MAX_INJECT_CHARS (400k) injection budget."""
+        from cogs.ai_core.api.dashboard_handlers import handle_load_conversation
+
+        mock_db.get_dashboard_conversation.return_value = {"id": "c1", "role_preset": "general"}
+        mock_db.get_dashboard_messages.return_value = []
+        self._mock_doc_char_sum(mock_db, 900_000)
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_load_conversation(ws, {"id": "c1"})
+        tokens = ws.last()["token_usage"]["input_tokens"]
+        # Capped at 400k chars -> ~133k tokens, far below the uncapped 900k//3 = 300k.
+        assert 133_000 <= tokens < 200_000
+
     @pytest.mark.asyncio
     async def test_load_budget_truncates_oldest(self, ws, mock_db):
         """A conversation exceeding MAX_HISTORY_RESPONSE_CHARS is truncated

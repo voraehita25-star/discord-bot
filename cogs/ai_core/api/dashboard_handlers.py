@@ -220,6 +220,30 @@ async def handle_load_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
             total_chars += len(content)
             thinking = msg.get("thinking") or ""
             total_chars += len(thinking)
+
+        # Fold this conversation's persistent document memories into the estimate
+        # so the context-window bar reflects auto-injected docs ON OPEN, before any
+        # real turn. build_user_context injects these every turn (dashboard_common
+        # ~454-505); this pre-turn estimate previously omitted them, so attached
+        # files looked "uncounted" (the meter counted only the chat history) until
+        # the first send. Cap at the same MAX_INJECT_CHARS budget the prompt
+        # builder enforces so a huge library can't inflate the bar past what is
+        # actually injected. A real stream_end reading supersedes this estimate.
+        doc_chars = 0
+        try:
+            async with db.get_connection() as conn:
+                cur = await conn.execute(
+                    "SELECT COALESCE(SUM(char_count), 0) "
+                    "FROM dashboard_document_memories WHERE source_conversation_id = ?",
+                    (conversation_id,),
+                )
+                row = await cur.fetchone()
+                doc_chars = min(400_000, int(row[0] or 0))
+        except Exception:
+            logger.debug("Doc-memory token estimate skipped", exc_info=True)
+            doc_chars = 0
+        total_chars += doc_chars
+
         estimated_tokens = max(1, total_chars // 3)
 
         # Cumulative content budget (see MAX_HISTORY_RESPONSE_CHARS): the token

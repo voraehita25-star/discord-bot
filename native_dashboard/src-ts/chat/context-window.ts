@@ -34,6 +34,15 @@ export class ContextWindowIndicator {
      *  text, so it supersedes + clears the estimate — no double counting. */
     private pendingDocTokens: Map<string, number> = new Map();
 
+    /** Authoritative full-document footprint per conversation (~4 chars/token),
+     *  session-scoped, NEVER persisted and NEVER written to `this.cache`. Used
+     *  ONLY as a restore() fallback when there is no real/estimate reading yet
+     *  (a fresh conversation with docs, or an offline SQLite open never seen
+     *  online). Once a `conversation_loaded` reading is cached — which now
+     *  already folds in the doc footprint server-side — restore() takes the
+     *  cached branch and this is never painted, so it cannot double-count. */
+    private docFootprint: Map<string, TokenUsage> = new Map();
+
     /** Load persisted cache. Call once at startup (ChatManager.connect() does this). */
     load(): void {
         try {
@@ -193,9 +202,21 @@ export class ContextWindowIndicator {
             this.cache.delete(conversationId);
             this.cache.set(conversationId, cached);
             this.paint(this.withPending(conversationId, cached));
-        } else {
-            this.reset();
+            return;
         }
+        // No real/estimate reading cached yet. Fall back to the persistent-
+        // document footprint so a conversation that has files but has not been
+        // counted (fresh chat, or offline SQLite open) still shows its doc load
+        // instead of hiding the bar. Painted DIRECTLY — withPending is NOT
+        // applied: with no reading, pendingDocTokens (docs since the last
+        // reading) and the footprint (all docs) are the same set, so overlaying
+        // them would double-count.
+        const footprint = this.docFootprint.get(conversationId);
+        if (footprint) {
+            this.paint(footprint);
+            return;
+        }
+        this.reset();
     }
 
     /**
@@ -226,9 +247,43 @@ export class ContextWindowIndicator {
         };
     }
 
+    /**
+     * Record (authoritative, not accumulated) the full persistent-document
+     * footprint for a conversation and repaint if it is the one on screen.
+     * Sourced from the `conversation_documents` WS frame (summed char_count),
+     * which already arrives on conversation open, attach, and delete. This only
+     * ever surfaces via restore()'s no-cache fallback (see `docFootprint`), so
+     * it never stacks on a real/estimate reading. SET semantics — a later frame
+     * with fewer chars (a delete) shrinks it, so it can't go stale-high.
+     */
+    setDocumentFootprint(
+        conversationId: string | null,
+        totalChars: number,
+        contextWindow: number,
+        isCurrent: boolean,
+    ): void {
+        if (!conversationId) return;
+        const chars = Number.isFinite(totalChars) && totalChars > 0 ? totalChars : 0;
+        if (chars <= 0 || !Number.isFinite(contextWindow) || contextWindow <= 0) {
+            this.docFootprint.delete(conversationId);
+        } else {
+            // Same ~4-chars/token heuristic as addPendingDocumentChars so the two
+            // doc estimates agree; a real reading supersedes both.
+            const tokens = Math.ceil(chars / 4);
+            this.docFootprint.set(conversationId, {
+                input_tokens: tokens,
+                output_tokens: 0,
+                total_tokens: tokens,
+                context_window: contextWindow,
+            });
+        }
+        if (isCurrent) this.restore(conversationId);
+    }
+
     /** Drop one conversation's cached usage (called on conversation delete). */
     forget(conversationId: string): void {
         this.pendingDocTokens.delete(conversationId);
+        this.docFootprint.delete(conversationId);
         if (this.cache.delete(conversationId)) this.save();
     }
 
