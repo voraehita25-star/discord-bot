@@ -201,3 +201,45 @@ class TestExtractFromPayloadFilenameSanitization:
         assert "\n" not in result.filename and "\r" not in result.filename
         assert "#" not in result.filename
         assert result.filename.endswith(".md")
+
+    def test_thai_filename_preserved(self):
+        # THE regression that distinguishes the correct fix from `\w`: a Thai
+        # filename keeps its letters AND combining marks (tone marks / above-below
+        # vowels are Unicode category ``M``, which ``\w`` would drop). The old
+        # ASCII allowlist turned this into "____.txt"; ``\w`` would yield
+        # "ช__อ.txt". The Unicode-aware sanitizer must round-trip it verbatim.
+        from cogs.ai_core.api.document_extractor import extract_from_payload
+
+        result = extract_from_payload(_text_payload("ชื่อ.txt"))
+        assert result is not None
+        assert result.filename == "ชื่อ.txt"
+
+    def test_thai_base_letters_and_extension_survive(self):
+        from cogs.ai_core.api.document_extractor import extract_from_payload
+
+        result = extract_from_payload(_text_payload("รายงานการประชุม.txt"))
+        assert result is not None
+        assert result.filename == "รายงานการประชุม.txt"
+
+    def test_bidi_zerowidth_homoglyph_still_neutralized(self):
+        # Widening the allowlist to Unicode letters/marks must NOT re-open the
+        # bidi / zero-width / homoglyph hole: format controls (category Cf) and
+        # fullwidth punctuation lookalikes are neither alphanumeric nor marks, so
+        # they must still collapse to '_'. Locks in that ASCII -> Unicode-aware
+        # did not regress the injection guard.
+        from cogs.ai_core.api.document_extractor import extract_from_payload
+
+        # RLO, ZWSP, WJ, BOM, fullwidth '#', fullwidth ':', tag-space -- built via
+        # chr() so the SOURCE carries no literal invisible/control chars.
+        bad_chars = tuple(
+            chr(cp) for cp in (0x202E, 0x200B, 0x2060, 0xFEFF, 0xFF03, 0xFF1A, 0xE0020)
+        )
+        name = "a" + "b".join(bad_chars) + "h.txt"
+        result = extract_from_payload(_text_payload(name))
+        assert result is not None
+        for bad in bad_chars:
+            assert bad not in result.filename
+        # The ASCII base letters and the extension survive.
+        assert result.filename.endswith(".txt")
+        for good in "abh":
+            assert good in result.filename

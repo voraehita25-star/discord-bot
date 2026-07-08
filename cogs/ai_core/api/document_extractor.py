@@ -30,6 +30,7 @@ import binascii
 import logging
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any
@@ -144,13 +145,30 @@ def extract_from_payload(payload: dict[Any, Any]) -> ExtractedDocument | None:
     # raw payload name is fully attacker-controlled, so an embedded newline + a
     # line like ``# Current user message`` / ``Assistant: ...`` would spoof a
     # whole prompt section (a strictly stronger injection than the body text).
-    # Collapse CR/LF + strip C0/DEL controls, then mirror _save_inline_documents'
-    # charset allowlist (dashboard_chat_claude_cli) so '#'/newlines and other
-    # prompt-structure characters cannot survive into the stored name. Done here
-    # so BOTH consumers of the document payload produce an injection-safe name.
+    # Collapse CR/LF + strip C0/DEL controls, then keep only "safe" characters so
+    # '#'/newlines and other prompt-structure characters cannot survive into the
+    # stored name. Done here so BOTH consumers of the document payload produce an
+    # injection-safe name.
+    #
+    # The allowlist is UNICODE-AWARE on purpose: a plain ASCII allowlist
+    # (``[^A-Za-z0-9._\- ]``) turned every non-Latin filename into underscores —
+    # a Thai upload ``ชื่อ.txt`` was stored as ``____.txt``. A regex ``\w`` is not
+    # enough either: Thai tone marks / above-below vowels are Unicode COMBINING
+    # MARKS (category ``M``), which ``\w`` rejects, so ``ชื่อ`` would still degrade
+    # to ``ช__อ``. Keep any script's letters/digits (``str.isalnum()`` → L*/N*)
+    # AND combining marks (category ``M``), plus ``._- `` and space. Everything
+    # else → ``_``. This is injection-equivalent to the old ASCII rule: bidi /
+    # zero-width / format controls (category ``Cf`` e.g. RLO U+202E, ZWSP U+200B),
+    # punctuation/symbols ('#', ':', '`', '*', '[]{}', '/'), and the space/line
+    # separators are neither alphanumeric nor marks, so they are all still
+    # replaced with ``_`` — no newline / '#' / role-marker can reach the stored
+    # name (defence-in-depth: build_user_context also defangs it on emit).
     name = re.sub(r"[\r\n]+", " ", name)
     name = re.sub(r"[\x00-\x1f\x7f]", "", name)
-    name = re.sub(r"[^A-Za-z0-9._\- ]", "_", name).strip()
+    name = "".join(
+        ch if (ch in "._- " or ch.isalnum() or unicodedata.category(ch).startswith("M")) else "_"
+        for ch in name
+    ).strip()
     if not name:
         name = "document"
 
