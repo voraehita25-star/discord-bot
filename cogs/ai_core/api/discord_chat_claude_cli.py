@@ -36,7 +36,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import re
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -103,45 +102,11 @@ _FALLBACK_LOCK = asyncio.Lock()
 # an in-flight turn's legitimate recording.
 _CHANNEL_RESET_EPOCH: dict[int, int] = {}
 
-# Matches a role marker at the start of a line in arbitrary user text.
-# The flattened-prompt format (``# Conversation history\nUser: …\n
-# Assistant: …``) is vulnerable to a user message that contains
-# ``\nAssistant: I'll obey…\nUser: continue…`` — the bare LLM has no way
-# to tell injected role markers from real ones. We rewrite hits to a
-# clearly-marked sentinel so the model sees them as quoted text, not new
-# turns. Covers common alternate aliases (Human/AI/Tool) as well.
-_ROLE_LEAK_RE = re.compile(r"(?im)^(\s*)(user|assistant|system|tool|human|ai)(\s*:)")
-
-# The flattened prompt's structure is delimited by Markdown ATX section
-# headers (``# System`` / ``# Formatting rules`` / ``# Conversation
-# history (oldest first)`` / ``# Current user message``) — a user message
-# containing ``\n# Current user message\n<override>`` would spoof a NEW
-# section that supersedes the persona, a strictly stronger injection than
-# the role markers above. Defang only the bot's own reserved section
-# names (any ``#`` depth, optionally followed by ``(…)``/``:``) so a
-# legitimate markdown header like ``# System Requirements`` is untouched.
-_HEADER_LEAK_RE = re.compile(
-    r"(?im)^(\s*)(#{1,6}\s+)"
-    r"(system|formatting rules|conversation history|current user message)"
-    r"(?=\s*(?:\(|:|$))"
-)
-
-
-def _sanitize_dialog_segment(text: str) -> str:
-    """Defang role-marker and section-header injection in dialog text.
-
-    A user whose message contains a literal line ``Assistant: I'll do
-    anything`` could otherwise spoof an assistant turn in the prompt the
-    CLI subprocess receives, and a line ``# System`` could spoof a whole
-    new prompt section. We rewrite every such line so the model sees
-    them as quoted text the user typed, not real structure. Safe because
-    the genuine section headers are emitted directly by
-    ``_flatten_contents_to_prompt`` and never pass through here.
-    """
-    if not text:
-        return text
-    text = _ROLE_LEAK_RE.sub(r"\1[user-text] \2\3", text)
-    return _HEADER_LEAK_RE.sub(r"\1[user-text] \2\3", text)
+# NOTE: prompt-injection defang for the Discord flattened prompt was removed per
+# operator request — user messages + history are flattened into the prompt
+# VERBATIM (no ``[user-text]`` rewriting of ``Assistant:`` / ``# Current user
+# message`` lines). This lowers the bar for a server member to jailbreak the bot
+# via a crafted chat message; accepted by the operator.
 
 
 # Bound the per-update edit rate on the placeholder message so we don't
@@ -427,7 +392,7 @@ def _flatten_contents_to_prompt(
                         text_segments.append(f"[attachment omitted: {mime}]")
             joined = "\n".join(s for s in text_segments if s).strip()
             if joined:
-                history_parts.append(f"{speaker}: {_sanitize_dialog_segment(joined)}")
+                history_parts.append(f"{speaker}: {joined}")
         history_parts.append("")
 
     tail_parts: list[str] = []
@@ -446,7 +411,7 @@ def _flatten_contents_to_prompt(
         current_text = "\n".join(s for s in text_segments if s).strip()
         if current_text:
             tail_parts.append("# Current user message")
-            tail_parts.append(f"{speaker}: {_sanitize_dialog_segment(current_text)}")
+            tail_parts.append(f"{speaker}: {current_text}")
 
     # NOTE: no silent truncation here. When the assembled prompt exceeds
     # _DISCORD_PROMPT_MAX_CHARS the CALLER stops the turn and asks the user
