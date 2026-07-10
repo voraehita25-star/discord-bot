@@ -1,0 +1,17 @@
+{
+  // Type-check the Playwright e2e specs + their fixtures. The main tsconfig.json
+  // has rootDir "./src-ts" (so `tsc` emits ui/ cleanly), which means it can't
+  // also include tests-e2e/. This config widens rootDir to the package root,
+  // emits nothing, and pulls in the e2e tree so `npm run typecheck:e2e` catches
+  // drift between the mock IPC fixture and the real src-ts/types.ts contracts —
+  // e.g. a get_status mock that returns {cpu_percent} when the backend returns
+  // {uptime, mode}. Without this, the fixture was type-unchecked and drifted.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["tests-e2e/**/*", "src-ts/types.ts"],
+  "exclude": ["node_modules", "target"]
+}

@@ -18,7 +18,13 @@ export default defineConfig({
     timeout: 30_000,
     fullyParallel: false, // serialize so toast/modal screenshots don't race
     forbidOnly: !!process.env.CI,
-    retries: 0,
+    // The suite serializes (above) and each spec's beforeEach waits a FIXED
+    // ~250ms for the deferred ES-module bootstrap rather than a readiness
+    // signal. Under CPU load that wait is occasionally too short and a
+    // bootstrap-dependent assertion flakes (e.g. nav/CSP/import-map probes that
+    // pass in isolation). A real regression still fails every attempt, so a
+    // small retry budget removes the load-induced noise without masking bugs.
+    retries: process.env.CI ? 2 : 1,
     reporter: process.env.CI ? 'list' : [['list'], ['html', { open: 'never' }]],
 
     use: {

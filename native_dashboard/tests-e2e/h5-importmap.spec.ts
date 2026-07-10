@@ -43,7 +43,11 @@ test('H5: invoke dynamic-imports the import-map-resolved vendored Tauri core (no
     // Drive the real invoke wrapper. With no global + no mock it takes the
     // dynamic-import branch, which the import map resolves to the vendored core.
     await page.evaluate(async () => {
-        const mod = (await import('/shared.js')) as { invoke: (c: string) => Promise<unknown> };
+        // Non-literal specifier: the browser resolves '/shared.js' at runtime
+        // (via the import map), but a literal would make tsc try to resolve it
+        // at compile time (TS2307 — no such module on disk from the spec's dir).
+        const spec: string = '/shared.js';
+        const mod = (await import(spec)) as { invoke: (c: string) => Promise<unknown> };
         try {
             await mod.invoke('h5_probe_noop');
         } catch {

@@ -306,7 +306,7 @@ test.describe('Forced-colors keyboard focus (WCAG 2.4.7)', () => {
     // (Windows High Contrast) the OS strips box-shadow, so a *visible outline*
     // is the only possible focus indicator — it must NOT be `none`. The orbital
     // block must therefore match (0,2,0) so source-order-LAST actually wins.
-    test.use({ forcedColors: 'active' });
+    test.use({ contextOptions: { forcedColors: 'active' } });
 
     // #theme-toggle carries the .theme-toggle class the finding flagged as
     // missing from the forced-colors rescue; #btn-start is a .btn primary
