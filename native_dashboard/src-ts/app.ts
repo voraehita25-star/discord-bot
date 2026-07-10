@@ -565,6 +565,58 @@ function updateSetting<K extends keyof Settings>(key: K, value: Settings[K]): vo
 function initCharts(): void {
     // Charts will be initialized when the status page loads
     window.addEventListener('resize', debounce(updateCharts, 'resize', 250));
+
+    // Hover layer: a crosshair that snaps to the nearest sample + a tooltip.
+    // The whole canvas is the hit target (never just the 2px line), and
+    // keyboard focus shows the same readout at the latest sample.
+    for (const id of ['memory-chart', 'messages-chart']) {
+        const canvas = document.getElementById(id) as HTMLCanvasElement | null;
+        if (!canvas) continue;
+        canvas.addEventListener('pointermove', (e: PointerEvent) => {
+            const params = chartDrawParams.get(id);
+            if (!params || params.data.length < 2 || params.plotW <= 0) return;
+            const x = e.clientX - canvas.getBoundingClientRect().left;
+            const frac = (x - params.plotLeft) / params.plotW;
+            const idx = Math.max(0, Math.min(params.data.length - 1,
+                Math.round(frac * (params.data.length - 1))));
+            if (chartHoverIndex.get(id) !== idx) {
+                chartHoverIndex.set(id, idx);
+                scheduleChartRedraw(id);
+            }
+        });
+        canvas.addEventListener('pointerleave', () => {
+            chartHoverIndex.set(id, null);
+            scheduleChartRedraw(id);
+        });
+        canvas.addEventListener('focus', () => {
+            const params = chartDrawParams.get(id);
+            if (!params || params.data.length < 2) return;
+            chartHoverIndex.set(id, params.data.length - 1);
+            scheduleChartRedraw(id);
+        });
+        canvas.addEventListener('blur', () => {
+            chartHoverIndex.set(id, null);
+            scheduleChartRedraw(id);
+        });
+    }
+}
+
+// Test/preview seam (screenshots.spec.ts): replace both chart histories with
+// synthetic samples and redraw, so e2e screenshots can capture a populated
+// chart without waiting out real status ticks. Stops the live refresh loop
+// first — otherwise the next status tick (2s default) would append a real
+// sample (0 MB under the e2e mock) onto the seeded series mid-screenshot.
+// Not called by production code.
+export function seedChartHistories(memoryValues: number[], messageValues: number[], intervalMs = 5000): void {
+    stopRefreshLoop();
+    const now = Date.now();
+    memoryHistory.length = 0;
+    messagesHistory.length = 0;
+    memoryValues.forEach((v, i) =>
+        memoryHistory.push({ timestamp: now - (memoryValues.length - 1 - i) * intervalMs, value: v }));
+    messageValues.forEach((v, i) =>
+        messagesHistory.push({ timestamp: now - (messageValues.length - 1 - i) * intervalMs, value: v }));
+    updateCharts();
 }
 
 // Exported so app.test.ts exercises the SHIPPED chart-history capping (which
@@ -580,7 +632,146 @@ export function addChartDataPoint(history: ChartDataPoint[], value: number): voi
     }
 }
 
-function drawChart(canvasId: string, data: ChartDataPoint[], color: string, label: string): void {
+interface ChartSeriesSpec {
+    /** decimal places for value readouts (0 → integer with grouping) */
+    decimals: number;
+    /** unit suffix on the endpoint label + tooltip (e.g. ' MB') */
+    unit: string;
+}
+
+// Last-draw parameters per canvas so pointer-driven redraws (crosshair /
+// tooltip) can repaint immediately instead of waiting for the next status
+// tick. plotLeft/plotW mirror the layout of that draw for hit-testing.
+const chartDrawParams = new Map<string, {
+    data: ChartDataPoint[];
+    color: string;
+    spec: ChartSeriesSpec;
+    plotLeft: number;
+    plotW: number;
+}>();
+// Hovered sample index per canvas (null = no crosshair).
+const chartHoverIndex = new Map<string, number | null>();
+const pendingChartRedraw = new Set<string>();
+
+// Coalesce hover redraws to one per animation frame — pointermove can fire
+// far faster than the display refreshes.
+function scheduleChartRedraw(canvasId: string): void {
+    if (pendingChartRedraw.size === 0) {
+        requestAnimationFrame(() => {
+            for (const id of pendingChartRedraw) {
+                const p = chartDrawParams.get(id);
+                if (p) drawChart(id, p.data, p.color, p.spec);
+            }
+            pendingChartRedraw.clear();
+        });
+    }
+    pendingChartRedraw.add(canvasId);
+}
+
+function formatChartValue(value: number, decimals: number): string {
+    return decimals === 0 ? Math.round(value).toLocaleString() : value.toFixed(decimals);
+}
+
+// Count series always print whole ticks; value series print just enough
+// decimals to keep adjacent ticks distinct (a step of 0.05 needs 2 places —
+// a fixed toFixed(1) would render "230.5, 230.5, 230.6, 230.6").
+function formatChartTick(tick: number, decimals: number, step: number): string {
+    if (decimals === 0) return Math.round(tick).toLocaleString();
+    if (Number.isInteger(step) && Number.isInteger(tick)) return tick.toLocaleString();
+    const places = Math.min(3, Math.max(1, Math.ceil(-Math.log10(step))));
+    return tick.toFixed(places);
+}
+
+function formatChartTime(timestamp: number): string {
+    return new Date(timestamp).toLocaleTimeString('en-GB', { hour12: false });
+}
+
+// Y-scale with ticks on "nice" steps (1/2/2.5/5 × 10ⁿ) so the axis reads
+// 210 · 215 · 220 instead of the raw min×0.9 / max×1.1 endpoints the old
+// chart printed. A flat series (the idle message counter) opens a small
+// window around the value so the axis never degenerates to "214 … 214".
+function niceChartScale(rawMin: number, rawMax: number, integer: boolean): { lo: number; hi: number; ticks: number[]; step: number } {
+    let min = rawMin;
+    let max = rawMax;
+    if (min === max) {
+        const pad = Math.max(integer ? 2 : 0.5, Math.abs(min) * 0.02);
+        min -= pad;
+        max += pad;
+    } else {
+        const pad = (max - min) * 0.08;
+        min -= pad;
+        max += pad;
+    }
+    // A non-negative series never shows a negative axis (memory below 0 MB).
+    if (rawMin >= 0 && min < 0) min = 0;
+
+    const step0 = (max - min) / 3.5; // aim for ~4 gridlines
+    const mag = Math.pow(10, Math.floor(Math.log10(step0)));
+    const norm = step0 / mag;
+    // Integer series skip the 2.5 slot below mag 10 (2.5/0.25… aren't whole
+    // numbers) and never step finer than 1.
+    const steps = integer && mag < 10 ? [1, 2, 5, 10] : [1, 2, 2.5, 5, 10];
+    let step = (steps.find(s => norm <= s) ?? 10) * mag;
+    if (integer) step = Math.max(1, step);
+
+    const lo = Math.floor(min / step) * step;
+    const hi = Math.ceil(max / step) * step;
+    const ticks: number[] = [];
+    const count = Math.round((hi - lo) / step);
+    for (let i = 0; i <= count; i++) ticks.push(lo + i * step);
+    return { lo, hi, ticks, step };
+}
+
+// Monotone-cubic path (harmonic-mean tangents) — smooth without overshoot,
+// so a memory spike still tops out exactly at its sampled value instead of
+// the curve inventing a higher peak the way naive Catmull-Rom does.
+function traceSmoothPath(ctx: CanvasRenderingContext2D, pts: Array<{ x: number; y: number }>): void {
+    const first = pts[0];
+    if (!first) return;
+    ctx.moveTo(first.x, first.y);
+    const n = pts.length;
+    const slopes: number[] = [];
+    for (let i = 0; i < n - 1; i++) {
+        const dx = pts[i + 1].x - pts[i].x;
+        slopes.push(dx === 0 ? 0 : (pts[i + 1].y - pts[i].y) / dx);
+    }
+    const tangents: number[] = [slopes[0]];
+    for (let i = 1; i < n - 1; i++) {
+        const a = slopes[i - 1];
+        const b = slopes[i];
+        tangents.push(a * b <= 0 ? 0 : (2 * a * b) / (a + b));
+    }
+    tangents.push(slopes[n - 2]);
+    for (let i = 0; i < n - 1; i++) {
+        const p0 = pts[i];
+        const p1 = pts[i + 1];
+        const dx = (p1.x - p0.x) / 3;
+        ctx.bezierCurveTo(p0.x + dx, p0.y + tangents[i] * dx, p1.x - dx, p1.y - tangents[i + 1] * dx, p1.x, p1.y);
+    }
+}
+
+// Marker with a punched-out ring: 'destination-out' erases a halo around the
+// dot so the card background shows through (the canvas is transparent) —
+// a surface ring that stays correct in every theme without knowing the
+// card's actual color.
+function drawChartMarker(ctx: CanvasRenderingContext2D, x: number, y: number, color: string): void {
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    // destination-out erases dest × srcAlpha, so the punch fill must be fully
+    // opaque — inheriting the caller's fillStyle (often the low-alpha area
+    // gradient) would leave the halo 95% un-erased.
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(x, y, 6.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+}
+
+function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec: ChartSeriesSpec): void {
     const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
     if (!canvas) return;
 
@@ -596,7 +787,11 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     const gridColor = tokens.getPropertyValue('--chart-grid').trim() || 'rgba(72,196,232,.10)';
     const fillTop = tokens.getPropertyValue('--chart-fill-top').trim() || 'rgba(61,245,255,.30)';
     const fillBot = tokens.getPropertyValue('--chart-fill-bot').trim() || 'rgba(61,245,255,.05)';
-    const placeholderColor = tokens.getPropertyValue('--text-tertiary').trim() || 'rgba(255,255,255,0.3)';
+    const inkMuted = tokens.getPropertyValue('--text-tertiary').trim() || 'rgba(255,255,255,0.3)';
+    const inkStrong = tokens.getPropertyValue('--text-primary').trim() || 'rgba(255,255,255,0.9)';
+    const tooltipBg = tokens.getPropertyValue('--chart-tooltip-bg').trim() || 'rgba(22,15,28,0.94)';
+    const tooltipBorder = tokens.getPropertyValue('--chart-tooltip-border').trim() || gridColor;
+    const monoFont = tokens.getPropertyValue('--font-mono').trim() || 'ui-monospace, monospace';
 
     // Fade-in entrance on the very first draw (CSS handles the transition;
     // .chart-ready flips opacity from 0→1 and translateY from 16px→0).
@@ -613,14 +808,15 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
 
     const width = rect.width;
     const height = rect.height;
-    const padding = 30;
 
     ctx.clearRect(0, 0, width, height);
 
     if (data.length < 2) {
-        ctx.fillStyle = placeholderColor;
-        ctx.font = '12px sans-serif';
+        chartDrawParams.set(canvasId, { data, color, spec, plotLeft: 0, plotW: 0 });
+        ctx.fillStyle = inkMuted;
+        ctx.font = `12px ${monoFont}`;
         ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
         ctx.fillText('Collecting data...', width / 2, height / 2);
         return;
     }
@@ -629,79 +825,141 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, labe
     // Use reduce instead of spread to prevent stack overflow with large arrays
     const rawMin = values.reduce((a, b) => Math.min(a, b), Infinity);
     const rawMax = values.reduce((a, b) => Math.max(a, b), -Infinity);
-    // Padded versions are used for scaling so the line never grazes the
-    // chart edge; the raw values are shown as axis labels because a
-    // memory chart that never dipped below 42 MB shouldn't claim it
-    // bottomed out at 37.8 MB.
-    const minVal = rawMin * 0.9;
-    let maxVal = rawMax * 1.1 || 1;
-    // Prevent division by zero when all values are identical
-    if (maxVal === minVal) maxVal = minVal + 1;
+    const { lo, hi, ticks, step } = niceChartScale(rawMin, rawMax, spec.decimals === 0);
 
-    // Draw grid
+    // Layout — the left gutter is sized to the widest tick label so 4-digit
+    // message counts never collide with the plot.
+    ctx.font = `10px ${monoFont}`;
+    const tickLabels = ticks.map(t => formatChartTick(t, spec.decimals, step));
+    const gutter = Math.max(30, ...tickLabels.map(l => ctx.measureText(l).width)) + 12;
+    const plotLeft = gutter;
+    const plotTop = 14;
+    const plotRight = width - 14;
+    const plotBottom = height - 22; // x-axis band lives inside the canvas
+    const plotW = plotRight - plotLeft;
+    const plotH = plotBottom - plotTop;
+
+    chartDrawParams.set(canvasId, { data, color, spec, plotLeft, plotW });
+
+    const xAt = (i: number): number => plotLeft + plotW * (i / (data.length - 1));
+    const yAt = (v: number): number => plotBottom - ((v - lo) / (hi - lo)) * plotH;
+
+    // Grid: solid hairlines at nice ticks, each labeled in the left gutter.
     ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-        const y = padding + (height - padding * 2) * (i / 4);
+    ctx.fillStyle = inkMuted;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ticks.forEach((tick, i) => {
+        const y = yAt(tick);
         ctx.beginPath();
-        ctx.moveTo(padding, y);
-        ctx.lineTo(width - padding, y);
+        ctx.moveTo(plotLeft, y);
+        ctx.lineTo(plotRight, y);
         ctx.stroke();
-    }
-
-    // Draw gradient fill from the area-fill tokens (top → bottom) instead of
-    // deriving alphas off the line color, so the fill is theme-driven too.
-    const gradient = ctx.createLinearGradient(0, padding, 0, height - padding);
-    gradient.addColorStop(0, fillTop);
-    gradient.addColorStop(1, fillBot);
-
-    ctx.beginPath();
-    ctx.moveTo(padding, height - padding);
-
-    data.forEach((point, i) => {
-        const x = padding + (width - padding * 2) * (i / (data.length - 1));
-        const y = height - padding - ((point.value - minVal) / (maxVal - minVal)) * (height - padding * 2);
-        ctx.lineTo(x, y);
+        ctx.fillText(tickLabels[i], plotLeft - 8, y);
     });
 
-    ctx.lineTo(width - padding, height - padding);
+    // Time axis: first / last sample times anchor the window; a midpoint
+    // appears when the plot is wide enough to keep the labels apart.
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    ctx.fillText(formatChartTime(data[0].timestamp), plotLeft, height - 7);
+    ctx.textAlign = 'right';
+    ctx.fillText(formatChartTime(data[data.length - 1].timestamp), plotRight, height - 7);
+    if (plotW > 320 && data.length > 2) {
+        const mid = Math.floor((data.length - 1) / 2);
+        ctx.textAlign = 'center';
+        ctx.fillText(formatChartTime(data[mid].timestamp), xAt(mid), height - 7);
+    }
+
+    const pts = data.map((p, i) => ({ x: xAt(i), y: yAt(p.value) }));
+
+    // Area wash from the theme fill tokens (top → bottom).
+    const gradient = ctx.createLinearGradient(0, plotTop, 0, plotBottom);
+    gradient.addColorStop(0, fillTop);
+    gradient.addColorStop(1, fillBot);
+    ctx.beginPath();
+    traceSmoothPath(ctx, pts);
+    ctx.lineTo(plotRight, plotBottom);
+    ctx.lineTo(plotLeft, plotBottom);
     ctx.closePath();
     ctx.fillStyle = gradient;
     ctx.fill();
 
-    // Draw line
+    // Line with a soft neon glow (shadowBlur ignores ctx.scale → × dpr).
+    ctx.save();
     ctx.beginPath();
+    traceSmoothPath(ctx, pts);
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-
-    data.forEach((point, i) => {
-        const x = padding + (width - padding * 2) * (i / (data.length - 1));
-        const y = height - padding - ((point.value - minVal) / (maxVal - minVal)) * (height - padding * 2);
-        
-        if (i === 0) {
-            ctx.moveTo(x, y);
-        } else {
-            ctx.lineTo(x, y);
-        }
-    });
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 8 * dpr;
     ctx.stroke();
+    ctx.restore();
 
-    // Draw current value
-    const currentValue = data[data.length - 1]?.value ?? 0;
-    ctx.fillStyle = color;
-    ctx.font = 'bold 14px sans-serif';
+    // Endpoint marker + its value in text ink (never the series color — the
+    // colored dot beside it carries identity). The header readout chip
+    // repeats the number, but here it rides the line it belongs to.
+    const lastPt = pts[pts.length - 1];
+    drawChartMarker(ctx, lastPt.x, lastPt.y, color);
+    const current = data[data.length - 1].value;
+    const endLabel = `${formatChartValue(current, spec.decimals)}${spec.unit}`;
+    ctx.font = `600 11px ${monoFont}`;
+    ctx.fillStyle = inkStrong;
     ctx.textAlign = 'right';
-    ctx.fillText(`${label}: ${currentValue.toFixed(1)}`, width - padding, 20);
+    const endLabelY = lastPt.y - 14 < plotTop ? lastPt.y + 20 : lastPt.y - 12;
+    ctx.fillText(endLabel, plotRight, endLabelY);
 
-    // Draw min/max labels — also token-driven so they stay legible in light
-    // mode (the old hardcoded white vanished against the light Blueprint bg).
-    ctx.fillStyle = placeholderColor;
-    ctx.font = '10px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(rawMax.toFixed(1), 5, padding + 10);
-    ctx.fillText(rawMin.toFixed(1), 5, height - padding);
+    // Hover layer: crosshair snapped to the sample + a value-first tooltip.
+    const hoverIdx = chartHoverIndex.get(canvasId) ?? null;
+    if (hoverIdx !== null && hoverIdx >= 0 && hoverIdx < data.length) {
+        const hp = pts[hoverIdx];
+        ctx.strokeStyle = inkMuted;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(hp.x, plotTop);
+        ctx.lineTo(hp.x, plotBottom);
+        ctx.stroke();
+        drawChartMarker(ctx, hp.x, hp.y, color);
+
+        const valueLine = `${formatChartValue(data[hoverIdx].value, spec.decimals)}${spec.unit}`;
+        const timeLine = formatChartTime(data[hoverIdx].timestamp);
+        ctx.font = `700 12px ${monoFont}`;
+        const valueW = ctx.measureText(valueLine).width;
+        ctx.font = `10px ${monoFont}`;
+        const timeW = ctx.measureText(timeLine).width;
+        const keyW = 14; // short series-color line key before the value
+        const boxW = Math.max(valueW + keyW, timeW) + 20;
+        const boxH = 40;
+        let boxX = hp.x + 12;
+        if (boxX + boxW > plotRight) boxX = hp.x - 12 - boxW;
+        let boxY = hp.y - boxH - 10;
+        if (boxY < plotTop) boxY = Math.min(hp.y + 10, plotBottom - boxH);
+
+        ctx.beginPath();
+        ctx.roundRect(boxX, boxY, boxW, boxH, 6);
+        ctx.fillStyle = tooltipBg;
+        ctx.fill();
+        ctx.strokeStyle = tooltipBorder;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(boxX + 10, boxY + 15);
+        ctx.lineTo(boxX + 10 + 8, boxY + 15);
+        ctx.stroke();
+        ctx.fillStyle = inkStrong;
+        ctx.font = `700 12px ${monoFont}`;
+        ctx.textAlign = 'left';
+        ctx.fillText(valueLine, boxX + 10 + keyW, boxY + 19);
+        ctx.fillStyle = inkMuted;
+        ctx.font = `10px ${monoFont}`;
+        ctx.fillText(timeLine, boxX + 10, boxY + 32);
+    }
 }
 
 function updateCharts(): void {
@@ -716,12 +974,15 @@ function updateCharts(): void {
         tokens.getPropertyValue('--chart-line-2').trim() ||
         tokens.getPropertyValue('--accent-purple').trim() ||
         '#6aa6ff';
-    drawChart('memory-chart', memoryHistory, lineColor, 'Memory MB');
-    drawChart('messages-chart', messagesHistory, messagesColor, 'Messages');
+    drawChart('memory-chart', memoryHistory, lineColor, { decimals: 1, unit: ' MB' });
+    drawChart('messages-chart', messagesHistory, messagesColor, { decimals: 0, unit: '' });
 
     // Fill the in-header readout chips (CONTRACT) with the latest sample so the
     // current value is legible even before the canvas line is read. Memory keeps
     // one decimal + unit; message count is an integer with thousands grouping.
+    // The chips (normal DOM text) are also the screen-reader channel for the
+    // live value — the canvas aria-labels stay static in index.html because
+    // renaming a focused element every status tick makes SRs re-announce it.
     const memReadout = document.getElementById('chart-memory-readout');
     if (memReadout) {
         const latest = memoryHistory[memoryHistory.length - 1]?.value;

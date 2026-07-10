@@ -143,3 +143,55 @@ test('screenshot: chat with fake messages', async ({ page }) => {
         fullPage: true,
     });
 });
+
+// Populated performance charts — dark, hover tooltip, and light theme.
+// Uses the seedChartHistories test seam (app.ts): the Tauri mock reports the
+// bot as stopped with memory_mb 0, so real ticks would only chart a 0-line —
+// and the seam stops the refresh loop so a live tick can't append a 0 sample
+// onto the seeded series between seed and screenshot.
+test('screenshot: performance charts seeded (dark + hover + light)', async ({ page }) => {
+    const seed = async () => {
+        await page.evaluate(async () => {
+            // dynamic specifier via a variable so tsc (typecheck:e2e) doesn't
+            // try to resolve the server-root path '/app.js' as a module
+            const appModulePath = '/app.js';
+            const mod = await import(appModulePath) as {
+                seedChartHistories?: (m: number[], c: number[]) => void;
+            };
+            // memory: cold start → load spike → plateau with jitter (the real
+            // shape from production); messages: the idle flat counter that
+            // used to render a degenerate "214.0 … 214.0" axis.
+            const memory: number[] = [];
+            for (let i = 0; i < 40; i++) {
+                if (i < 4) memory.push(3 + i * 2);
+                else if (i < 10) memory.push(30 + (i - 4) * 33);
+                else memory.push(228 + Math.sin(i * 1.7) * 4 + (i % 5));
+            }
+            const messages: number[] = new Array(40).fill(214);
+            mod.seedChartHistories?.(memory, messages);
+        });
+        await page.waitForTimeout(250);
+    };
+
+    await seed();
+    await page.locator('.charts-section').screenshot({
+        path: 'test-results/screenshots/charts-seeded-dark.png',
+    });
+
+    await page.locator('#memory-chart').hover({ position: { x: 300, y: 90 } });
+    await page.waitForTimeout(200);
+    await page.locator('.charts-section').screenshot({
+        path: 'test-results/screenshots/charts-hover-tooltip.png',
+    });
+
+    // Park the pointer off the canvas so pointerleave clears the crosshair —
+    // otherwise the light screenshot inherits the dark run's hover tooltip.
+    await page.mouse.move(5, 5);
+    await page.waitForTimeout(150);
+
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+    await seed();
+    await page.locator('.charts-section').screenshot({
+        path: 'test-results/screenshots/charts-seeded-light.png',
+    });
+});

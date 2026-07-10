@@ -1863,12 +1863,16 @@ html[data-theme="light"] .send-icon .ic { color: #fff; }
     --chart-fill-top: rgba(255, 161, 194, .32);
     --chart-fill-bot: rgba(255, 161, 194, .03);
     --chart-grid: rgba(255, 161, 194, .12);
+    --chart-tooltip-bg: rgba(26, 17, 34, 0.95);
+    --chart-tooltip-border: rgba(255, 161, 194, .28);
 }
 html[data-theme="light"],
 :root[data-theme="light"] {
     --chart-fill-top: rgba(163, 37, 93, .20);
     --chart-fill-bot: rgba(163, 37, 93, .03);
     --chart-grid: rgba(163, 37, 93, .12);
+    --chart-tooltip-bg: rgba(255, 252, 254, 0.97);
+    --chart-tooltip-border: rgba(163, 37, 93, .25);
 }
 
 /* ============================================================================
