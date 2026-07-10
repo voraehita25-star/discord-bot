@@ -467,6 +467,33 @@ describe('handleMessage — message-level mutations', () => {
         expect(cm.messages[1].liked).toBe(true);
     });
 
+    it('message_pinned updates ONLY the pin button in place (no full window re-render)', () => {
+        const cm = mountDomAndChat();
+        // Render a real conversation so the pin button exists in the DOM.
+        cm.handleMessage({
+            type: 'conversation_loaded',
+            conversation: { id: 'c', title: 'c', role_preset: 'general', thinking_enabled: false, is_starred: false, created_at: 't' },
+            messages: [
+                { id: 1, role: 'user', content: 'hi', created_at: 't' },
+                { id: 2, role: 'assistant', content: 'hello', created_at: 't', is_pinned: false },
+            ],
+        });
+        const container = document.getElementById('chat-messages')!;
+        // Sentinel on an existing node: a full innerHTML rebuild would destroy it,
+        // an in-place button update leaves it intact.
+        (container.querySelector('.chat-message') as unknown as { __sentinel?: number }).__sentinel = 42;
+
+        cm.handleMessage({ type: 'message_pinned', message_id: 2, pinned: true });
+
+        const btn = container.querySelector('.pin-message-btn[data-msg-id="2"]') as HTMLButtonElement;
+        expect(btn.classList.contains('pinned')).toBe(true);
+        expect(btn.dataset.pinned).toBe('1');
+        expect(btn.getAttribute('aria-label')).toBe('Unpin message');
+        expect(btn.textContent).toContain('Unpin');
+        // The window was NOT rebuilt — the sentinel survives.
+        expect((container.querySelector('.chat-message') as unknown as { __sentinel?: number }).__sentinel).toBe(42);
+    });
+
     it('message_deleted removes the message from the local array', () => {
         const cm = mountDomAndChat();
         cm.messages = [

@@ -894,7 +894,20 @@ export class ChatManager {
                     const target = this.messages.find(m => m.id === pinnedId);
                     if (target) {
                         target.is_pinned = pinned;
-                        this.renderMessages();
+                        // Pin/like only changes ITS OWN button (no reorder, no
+                        // layout, no bubble change), so update that one button in
+                        // place. A full renderMessages() here rebuilt the whole
+                        // virtualization window's innerHTML — which wipes Prism's
+                        // `dataset.prismDone` guard and re-highlights EVERY code
+                        // block in the window on each pin/like. Fall back to a full
+                        // render only if the button isn't in the current window.
+                        if (!this.updateActionButton({
+                            btnClass: 'pin-message-btn', id: pinnedId, active: pinned,
+                            iconName: 'pin', stateClass: 'pinned', dataAttr: 'pinned',
+                            label: pinned ? 'Unpin' : 'Pin', ariaLabel: `${pinned ? 'Unpin' : 'Pin'} message`,
+                        })) {
+                            this.renderMessages();
+                        }
                     }
                     showToast(pinned ? 'Message pinned' : 'Message unpinned', { type: 'success', duration: 1200 });
                 }
@@ -907,7 +920,17 @@ export class ChatManager {
                     const target = this.messages.find(m => m.id === likedId);
                     if (target) {
                         target.liked = liked;
-                        this.renderMessages();
+                        // Same targeted update as pin (avoids re-highlighting the
+                        // whole window on a like toggle). The like button has no
+                        // trailing text label — only the heart icon — so label:null.
+                        if (!this.updateActionButton({
+                            btnClass: 'like-message-btn', id: likedId, active: liked,
+                            iconName: 'heart', stateClass: 'liked', dataAttr: 'liked',
+                            label: null, ariaLabel: `${liked ? 'Unlike' : 'Like'} message`,
+                            title: liked ? 'Unlike' : 'Like',
+                        })) {
+                            this.renderMessages();
+                        }
                     }
                 }
                 break;
@@ -2015,6 +2038,39 @@ export class ChatManager {
             currentConversation: this.currentConversation,
             presets: this.presets,
         });
+    }
+
+    /**
+     * Update a single message's pin/like action button IN PLACE (class, icon,
+     * label, title, aria-label, data-attr) instead of re-rendering the whole
+     * window. Returns true if the button was found + updated, false if it isn't
+     * in the current virtualization window (the caller then does a full render).
+     * Mirrors the exact markup message-template.ts emits so a later full render
+     * produces identical DOM.
+     */
+    private updateActionButton(opts: {
+        btnClass: string;
+        id: number;
+        active: boolean;
+        iconName: string;
+        stateClass: string;
+        dataAttr: string;
+        label: string | null;   // trailing text (Pin/Unpin); null for icon-only (like)
+        ariaLabel: string;
+        title?: string;         // defaults to `label` when omitted (pin case)
+    }): boolean {
+        const btn = document.querySelector<HTMLButtonElement>(
+            `.${opts.btnClass}[data-msg-id="${opts.id}"]`,
+        );
+        if (!btn) return false;
+        btn.classList.toggle(opts.stateClass, opts.active);
+        btn.dataset[opts.dataAttr] = opts.active ? '1' : '0';
+        btn.title = opts.title ?? opts.label ?? '';
+        btn.setAttribute('aria-label', opts.ariaLabel);
+        // Rebuild the inner markup from the same icon()+label the template uses,
+        // so the in-place update is byte-identical to a full re-render.
+        btn.innerHTML = opts.label ? `${icon(opts.iconName)} ${opts.label}` : icon(opts.iconName);
+        return true;
     }
 
     renderMessages(): void {
