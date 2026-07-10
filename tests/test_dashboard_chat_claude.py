@@ -276,6 +276,54 @@ class TestClaudeDashboardRetry:
         # The mode badge must not advertise an image for this turn.
         assert "🖼️" not in ws.find("stream_start")[0]["mode"]
 
+    @pytest.mark.asyncio
+    async def test_regeneration_skips_document_persist(self, ws: FakeWS):
+        """A (DB-validated) client regeneration must NOT re-extract documents.
+
+        save_document_memory does not dedup, so re-persisting a resent
+        attachment on every regenerate compounds duplicate rows. Parity with the
+        Gemini twin's `test_regeneration_skips_document_persist` and the SDK
+        backend's own is_regeneration validation note (which says regeneration
+        must skip document extraction). The old `and is_failover_retry` condition
+        only skipped the failover case, so a plain regenerate duplicated the doc.
+        """
+        from cogs.ai_core.api.dashboard_chat_claude import handle_chat_message_claude
+
+        client = FakeClaudeClient([[_text_event("Reply")]])
+        mock_db = MagicMock()
+        mock_db.save_dashboard_message = AsyncMock(return_value=1)
+        # Last stored message IS this exact user turn → is_regeneration honored.
+        mock_db.get_dashboard_messages = AsyncMock(
+            return_value=[{"id": 1, "role": "user", "content": "regen me"}]
+        )
+        mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "x"})
+        mock_db.update_dashboard_conversation = AsyncMock()
+        fake_extract = AsyncMock(return_value=[{"id": 1}])
+        docs = [{"name": "spec.pdf", "kind": "binary", "data": "data:application/pdf;base64,AAAA"}]
+
+        with (
+            patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat_claude._get_db", return_value=mock_db),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
+                new=AsyncMock(return_value=("User context", False)),
+            ),
+            patch("cogs.ai_core.api.document_extractor.extract_and_persist", fake_extract),
+        ):
+            await handle_chat_message_claude(
+                cast(Any, ws),
+                {
+                    "content": "regen me",
+                    "conversation_id": "conv-doc",
+                    "documents": docs,
+                    "is_regeneration": True,
+                },
+                cast(Any, client),
+                stream_timeout=1,
+            )
+
+        fake_extract.assert_not_awaited()
+
 
 class TestApplySearchReplace:
     """The SDK backend must delegate to the shared dashboard_common patcher.

@@ -529,10 +529,17 @@ async def handle_chat_message_claude(
     # text files so future turns see the content without re-upload. Claude
     # still gets the raw attachments as `document` blocks for THIS turn
     # (highest fidelity); the DB snapshot is the cross-conversation fallback.
-    # Skip extraction only when this is a SERVER-initiated failover retry —
-    # original turn already persisted them. A client-controlled is_regeneration
-    # MUST still trigger extraction in case a doc was uploaded again.
-    if documents and DB_AVAILABLE and not (is_regeneration and is_failover_retry):
+    #
+    # Skip on EITHER a server-initiated failover retry OR a (DB-validated)
+    # client regeneration — in both cases the original turn already persisted
+    # these documents, and save_document_memory does NOT dedup, so re-extracting
+    # a resent attachment would leave a DUPLICATE row in document memory (every
+    # regenerate compounding it). This matches the Gemini twin's `not
+    # is_regeneration` guard and the validation note above (lines ~480-483,
+    # which states is_regeneration must skip document extraction). The old `and`
+    # condition only skipped the failover-retry case, so a plain regenerate
+    # duplicated the doc.
+    if documents and DB_AVAILABLE and not (is_regeneration or is_failover_retry):
         try:
             from .document_extractor import extract_and_persist
 
