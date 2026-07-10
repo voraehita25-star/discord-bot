@@ -566,6 +566,17 @@ function initCharts(): void {
     // Charts will be initialized when the status page loads
     window.addEventListener('resize', debounce(updateCharts, 'resize', 250));
 
+    // The x-axis right edge is anchored to the wall clock, so repaint every
+    // second — without this the time labels only move when a sample lands
+    // (2s status / ~4s dbStats cadence) and the clock visibly skips seconds.
+    // Skip the repaint while the tab is hidden or another page is active;
+    // the regular status-tick redraw covers reactivation.
+    window.setInterval(() => {
+        if (document.hidden) return;
+        if (!document.getElementById('page-status')?.classList.contains('active')) return;
+        updateCharts();
+    }, 1000);
+
     // Hover layer: a crosshair that snaps to the nearest sample + a tooltip.
     // The whole canvas is the hit target (never just the 2px line), and
     // keyboard focus shows the same readout at the latest sample.
@@ -574,11 +585,18 @@ function initCharts(): void {
         if (!canvas) continue;
         canvas.addEventListener('pointermove', (e: PointerEvent) => {
             const params = chartDrawParams.get(id);
-            if (!params || params.data.length < 2 || params.plotW <= 0) return;
+            if (!params || params.xs.length < 2) return;
             const x = e.clientX - canvas.getBoundingClientRect().left;
-            const frac = (x - params.plotLeft) / params.plotW;
-            const idx = Math.max(0, Math.min(params.data.length - 1,
-                Math.round(frac * (params.data.length - 1))));
+            // Nearest sample by drawn position — samples sit at uneven x now
+            // that the axis is temporal (message samples land every ~4s
+            // between 2s memory ticks), so an index-from-fraction formula
+            // would snap to the wrong point.
+            let idx = 0;
+            let best = Infinity;
+            params.xs.forEach((px, i) => {
+                const d = Math.abs(px - x);
+                if (d < best) { best = d; idx = i; }
+            });
             if (chartHoverIndex.get(id) !== idx) {
                 chartHoverIndex.set(id, idx);
                 scheduleChartRedraw(id);
@@ -641,13 +659,13 @@ interface ChartSeriesSpec {
 
 // Last-draw parameters per canvas so pointer-driven redraws (crosshair /
 // tooltip) can repaint immediately instead of waiting for the next status
-// tick. plotLeft/plotW mirror the layout of that draw for hit-testing.
+// tick. xs mirrors each sample's drawn x-position for hover hit-testing
+// (samples are laid out by timestamp, not index, so spacing is uneven).
 const chartDrawParams = new Map<string, {
     data: ChartDataPoint[];
     color: string;
     spec: ChartSeriesSpec;
-    plotLeft: number;
-    plotW: number;
+    xs: number[];
 }>();
 // Hovered sample index per canvas (null = no crosshair).
 const chartHoverIndex = new Map<string, number | null>();
@@ -812,7 +830,7 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec
     ctx.clearRect(0, 0, width, height);
 
     if (data.length < 2) {
-        chartDrawParams.set(canvasId, { data, color, spec, plotLeft: 0, plotW: 0 });
+        chartDrawParams.set(canvasId, { data, color, spec, xs: [] });
         ctx.fillStyle = inkMuted;
         ctx.font = `12px ${monoFont}`;
         ctx.textAlign = 'center';
@@ -843,10 +861,19 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec
     const plotW = plotRight - plotLeft;
     const plotH = plotBottom - plotTop;
 
-    chartDrawParams.set(canvasId, { data, color, spec, plotLeft, plotW });
-
-    const xAt = (i: number): number => plotLeft + plotW * (i / (data.length - 1));
+    // Temporal x-axis anchored to the wall clock: the right edge is "now",
+    // and every sample sits at its true timestamp. Index-based spacing lied
+    // twice — message samples land every ~4s (dbStats cache) between 2s
+    // memory ticks, and the right edge showed a seconds-old sample as if it
+    // were current.
+    const tStart = data[0].timestamp;
+    const tNow = Date.now();
+    const tSpan = Math.max(1, tNow - tStart);
+    const xAt = (t: number): number => plotLeft + plotW * Math.min(1, Math.max(0, (t - tStart) / tSpan));
     const yAt = (v: number): number => plotBottom - ((v - lo) / (hi - lo)) * plotH;
+
+    const pts = data.map(p => ({ x: xAt(p.timestamp), y: yAt(p.value) }));
+    chartDrawParams.set(canvasId, { data, color, spec, xs: pts.map(p => p.x) });
 
     // Grid: solid hairlines at nice ticks, each labeled in the left gutter.
     ctx.strokeStyle = gridColor;
@@ -863,27 +890,20 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec
         ctx.fillText(tickLabels[i], plotLeft - 8, y);
     });
 
-    // Time axis: first / last sample times anchor the window; a midpoint
-    // appears when the plot is wide enough to keep the labels apart. The
-    // midpoint label sits at the FIXED plot center with the time interpolated
-    // between the two samples straddling it — anchoring it to a sample index
-    // (xAt(mid)) made the label hop sideways every tick while the history was
-    // still filling, because floor((n-1)/2)/(n-1) oscillates as n grows.
+    // Time axis: window start / NOW anchor the edges, so the right label
+    // ticks every second like a clock (a 1s repaint timer in initCharts keeps
+    // it moving between samples) instead of jumping only when a sample lands.
+    // All three labels sit at fixed x positions; the midpoint shows the
+    // window's true temporal center.
     ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left';
-    ctx.fillText(formatChartTime(data[0].timestamp), plotLeft, height - 7);
+    ctx.fillText(formatChartTime(tStart), plotLeft, height - 7);
     ctx.textAlign = 'right';
-    ctx.fillText(formatChartTime(data[data.length - 1].timestamp), plotRight, height - 7);
-    if (plotW > 320 && data.length > 2) {
-        const midIdx = (data.length - 1) / 2;
-        const before = data[Math.floor(midIdx)];
-        const after = data[Math.ceil(midIdx)];
-        const midTime = before.timestamp + (after.timestamp - before.timestamp) * (midIdx - Math.floor(midIdx));
+    ctx.fillText(formatChartTime(tNow), plotRight, height - 7);
+    if (plotW > 320) {
         ctx.textAlign = 'center';
-        ctx.fillText(formatChartTime(midTime), plotLeft + plotW / 2, height - 7);
+        ctx.fillText(formatChartTime(tStart + tSpan / 2), plotLeft + plotW / 2, height - 7);
     }
-
-    const pts = data.map((p, i) => ({ x: xAt(i), y: yAt(p.value) }));
 
     // Area wash from the theme fill tokens (top → bottom).
     const gradient = ctx.createLinearGradient(0, plotTop, 0, plotBottom);
@@ -921,7 +941,11 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec
     ctx.fillStyle = inkStrong;
     ctx.textAlign = 'right';
     const endLabelY = lastPt.y - 14 < plotTop ? lastPt.y + 20 : lastPt.y - 12;
-    ctx.fillText(endLabel, plotRight, endLabelY);
+    // The label follows its dot (which sits left of the plot edge while the
+    // clock runs past the last sample), clamped inside the plot.
+    const endLabelW = ctx.measureText(endLabel).width;
+    const endLabelX = Math.min(plotRight, Math.max(lastPt.x + endLabelW / 2, plotLeft + endLabelW));
+    ctx.fillText(endLabel, endLabelX, endLabelY);
 
     // Hover layer: crosshair snapped to the sample + a value-first tooltip.
     const hoverIdx = chartHoverIndex.get(canvasId) ?? null;
