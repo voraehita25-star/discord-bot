@@ -140,8 +140,10 @@ test.describe('Dashboard UI deep inspection', () => {
         // over any class-based rule short of !important — the .hidden class
         // is the only !important rule and we've already removed that.
         await page.evaluate(() => {
-            const overlay = document.getElementById('chat-not-running-overlay');
-            if (overlay) overlay.style.display = 'none';
+            // Remove `.visible` (the app's real hide path) so the app also lifts
+            // the inert/aria-hidden it keeps on `.chat-layout` behind the overlay
+            // — otherwise #chat-input stays inert and .fill() below times out.
+            document.getElementById('chat-not-running-overlay')?.classList.remove('visible');
             const empty = document.getElementById('chat-empty');
             if (empty) empty.classList.add('hidden');
             const container = document.getElementById('chat-container');

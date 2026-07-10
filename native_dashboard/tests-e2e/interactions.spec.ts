@@ -258,11 +258,14 @@ test.describe('Modal interactions', () => {
 test.describe('Conversation list interactions', () => {
     test('clicking + New Chat button opens new conversation flow', async ({ page }) => {
         await page.click('[data-page="chat"]');
-        // Hide the bot-not-running overlay that intercepts pointer events
-        // when the bot isn't online (mock returns is_running: false).
+        // Hide the bot-not-running overlay that intercepts pointer events when
+        // the bot isn't online (mock returns is_running: false). Remove the
+        // `.visible` class — the app's real hide mechanism — rather than a
+        // display hack, so the app also lifts the `inert`/aria-hidden it keeps on
+        // `.chat-layout` while the overlay covers it (else #btn-new-chat-main
+        // stays inert and unclickable).
         await page.evaluate(() => {
-            const ov = document.getElementById('chat-not-running-overlay');
-            if (ov) ov.style.display = 'none';
+            document.getElementById('chat-not-running-overlay')?.classList.remove('visible');
         });
         const newBtn = page.locator('#btn-new-chat-main');
         // Fail (don't silently skip) if the button is missing — its absence is

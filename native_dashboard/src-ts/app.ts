@@ -140,6 +140,41 @@ const modalReturnFocus = new WeakMap<HTMLElement, HTMLElement | null>();
 // (it lives INSIDE .app and never owns inert) can't pin inert on.
 const inertModals = new Set<HTMLElement>();
 
+// The "Bot Not Running" overlay (#chat-not-running-overlay) is an opaque,
+// ~92%-blurred layer stacked over the whole chat page when the bot is offline.
+// Unlike a real .modal it never routed through openModal/setAppInert, so the
+// chat sidebar controls (#conversation-filter-input, #btn-new-chat,
+// #btn-export-all) and #btn-new-chat-main stayed in the tab order and the AT
+// tree DIRECTLY BEHIND the opaque overlay — a keyboard/AT user could Tab to (and
+// activate) "New Conversation" on an offline bot with its focus ring hidden
+// under the blur (WCAG 2.4.7 / 2.4.11). Keep `.chat-layout` inert + aria-hidden
+// exactly while the overlay is visible so only the overlay's "Start Bot" button
+// is reachable. Driven by a MutationObserver on the overlay's class so it stays
+// correct no matter what toggles `.visible` (updateStatus, or a direct DOM
+// change) — no caller needs to remember to sync it.
+let _chatOverlayObserver: MutationObserver | null = null;
+
+function syncChatOverlayInert(): void {
+    const overlay = document.getElementById('chat-not-running-overlay');
+    const chatLayout = document.querySelector<HTMLElement>('#page-chat .chat-layout');
+    if (!overlay || !chatLayout) return;
+    if (overlay.classList.contains('visible')) {
+        chatLayout.setAttribute('inert', '');
+        chatLayout.setAttribute('aria-hidden', 'true');
+    } else {
+        chatLayout.removeAttribute('inert');
+        chatLayout.removeAttribute('aria-hidden');
+    }
+}
+
+function initChatOverlayA11y(): void {
+    const overlay = document.getElementById('chat-not-running-overlay');
+    if (!overlay || _chatOverlayObserver) return;
+    _chatOverlayObserver = new MutationObserver(() => syncChatOverlayInert());
+    _chatOverlayObserver.observe(overlay, { attributes: true, attributeFilter: ['class'] });
+    syncChatOverlayInert();  // apply the initial state
+}
+
 function setAppInert(inert: boolean): void {
     // Modals are siblings of `.app` (they live after </div> for .app), so
     // toggling inert/aria-hidden on the app shell never touches the open modal.
@@ -235,6 +270,7 @@ document.addEventListener("DOMContentLoaded", () => {
     sakuraEnabled = settings.sakuraEnabled !== false;
     if (sakuraEnabled) initSakuraAnimation();
     initKeyboardShortcuts();
+    initChatOverlayA11y();
     initChatManager();
     initHistoryManager();
     // Update AI avatars after all init
@@ -1447,6 +1483,10 @@ function updateStatusBadge(status: BotStatus): void {
     const chatOverlay = document.getElementById('chat-not-running-overlay');
     if (chatOverlay) {
         chatOverlay.classList.toggle('visible', !status.is_running);
+        // Keep the behind-overlay controls inert in lockstep with visibility.
+        // (The observer also catches this, but sync synchronously so the tab
+        // order is correct within the same frame, not one microtask later.)
+        syncChatOverlayInert();
     }
 
     // If the bot came online while the user is already on the chat page,

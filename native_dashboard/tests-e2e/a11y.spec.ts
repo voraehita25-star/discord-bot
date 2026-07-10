@@ -186,6 +186,35 @@ test('modal inert regression: an in-.app chat modal does NOT inert the app', asy
     expect(focusInChatModal).toBe(true);
 });
 
+test('overlay inert: "Bot Not Running" overlay inerts the chat controls it covers', async ({ page }) => {
+    // The offline overlay (mock returns is_running:false) is opaque + blurred and
+    // covers the whole chat page. Its behind-controls (sidebar filter, New, Export
+    // All, the main New-Conversation button) must be removed from the tab order +
+    // AT tree while it's up, or a keyboard/AT user can drive them blind behind the
+    // blur (WCAG 2.4.7 / 2.4.11). The app keeps `.chat-layout` inert + aria-hidden
+    // in lockstep with the overlay's `.visible` class.
+    await page.click('[data-page="chat"]');
+    await page.waitForTimeout(100);
+
+    // Overlay visible → chat-layout inert + aria-hidden.
+    await expect(page.locator('#chat-not-running-overlay')).toHaveClass(/visible/);
+    await expect(page.locator('#page-chat .chat-layout')).toHaveAttribute('inert', '');
+    await expect(page.locator('#page-chat .chat-layout')).toHaveAttribute('aria-hidden', 'true');
+    // The overlay's own Start button stays reachable (it is NOT inside .chat-layout).
+    const startInert = await page.evaluate(() =>
+        document.getElementById('btn-overlay-start')?.closest('[inert]') !== null,
+    );
+    expect(startInert, 'the overlay Start button must remain reachable').toBe(false);
+
+    // Simulate the bot coming online (the app's real hide path) → inert lifts.
+    await page.evaluate(() =>
+        document.getElementById('chat-not-running-overlay')?.classList.remove('visible'),
+    );
+    await page.waitForTimeout(50);  // let the MutationObserver flush
+    expect(await page.locator('#page-chat .chat-layout').getAttribute('inert')).toBeNull();
+    expect(await page.locator('#page-chat .chat-layout').getAttribute('aria-hidden')).toBeNull();
+});
+
 test('a11y: every interactive element is keyboard-reachable', async ({ page }) => {
     // Tab through the page and verify that the keyboard actually reaches a
     // non-trivial set of the visible focusable controls. Catches
