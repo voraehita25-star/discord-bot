@@ -828,10 +828,14 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec
     const { lo, hi, ticks, step } = niceChartScale(rawMin, rawMax, spec.decimals === 0);
 
     // Layout — the left gutter is sized to the widest tick label so 4-digit
-    // message counts never collide with the plot.
+    // message counts never collide with the plot, then quantized to 8px steps
+    // so a 1px change in label width between live ticks can't nudge the whole
+    // plot sideways.
     ctx.font = `10px ${monoFont}`;
     const tickLabels = ticks.map(t => formatChartTick(t, spec.decimals, step));
-    const gutter = Math.max(30, ...tickLabels.map(l => ctx.measureText(l).width)) + 12;
+    const gutter = Math.ceil(
+        (Math.max(30, ...tickLabels.map(l => ctx.measureText(l).width)) + 12) / 8
+    ) * 8;
     const plotLeft = gutter;
     const plotTop = 14;
     const plotRight = width - 14;
@@ -860,16 +864,23 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec
     });
 
     // Time axis: first / last sample times anchor the window; a midpoint
-    // appears when the plot is wide enough to keep the labels apart.
+    // appears when the plot is wide enough to keep the labels apart. The
+    // midpoint label sits at the FIXED plot center with the time interpolated
+    // between the two samples straddling it — anchoring it to a sample index
+    // (xAt(mid)) made the label hop sideways every tick while the history was
+    // still filling, because floor((n-1)/2)/(n-1) oscillates as n grows.
     ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left';
     ctx.fillText(formatChartTime(data[0].timestamp), plotLeft, height - 7);
     ctx.textAlign = 'right';
     ctx.fillText(formatChartTime(data[data.length - 1].timestamp), plotRight, height - 7);
     if (plotW > 320 && data.length > 2) {
-        const mid = Math.floor((data.length - 1) / 2);
+        const midIdx = (data.length - 1) / 2;
+        const before = data[Math.floor(midIdx)];
+        const after = data[Math.ceil(midIdx)];
+        const midTime = before.timestamp + (after.timestamp - before.timestamp) * (midIdx - Math.floor(midIdx));
         ctx.textAlign = 'center';
-        ctx.fillText(formatChartTime(data[mid].timestamp), xAt(mid), height - 7);
+        ctx.fillText(formatChartTime(midTime), plotLeft + plotW / 2, height - 7);
     }
 
     const pts = data.map((p, i) => ({ x: xAt(i), y: yAt(p.value) }));
