@@ -791,8 +791,12 @@ h2 {
 }
 
 .api-endpoint-item.active .ep-badge {
-    background: rgba(34, 211, 238, 0.2);
-    color: #22d3ee;
+    /* Was hardcoded cyan (#22d3ee on rgba(34,211,238,.2)) — off the sakura brand
+       and ~1.6:1 in light theme, defeating the token fix on the sibling
+       healthy/unhealthy badges. Restated via theme tokens so the active badge
+       tracks the brand accent and clears AA in both themes. */
+    background: var(--cyan-200);
+    color: var(--accent-cyan);
 }
 
 /* Status colors via theme tokens: the old literals (#22c55e/#ef4444) were
@@ -2266,8 +2270,10 @@ html[data-theme="light"] .log-line.info {
 }
 
 .delete-message-btn:hover {
-border-color: #e74c3c;
-color: #e74c3c;
+/* Was hardcoded #e74c3c (~3.85:1 in light theme); --accent-red is theme-aware
+   and clears AA while keeping the destructive-hover cue on-brand. */
+border-color: var(--accent-red);
+color: var(--accent-red);
 }
 
 .edit-message-btn,
@@ -3490,13 +3496,15 @@ html[data-theme="light"] .role-card:hover {
     color: var(--accent-purple);
 }
 
-/* Unrestricted mode special styling */
+/* Unrestricted mode special styling. Was hardcoded #ff6b6b (~2.8:1 on the
+   light-theme chat input bar); --accent-red is theme-aware (deep rose #b3223c
+   in light → AA) and keeps the danger cue on-brand. */
 .chat-input-options .checkbox-label.unrestricted-toggle input:checked + .checkbox-icon {
-    color: #ff6b6b;
+    color: var(--accent-red);
 }
 
 .chat-input-options .checkbox-label.unrestricted-toggle input:checked ~ .checkbox-text {
-    color: #ff6b6b;
+    color: var(--accent-red);
 }
 
 .btn-attach {

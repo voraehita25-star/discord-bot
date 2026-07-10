@@ -322,7 +322,16 @@ function formatMessageUncached(content: string): string {
 
     // Extract inline LaTeX ($...$). Single-line only ([^$\n]) so unmatched
     // currency dollars in prose can't span paragraphs into a math span.
-    processed = processed.replace(/(?<!\$)\$(?!\$)([^$\n]+)\$(?!\$)/g, (_match, tex) => {
+    //
+    // Currency guard: the delimiters are tightened so plain money in prose isn't
+    // eaten as math. The OPENING `$` must NOT be followed by a space or a digit
+    // (`(?![\s\d])`) and the CLOSING `$` must NOT be preceded by a space
+    // (`(?<!\s)`) nor followed by a digit (`(?!\d)`). So "from $5 to $20" leaves
+    // both `$5`/`$20` as literal text (each `$` is digit-led → never an opener,
+    // never a closer), while genuine inline math like `$a^2 + b^2 = c^2$` or
+    // `$x$` still matches. The body is lazy (`+?`) so `$a$ and $b$` yields two
+    // spans, not one that swallows the middle.
+    processed = processed.replace(/(?<!\$)\$(?![\s\d])([^$\n]+?)(?<!\s)\$(?!\d)/g, (_match, tex) => {
         const idx = latexBlocks.length;
         try {
             if (katex) {

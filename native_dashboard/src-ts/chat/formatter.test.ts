@@ -229,6 +229,23 @@ describe('formatMessage — LaTeX fallback (no KaTeX)', () => {
         const html = formatMessage('Pythagoras: $a^2 + b^2 = c^2$ is famous');
         expect(html).toContain('math-inline');
     });
+
+    it('does NOT treat two currency amounts on one line as inline math', () => {
+        // Regression: the old `\$([^$\n]+)\$` matched `$5 to $` and rendered
+        // "5to" as math, orphaning "20 last year." after it. The tightened
+        // delimiters (opener not digit/space-led, closer not space/digit-adjacent)
+        // leave plain money as literal text.
+        const html = formatMessage('The price rose from $5 to $20 last year.');
+        expect(html).not.toContain('math-inline');
+        expect(html).toContain('$5 to $20');
+    });
+
+    it('still renders real inline math even when currency is nearby', () => {
+        // `$5` is left literal (digit-led), and the genuine `$x^2$` still renders.
+        const html = formatMessage('It costs $5 but the area is $x^2$ units.');
+        expect(html).toContain('math-inline');
+        expect(html).toContain('$5');
+    });
 });
 
 describe('formatMessage — tables', () => {

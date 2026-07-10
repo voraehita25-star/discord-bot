@@ -738,6 +738,8 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     padding: 13px 14px;
     border-radius: var(--radius-sm);
     white-space: nowrap;
+    /* Positioning context for the active-nav accent rail (::before below). */
+    position: relative;
 }
 .nav-item .shortcut { letter-spacing: 0.02em; padding-left: 5px; padding-right: 5px; }
 .nav-item > span:not(.nav-icon) {
@@ -754,8 +756,25 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     background: var(--brand-soft);
     box-shadow: inset 0 0 0 1px var(--border-strong), inset 0 0 22px rgba(255, 161, 194, 0.08);
 }
-/* active-nav petal rail: brand gradient fill + sakura bloom */
-.nav-item.active::before { width: 3px; background: var(--brand-grad); box-shadow: 0 0 14px var(--glow-sakura); }
+/* active-nav petal rail: brand gradient fill + sakura bloom. The three
+   `.nav-item.active::before` rules (two in styles.css, this one) all set
+   background/width but NEVER declared `content`/`position`, so no pseudo-box was
+   ever generated — the intended accent rail silently never rendered. Declare the
+   box here (this rule wins by source order) so the documented flourish actually
+   shows: a 3px brand-gradient bar pinned to the left edge, vertically centred so
+   it sits inside the item's rounded corners. */
+.nav-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    height: 62%;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background: var(--brand-grad);
+    box-shadow: 0 0 14px var(--glow-sakura);
+}
 @media (prefers-reduced-motion: no-preference) {
     .nav-item:active { transform: scale(.98); }
 }
