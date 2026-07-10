@@ -395,7 +395,7 @@ describe('WebSocketClient — reconnect backoff', () => {
         randomSpy.mockRestore();
     });
 
-    it('a successful open resets reconnectAttempts back to 0', async () => {
+    it('a STABLE open (survives the stability window) resets reconnectAttempts to 0', async () => {
         vi.useFakeTimers();
         const { callbacks } = makeCallbacks();
         const client = new WebSocketClient(callbacks);
@@ -411,8 +411,38 @@ describe('WebSocketClient — reconnect backoff', () => {
         await vi.advanceTimersByTimeAsync(1000);
         await vi.advanceTimersByTimeAsync(0);
         socket = FakeWebSocket.instances.at(-1)!;
-        socket.fireOpen();            // reconnect succeeds
+        socket.fireOpen();            // reconnect opens…
+        // …but the backoff is NOT cleared until the connection proves stable.
+        expect(client.reconnectAttempts).toBe(1);
+        await vi.advanceTimersByTimeAsync(3000);  // survive CONNECTION_STABLE_MS
         expect(client.reconnectAttempts).toBe(0);
+    });
+
+    it('an open immediately followed by a close (bad token) does NOT reset backoff', async () => {
+        // Regression: the server accepts the WS upgrade for a message-auth client
+        // then closes ~immediately on a wrong/stale token. Resetting backoff on
+        // raw open let that reconnect-storm at the base delay forever. The reset
+        // is now gated on surviving the stability window, which a rejected socket
+        // never does — so the backoff must keep escalating across attempts.
+        vi.useFakeTimers();
+        const { callbacks } = makeCallbacks();
+        const client = new WebSocketClient(callbacks);
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        client.connect();
+        await vi.advanceTimersByTimeAsync(0);
+        for (let i = 1; i <= 3; i++) {
+            const socket = FakeWebSocket.instances.at(-1)!;
+            socket.fireOpen();
+            // Server rejects the token well within the stability window.
+            await vi.advanceTimersByTimeAsync(100);
+            socket.fireClose(4001);
+            // Backoff must escalate every round, not reset to 0 on the open.
+            expect(client.reconnectAttempts).toBe(i);
+            // Advance past the scheduled reconnect to spawn the next socket.
+            await vi.advanceTimersByTimeAsync(60000);
+            await vi.advanceTimersByTimeAsync(0);
+        }
     });
 });
 

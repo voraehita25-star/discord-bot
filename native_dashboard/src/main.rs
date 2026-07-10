@@ -952,22 +952,32 @@ fn read_dotenv_value(env_path: &std::path::Path, key: &str) -> Option<String> {
             line = rest.trim_start();
         }
         if let Some(val) = line.strip_prefix(&prefix) {
-            // Strip at most ONE matched surrounding quote pair, mirroring a real
-            // dotenv parser. ``trim_matches`` would over-strip repeated boundary
-            // quotes and, worse, peel a mismatched pair like ``"value'`` (removing
-            // both the leading ``"`` and trailing ``'``) — corrupting the value.
+            // Mirror python-dotenv (the bot parses the SAME file):
+            //   * A quoted value returns the content between the quotes, and any
+            //     trailing text after the closing quote (an inline comment) is
+            //     discarded. `#` INSIDE the quotes is preserved.
+            //   * An unquoted value has its ` # comment` stripped.
+            // The old code required the WHOLE trimmed value to be quote-wrapped,
+            // so `KEY="tok"  # rotate` fell through to the unquoted branch and
+            // returned `"tok"` WITH quotes → the dashboard sent a quoted token,
+            // the bot expected `tok`, and the WS handshake 401'd with no hint.
             let t = val.trim();
-            let val = if t.len() >= 2
-                && ((t.starts_with('"') && t.ends_with('"'))
-                    || (t.starts_with('\'') && t.ends_with('\'')))
-            {
-                &t[1..t.len() - 1]
+            let first = t.chars().next();
+            let val: &str = if first == Some('"') || first == Some('\'') {
+                let q = first.unwrap();
+                // Closing quote = first matching quote after the opener. Index 1
+                // is a char boundary (the opener is a 1-byte ASCII quote).
+                match t[1..].find(q) {
+                    // Content between the quotes; trailing comment (if any) dropped.
+                    Some(rel) => &t[1..rel + 1],
+                    // Unterminated quote (malformed) — treat as unquoted, matching
+                    // the prior fall-through for a mismatched pair like `"value'`.
+                    None => match t.find(" #") {
+                        Some(i) => t[..i].trim_end(),
+                        None => t,
+                    },
+                }
             } else {
-                // Unquoted values: strip an inline ` # comment`, matching
-                // python-dotenv (which the bot uses on the SAME file). Without
-                // this, `DASHBOARD_WS_TOKEN=abc  # note` made the dashboard
-                // send "abc  # note" while the bot expected "abc" — an opaque
-                // 401. Quoted values keep their `#` (both parsers agree).
                 match t.find(" #") {
                     Some(i) => t[..i].trim_end(),
                     None => t,
@@ -1591,6 +1601,18 @@ mod tests {
             read_dotenv_value(&path, "TOKEN"),
             Some("abc # not a comment".to_string())
         );
+    }
+
+    #[test]
+    fn dotenv_strips_quotes_and_trailing_comment() {
+        // Regression: `KEY="tok"  # rotate` used to fall through to the unquoted
+        // branch (the whole trimmed value wasn't quote-wrapped) and return
+        // `"tok"` WITH quotes, so the dashboard sent a quoted token and the bot
+        // 401'd. python-dotenv drops both quotes and the trailing comment.
+        let (_tmp, path) = write_env("TOKEN=\"mytoken\"  # rotate monthly\n");
+        assert_eq!(read_dotenv_value(&path, "TOKEN"), Some("mytoken".to_string()));
+        let (_tmp2, path2) = write_env("TOKEN2='single'  # note\n");
+        assert_eq!(read_dotenv_value(&path2, "TOKEN2"), Some("single".to_string()));
     }
 
     // ------- sanitize_log_field (audit dash-rust-5: log-injection completeness) -

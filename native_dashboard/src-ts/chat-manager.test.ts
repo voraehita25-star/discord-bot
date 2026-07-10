@@ -247,6 +247,25 @@ describe('handleMessage — conversation_loaded', () => {
         expect(document.getElementById('chat-container')!.classList.contains('hidden')).toBe(false);
     });
 
+    it('drops a late load frame for a DIFFERENT conversation created just after', () => {
+        // Race: user clicks conversation A (loadConversation → pendingLoad='A'),
+        // then creates B. conversation_created must re-point the stale-load guard
+        // at B so the slow conversation_loaded for A is dropped instead of
+        // overwriting the freshly created B.
+        const cm = mountDomAndChat();
+        (cm as unknown as { pendingConversationLoadId: string | null }).pendingConversationLoadId = 'A';
+        cm.handleMessage({ type: 'conversation_created', id: 'B', role_preset: 'general', title: 'B' });
+        expect(cm.currentConversation?.id).toBe('B');
+        // The guard now names B, so a late load frame for A is ignored.
+        cm.handleMessage({
+            type: 'conversation_loaded',
+            conversation: { id: 'A', title: 'A', role_preset: 'general', thinking_enabled: false, is_starred: false, created_at: '2026-04-01' },
+            messages: [{ id: 1, role: 'user', content: 'stale A', created_at: '2026-04-01' }],
+        });
+        expect(cm.currentConversation?.id, 'late A load must not replace created B').toBe('B');
+        expect(cm.messages.length, 'B stays empty; stale A messages dropped').toBe(0);
+    });
+
     it('resets visibleMessageCount on conversation switch', () => {
         const cm = mountDomAndChat();
         // First conversation loads — 50 msgs.

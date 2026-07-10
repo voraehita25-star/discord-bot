@@ -42,6 +42,16 @@ const MISSED_PONG_LIMIT = 2;
 // for ASCII payloads the two match closely and that's the worst case.
 const MAX_MESSAGE_LENGTH = 50 * 1024 * 1024;
 
+// How long a socket must stay OPEN before we treat it as a genuinely
+// established connection and clear the reconnect backoff. The server accepts
+// the WS upgrade for message-auth clients BEFORE the token is checked, then
+// closes (code 4001) ~immediately on a bad/rotated/stale token. Resetting the
+// backoff on raw `onopen` therefore let a wrong-token client reconnect-storm at
+// the base delay forever (backoff reset every open, never escalating). Only
+// clear the backoff once the connection survives this window — a rejected
+// socket closes well within it, so its onclose cancels the pending reset.
+const CONNECTION_STABLE_MS = 3000;
+
 export class WebSocketClient {
     ws: WebSocket | null = null;
     connected: boolean = false;
@@ -60,6 +70,8 @@ export class WebSocketClient {
     // in-flight connect() from resurrecting a socket the user already tore down.
     private connectGeneration: number = 0;
     private reconnectTimeout: number | null = null;
+    // Pending "connection is stable → clear backoff" timer (see CONNECTION_STABLE_MS).
+    private stableTimer: number | null = null;
     private pingInterval: number | null = null;
     private pongPending: boolean = false;
     private missedPongs: number = 0;
@@ -115,6 +127,10 @@ export class WebSocketClient {
         if (this.reconnectTimeout !== null) {
             clearTimeout(this.reconnectTimeout);
             this.reconnectTimeout = null;
+        }
+        if (this.stableTimer !== null) {
+            clearTimeout(this.stableTimer);
+            this.stableTimer = null;
         }
         if (this.ws) {
             this.ws.close();
@@ -228,12 +244,22 @@ export class WebSocketClient {
                     }
                 }
                 this.connected = true;
-                this.reconnectAttempts = 0;
-                this.maxAttemptsNotified = false;
                 this.pongPending = false;
                 this.missedPongs = 0;
                 this.callbacks.onConnectStateChange?.(true);
                 this.startPingLoop();
+                // Defer the backoff reset until the connection proves stable.
+                // A wrong-token socket is closed by the server within
+                // CONNECTION_STABLE_MS; its onclose clears this timer, so the
+                // backoff keeps escalating instead of resetting every open.
+                if (this.stableTimer !== null) clearTimeout(this.stableTimer);
+                this.stableTimer = window.setTimeout(() => {
+                    this.stableTimer = null;
+                    if (this.ws === socket && this.connected) {
+                        this.reconnectAttempts = 0;
+                        this.maxAttemptsNotified = false;
+                    }
+                }, CONNECTION_STABLE_MS);
             };
 
             socket.onclose = (event) => {
@@ -242,6 +268,13 @@ export class WebSocketClient {
                 this.ws = null;
                 this.connected = false;
                 this.stopPingLoop();
+                // Cancel a pending stability reset: this socket did NOT survive
+                // the window (e.g. server closed it on a bad token), so the
+                // backoff must keep escalating.
+                if (this.stableTimer !== null) {
+                    clearTimeout(this.stableTimer);
+                    this.stableTimer = null;
+                }
 
                 if (!opened && fallbackUrls.length > 0) {
                     const [nextUrl, ...remaining] = fallbackUrls;

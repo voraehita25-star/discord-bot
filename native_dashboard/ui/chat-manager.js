@@ -460,12 +460,14 @@ export class ChatManager {
                     console.error('Invalid conversation_created data:', data);
                     break;
                 }
-                // Invalidate any in-flight load: without this, a late
-                // conversation_loaded frame for a conversation clicked just
-                // BEFORE creating this one passes the stale-frame guard
-                // (pendingConversationLoadId still names it) and swaps the
-                // view back, replacing the freshly created conversation.
-                this.pendingConversationLoadId = null;
+                // Invalidate any in-flight load by RE-POINTING the guard at the
+                // new conversation, not by nulling it. The conversation_loaded
+                // drop test is `requestedId !== null && requestedId !== incoming.id`
+                // — with null, `requestedId !== null` is false so the guard is
+                // disabled and a late frame for a conversation clicked just BEFORE
+                // this one sails through and overwrites the freshly created one.
+                // Naming the new id makes any non-matching late load frame drop.
+                this.pendingConversationLoadId = data.id;
                 this.messages = [];
                 this.showChatContainer();
                 this.updateChatHeader();

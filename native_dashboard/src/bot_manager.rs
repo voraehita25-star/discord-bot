@@ -1197,6 +1197,11 @@ impl BotManager {
                 let _ = c.kill();
                 let _ = c.wait();
             }
+            // Stop a live dev_watcher too: if dev mode was active and the bot is
+            // just momentarily absent (hot-reload/crash gap), returning without
+            // this leaves the watcher running — and it respawns bot.py, so "Stop"
+            // silently fails to stop dev mode. Mirrors the main kill path.
+            self.stop_dev_watcher();
             let _ = fs::remove_file(self.pid_file());
             return Err("Bot is not running".to_string());
         }
@@ -1215,6 +1220,9 @@ impl BotManager {
                     let _ = c.kill();
                     let _ = c.wait();
                 }
+                // Also stop a live dev_watcher (see the !is_running branch above):
+                // leaving it running lets it respawn the bot after "Stop".
+                self.stop_dev_watcher();
                 let _ = fs::remove_file(self.pid_file());
                 return Err("Bot PID was stale (process is no longer Python)".to_string());
             }
@@ -1225,6 +1233,8 @@ impl BotManager {
                 let _ = c.kill();
                 let _ = c.wait();
             }
+            // Also stop a live dev_watcher so it doesn't respawn the bot post-Stop.
+            self.stop_dev_watcher();
             let _ = fs::remove_file(self.pid_file());
             return Err("Bot process no longer exists".to_string());
         }
