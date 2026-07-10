@@ -16,6 +16,8 @@ Check the latest: `git tag --sort=-v:refname | head` and `gh release list`. If t
 - `CLAUDE.md` (`(vX.Y.Z)` on line ~7)
 - `native_dashboard/tauri.conf.json` (`"version": "X.Y.Z"` — this is the version source-of-truth read by sync_doc_stats.py; bump it or the auto-sync stays stale)
 - `native_dashboard/Cargo.toml` (`version = "X.Y.Z"`) + run a build to refresh `Cargo.lock`
+- `native_dashboard/package.json` + `native_dashboard/package-lock.json` (`"version": "X.Y.Z"`, two spots in the lock) — the DASHBOARD's own manifest version; easy to miss and it drifted to 3.4.14 while the app shipped 3.5.0
+- `native_dashboard/ui/index.html` — the Settings ▸ About card (`Version X.Y.Z - Enhanced Edition`), the version the user actually SEES in the app
 - Doc headers: `README.md` (`**Version:**`), `docs/DEVELOPER_GUIDE.md`, `cogs/ai_core/README.md` (note: README.md / DEVELOPER_GUIDE.md / INSTALL.md version headers are auto-synced by `scripts/maintenance/sync_doc_stats.py`)
 - Write `docs/release-notes/vX.Y.Z.md` (match the style of the latest existing note: title, Date, sections, a Verification section with current test counts).
 
