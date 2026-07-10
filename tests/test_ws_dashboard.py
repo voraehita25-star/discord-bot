@@ -679,3 +679,119 @@ class TestMaxClients:
         assert server.MAX_IMAGES == 10
         assert server.MAX_IMAGE_SIZE_BYTES == 10 * 1024 * 1024
         assert server.RATE_LIMIT_MESSAGES_PER_MINUTE == 120
+
+
+# ===================================================================
+# Concurrent-write safety (per-connection send lock) + failover broadcast
+# eviction classifier. aiohttp's WebSocketResponse is not concurrent-write
+# safe: a streaming chat task and the api-failover broadcast both write the
+# SAME socket from independent tasks. _install_send_lock serializes them, and
+# the broadcast must not force-close a live socket over a bare RuntimeError.
+# ===================================================================
+class TestConcurrentSendSafety:
+    """Regression tests for the per-connection send lock + eviction classifier."""
+
+    @pytest.mark.asyncio
+    async def test_install_send_lock_serializes_concurrent_sends(self):
+        """Two overlapping send_json calls must not interleave once the lock is on."""
+        from cogs.ai_core.api.ws_dashboard import _install_send_lock
+
+        active = 0
+        max_concurrent = 0
+
+        class _InterleaveDetectingWS:
+            async def send_json(self, data, **_kwargs):
+                nonlocal active, max_concurrent
+                active += 1
+                max_concurrent = max(max_concurrent, active)
+                # Yield control so a second, unserialized send would run its
+                # body here and push max_concurrent to 2.
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                active -= 1
+
+        ws = _InterleaveDetectingWS()
+        _install_send_lock(ws)
+        await asyncio.gather(ws.send_json({"n": 1}), ws.send_json({"n": 2}))
+        assert max_concurrent == 1, "send_json must be serialized behind the lock"
+
+    @pytest.mark.asyncio
+    async def test_install_send_lock_is_idempotent(self):
+        """A second install must not double-wrap (would deadlock a re-entrant call)."""
+        from cogs.ai_core.api.ws_dashboard import _install_send_lock
+
+        class _WS:
+            def __init__(self):
+                self.calls = 0
+
+            async def send_json(self, data, **_kwargs):
+                self.calls += 1
+
+        ws = _WS()
+        _install_send_lock(ws)
+        first_wrapped = ws.send_json
+        _install_send_lock(ws)  # no-op
+        assert ws.send_json is first_wrapped
+        await ws.send_json({})
+        assert ws.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_failover_broadcast_keeps_live_client_on_runtimeerror(self, server):
+        """A bare RuntimeError on an OPEN socket must NOT evict/close it.
+
+        aiohttp raises RuntimeError for a concurrent-send collision on a live
+        streaming client; misclassifying that as dead force-closed the socket
+        mid-response. Only a ConnectionError or an already-closed ws may evict.
+        """
+        import cogs.ai_core.api.ws_dashboard as ws_module
+
+        class _RuntimeErrWS:
+            def __init__(self):
+                self.closed = False  # still open
+                self.close_called = False
+
+            async def send_json(self, _data, **_kwargs):
+                raise RuntimeError("Concurrent call to send()")
+
+            async def close(self, **_kwargs):
+                self.close_called = True
+
+        class _ConnErrWS:
+            def __init__(self):
+                self.closed = False
+                self.close_called = False
+
+            async def send_json(self, _data, **_kwargs):
+                raise ConnectionError("peer gone")
+
+            async def close(self, **_kwargs):
+                self.close_called = True
+
+        live = _RuntimeErrWS()
+        dead = _ConnErrWS()
+        server.clients = {live, dead}
+        server._authenticated_ws = {live, dead}
+
+        stub_failover = MagicMock()
+        stub_failover.get_client.return_value = MagicMock()
+        stub_failover.get_status.return_value = {}
+        endpoint = MagicMock()
+        endpoint.value = "primary"
+
+        # create=True: the module-level ``api_failover`` name is only bound when
+        # the failover import succeeded at import time (env/order dependent), so
+        # the attribute may not exist under a bare test env — create it for the
+        # patch. API_FAILOVER_AVAILABLE=True forces the broadcast down the path
+        # that references it.
+        with (
+            patch.object(ws_module, "API_FAILOVER_AVAILABLE", True),
+            patch.object(ws_module, "api_failover", stub_failover, create=True),
+        ):
+            await server._on_endpoint_changed(endpoint, "health-degraded")
+
+        # Live client: RuntimeError on an open socket → NOT evicted, NOT closed.
+        assert live in server.clients, "live client wrongly evicted on RuntimeError"
+        assert not live.close_called, "live client wrongly force-closed on RuntimeError"
+        # Genuinely-dead client (ConnectionError) → evicted + closed.
+        assert dead not in server.clients, "ConnectionError client should be evicted"
+        assert dead.close_called, "ConnectionError client should be closed"

@@ -152,6 +152,39 @@ def _scoped_error_ws(ws: WebSocketResponse, scope: str) -> WebSocketResponse:
     return cast("WebSocketResponse", _ScopedErrorWs(ws, scope))
 
 
+def _install_send_lock(ws: WebSocketResponse) -> None:
+    """Serialize every ``send_json`` on this connection behind one asyncio.Lock.
+
+    aiohttp's ``WebSocketResponse`` is NOT safe for concurrent writes: a single
+    logical frame is written across await points (header + payload + optional
+    compression + ``transport.drain``), so two coroutines writing the same ws
+    interleave frame bytes (protocol corruption) or aiohttp raises
+    ``RuntimeError('Concurrent call to send()')``. This dashboard has genuinely
+    concurrent senders on ONE socket: a client's streaming chat task pushing
+    chunks, and the ``_on_endpoint_changed`` failover broadcast (an independent
+    api_failover monitor task) fanning ``api_endpoint_switched`` to every client.
+    Without serialization the broadcast could interleave with a live response —
+    or raise the concurrent-send RuntimeError, which the broadcast's dead-client
+    classifier then misread and used to force-close the live socket mid-answer.
+
+    Shadowing the bound ``send_json`` with a lock-guarded wrapper covers all ~40
+    call sites (handlers + streaming + broadcast) at once with no call-site
+    changes, and preserves object identity so ``self.clients`` / ``_authenticated_ws``
+    set membership still work. Idempotent — a second call is a no-op.
+    """
+    if getattr(ws, "_dash_send_locked", False):
+        return
+    lock = asyncio.Lock()
+    original_send_json = ws.send_json
+
+    async def _locked_send_json(data: Any, *args: Any, **kwargs: Any) -> None:
+        async with lock:
+            await original_send_json(data, *args, **kwargs)
+
+    ws.send_json = _locked_send_json  # type: ignore[method-assign]
+    ws._dash_send_locked = True  # type: ignore[attr-defined]
+
+
 # ============================================================================
 # WebSocket Dashboard Server
 # ============================================================================
@@ -836,6 +869,10 @@ class DashboardWebSocketServer:
         max_frame = (max_decoded * 4) // 3 + self.MAX_CONTENT_LENGTH * 4 + 4 * 1024 * 1024
         ws = web.WebSocketResponse(max_msg_size=max_frame)
         await ws.prepare(request)
+        # Serialize all writes to this socket (streaming chunks vs the failover
+        # broadcast run in separate tasks — aiohttp ws is not concurrent-write
+        # safe). Must be installed before the ws is exposed to any sender below.
+        _install_send_lock(ws)
 
         self.clients.add(ws)
         client_id = str(uuid.uuid4())[:8]
@@ -1842,7 +1879,14 @@ class DashboardWebSocketServer:
             # bookkeeping — that broke MAX_CLIENTS accounting, left the ws in
             # _authenticated_ws (still receiving sensitive broadcasts), and
             # stop() no longer closed it on shutdown.
-            is_dead = isinstance(outcome, (ConnectionError, RuntimeError)) or bool(
+            #
+            # A bare RuntimeError is NOT proof of death: aiohttp raises it for a
+            # concurrent-send collision (now prevented by the per-connection send
+            # lock) on a perfectly LIVE streaming client. Treating it as dead here
+            # force-closed that socket mid-response. Genuine post-close sends set
+            # ws.closed, so gate eviction on the `closed` flag (plus a real
+            # ConnectionError) and let a lone RuntimeError on an open socket ride.
+            is_dead = isinstance(outcome, ConnectionError) or bool(
                 getattr(ws_client, "closed", False)
             )
             if not is_dead:

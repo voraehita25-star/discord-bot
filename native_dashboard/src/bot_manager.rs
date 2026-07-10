@@ -243,6 +243,30 @@ impl BotManager {
         }
     }
 
+    /// Force-kill a still-live tracked normal-mode bot child (tree) and wait().
+    ///
+    /// `is_running()` only reports true once bot.py has written bot.pid, so a
+    /// bot still in its multi-second cold start (imports / FAISS / RAG load) is
+    /// invisible to the `is_running()` guards in `start()`/`start_dev()`. Both
+    /// spawn paths must therefore tear down any tracked-but-still-booting normal
+    /// bot before spawning, or two bot.py processes end up connected to Discord
+    /// on the same token. `reap_finished_children()` only releases ALREADY-exited
+    /// children, so it cannot cover the booting case. Dropping the handle without
+    /// wait() would (on Windows) close the handle and leave the process running
+    /// detached (an orphan), so we taskkill the tree, then kill()+wait().
+    fn kill_tracked_bot_child(&mut self) {
+        self.reap_finished_children();
+        if let Some(mut old) = self.child.take() {
+            let old_pid = old.id();
+            let _ = Command::new(taskkill_path())
+                .args(["/PID", &old_pid.to_string(), "/F", "/T"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+            let _ = old.kill();
+            let _ = old.wait();
+        }
+    }
+
     fn pid_file(&self) -> PathBuf {
         self.base_path.join("bot.pid")
     }
@@ -992,9 +1016,14 @@ impl BotManager {
 
         // Kill any orphan bot.py processes that survived a previous stop
         self.kill_orphan_bot_processes();
-        // Also reap an orphaned dev_watcher (e.g. dashboard died mid-start_dev
-        // before its PID file was written) — a normal-mode start must not have a
-        // stray watcher hot-reloading the bot underneath it.
+        // Tear down any dev watcher before a normal start. reap_orphan_dev_watcher
+        // only sweeps UNTRACKED watchers (PID-file orphans); a still-live watcher
+        // we spawned ourselves (start_dev whose bot hasn't written bot.pid yet, so
+        // is_running() above returned false) is tracked in dev_watcher_child and
+        // would keep hot-reloading a SECOND bot underneath this one — two bots on
+        // one token. stop_dev_watcher() kills the tracked watcher tree + waits;
+        // reap_orphan_dev_watcher() then covers the untracked-orphan case.
+        self.stop_dev_watcher();
         self.reap_orphan_dev_watcher();
 
         // Remove old PID file first
@@ -1012,23 +1041,10 @@ impl BotManager {
         // Keep the Child handle so we can wait() on it during stop(). Dropping
         // it without waiting leaves a process descriptor on POSIX (zombie) and
         // leaks the Win32 process handle until our own dashboard exits.
-        // Reap any previously-tracked Child that already exited so the slot is empty.
-        self.reap_finished_children();
-        // reap only releases ALREADY-exited children. If a prior start() left a
-        // child still booting (alive but no bot.pid yet), overwriting self.child
-        // below would drop its handle without waiting — on Windows that closes
-        // the handle and leaves the process running detached (an orphan). Kill
-        // any still-live tracked child's tree first, mirroring stop()'s teardown,
-        // rather than relying solely on kill_orphan_bot_processes().
-        if let Some(mut old) = self.child.take() {
-            let old_pid = old.id();
-            let _ = Command::new(taskkill_path())
-                .args(["/PID", &old_pid.to_string(), "/F", "/T"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
-            let _ = old.kill();
-            let _ = old.wait();
-        }
+        // Reap any previously-tracked Child that already exited, then kill any
+        // still-live tracked child's tree first (mirroring stop()'s teardown) so
+        // overwriting self.child below can't orphan a still-booting bot.
+        self.kill_tracked_bot_child();
         self.child = Some(child);
 
         // Return as soon as spawn() succeeds. The previous design held the
@@ -1054,6 +1070,15 @@ impl BotManager {
         if self.is_running() {
             return Err("Bot is already running".to_string());
         }
+
+        // Tear down a still-booting normal-mode bot. is_running() above only
+        // returns true once bot.pid exists, so a normal Start still in its
+        // cold-start window (self.child alive, no bot.pid yet) slips past that
+        // guard; without this kill, dev mode spawns a SECOND bot underneath the
+        // booting one — two bot.py on the same Discord token. Mirrors start()'s
+        // own teardown of a booting child.
+        self.kill_tracked_bot_child();
+        self.kill_orphan_bot_processes();
 
         // Stop any existing dev watcher first (the one we have a PID file for),
         // then sweep any ORPHANED watcher with no PID file — e.g. a previous

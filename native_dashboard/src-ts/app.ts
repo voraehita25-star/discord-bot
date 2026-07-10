@@ -1307,24 +1307,26 @@ async function updateStatus(): Promise<void> {
             noteStatusTick(true);
         }
 
-        // Either side can return null when the bot isn't running yet
-        // (DB not initialized, status endpoint hasn't responded). Without
-        // these guards the .memory_mb / .total_messages accesses below
-        // crash the entire dashboard at bootstrap, leaving a blank UI.
-        if (!status || !dbStats) return;
+        // STATUS is the liveness signal and drives the bot-control buttons; it
+        // must render on its OWN. Coupling it to dbStats (`if (!status ||
+        // !dbStats) return`) was a real freeze: get_status uses a try_lock path
+        // and keeps succeeding while get_db_stats REJECTS under SQLITE_BUSY / an
+        // uninitialized DB (bot cold-start). With a cold dbStats cache the whole
+        // tick bailed, so the Online badge, uptime/memory, and — critically —
+        // the Start/Dev/Stop/Restart buttons never updated. setBotControlBusy(
+        // false) only clears the busy flag; re-enabling the buttons relies
+        // entirely on updateButtons() here, so a rejected dbStats left every
+        // control disabled until a lucky tick. Guard the two endpoints apart.
+        if (!status) return;
 
-        // Cache the results. The 'status' TTL MUST stay below the refresh
-        // interval — a fixed 1500ms cache meant that at a 1s refresh the
-        // in-between tick kept hitting a still-valid cache, so fresh status
-        // (uptime, memory) only arrived every ~2s and uptime jumped 0→2→4→6
-        // instead of ticking by 1. Tie it to the interval (half, min 250ms) so
-        // every tick gets fresh data while still deduping a manual Ctrl+R that
-        // coincides with a tick. dbStats may lag (counts aren't time-critical)
-        // and stays cached longer to spare the DB.
+        // Cache status. The TTL MUST stay below the refresh interval — a fixed
+        // 1500ms cache meant that at a 1s refresh the in-between tick kept
+        // hitting a still-valid cache, so fresh status (uptime, memory) only
+        // arrived every ~2s and uptime jumped 0→2→4→6 instead of ticking by 1.
+        // Tie it to the interval (half, min 250ms) so every tick gets fresh data
+        // while still deduping a manual Ctrl+R that coincides with a tick.
         const statusTtl = Math.max(250, Math.floor(settings.refreshInterval / 2));
         if (!cachedStatus) dataCache.set('status', status, statusTtl);
-        if (!cachedDbStats) dataCache.set('dbStats', dbStats, 3000);
-
         // Only chart fresh samples — adding a point on every call would
         // duplicate the previous reading whenever updateStatus runs against
         // a warm cache (e.g. Ctrl+R immediately followed by the interval
@@ -1332,11 +1334,21 @@ async function updateStatus(): Promise<void> {
         if (!cachedStatus) {
             addChartDataPoint(memoryHistory, status.memory_mb);
         }
-        if (!cachedDbStats) {
-            addChartDataPoint(messagesHistory, dbStats.total_messages);
+
+        // dbStats is independent and non-critical (message/channel counts). It
+        // may lag (counts aren't time-critical) and stays cached longer to spare
+        // the DB. Only touch its cache, its chart sample, and its DOM when it's
+        // actually present — a rejected/cold dbStats must not block the status
+        // half above.
+        if (dbStats) {
+            if (!cachedDbStats) {
+                dataCache.set('dbStats', dbStats, 3000);
+                addChartDataPoint(messagesHistory, dbStats.total_messages);
+            }
         }
 
-        // Batch all DOM updates
+        // Batch all DOM updates. updateStats tolerates a null dbStats (renders
+        // status-only fields and skips the message/channel counts).
         batchDOMUpdate([
             () => updateStatusBadge(status),
             () => updateStatusText(status),
@@ -1466,7 +1478,11 @@ function updateButtons(status: BotStatus): void {
     if (btnRestart) btnRestart.disabled = !status.is_running;
 }
 
-function updateStats(status: BotStatus, dbStats: DbStats): void {
+// dbStats is nullable: get_db_stats can reject (SQLITE_BUSY / uninitialized DB)
+// while get_status keeps succeeding, and the caller now renders the status-only
+// fields regardless. Skip the message/channel counts when it's absent rather
+// than crashing on `.total_messages` of null.
+function updateStats(status: BotStatus, dbStats: DbStats | null): void {
     // Strings that don't animate naturally (uptime, mode) — just set textContent.
     const stringUpdates: [string, string][] = [
         ['stat-uptime', status.uptime],
@@ -1486,15 +1502,20 @@ function updateStats(status: BotStatus, dbStats: DbStats): void {
         setSkeleton(memEl, false);
         animateNumber(memEl, status.memory_mb, { decimals: 1, suffix: ' MB' });
     }
-    const msgEl = document.getElementById('stat-messages');
-    if (msgEl) {
-        setSkeleton(msgEl, false);
-        animateNumber(msgEl, dbStats.total_messages);
-    }
-    const chEl = document.getElementById('stat-channels');
-    if (chEl) {
-        setSkeleton(chEl, false);
-        animateNumber(chEl, dbStats.active_channels);
+    // Message/channel counts come from dbStats — only update when we have it, so
+    // a rejected dbStats leaves the last-known counts in place instead of
+    // clearing them or throwing.
+    if (dbStats) {
+        const msgEl = document.getElementById('stat-messages');
+        if (msgEl) {
+            setSkeleton(msgEl, false);
+            animateNumber(msgEl, dbStats.total_messages);
+        }
+        const chEl = document.getElementById('stat-channels');
+        if (chEl) {
+            setSkeleton(chEl, false);
+            animateNumber(chEl, dbStats.active_channels);
+        }
     }
 }
 

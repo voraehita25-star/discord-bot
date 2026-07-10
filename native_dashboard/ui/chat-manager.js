@@ -247,6 +247,12 @@ export class ChatManager {
     // into ``editStreamContent`` and only push to the DOM once per frame to
     // avoid O(n²) string concatenation costs as the response grows.
     editStreamRafId = null;
+    // rAF id for the pending scroll-follow flush. Reading container.scrollHeight
+    // forces a synchronous layout; the RESPONSE stream calls followStream() on
+    // every chunk, so an un-batched read made the reflow cost grow with DOM size
+    // → O(n²) over a long answer. Coalesce to at most one reflow per frame
+    // (mirrors editStreamRafId on the edit path).
+    followStreamRafId = null;
     userScrolledUp = false; // True when user manually scrolls up during streaming
     draftSaveTimer = null; // Debounced localStorage draft writer
     // Most-recent conversation id passed to ``loadConversation``. The
@@ -930,6 +936,19 @@ export class ChatManager {
                     this.editTargetMessageId = null;
                     this.editStreamContent = '';
                     this.renderMessages(); // Restore original message content
+                }
+                // A failed load_conversation (handle_load_conversation sends an
+                // UNSCOPED error: DB_UNAVAILABLE / CONV_NOT_FOUND / INTERNAL_ERROR)
+                // otherwise leaves showChatLoading()'s three skeleton bubbles in
+                // #chat-messages forever — the toast flashes for 4s and the pane
+                // stays shimmering with no way to recover but clicking another
+                // conversation. Unlike a mid-stream WS drop (self-heals on the
+                // 'connected' reload), an error frame never retries. Clear the
+                // in-flight load and repaint a usable state (the previously-open
+                // conversation, or the welcome card) so the skeletons don't stick.
+                if (this.pendingConversationLoadId !== null) {
+                    this.pendingConversationLoadId = null;
+                    this.renderMessages();
                 }
                 // NOTE: unscoped errors are deliberately NOT forwarded to
                 // historyManager.onError anymore. Every genuine AI-History
@@ -2290,10 +2309,22 @@ export class ChatManager {
             this.updateScrollFab(true);
             return;
         }
-        const container = document.getElementById('chat-messages');
-        if (container) {
-            container.scrollTop = container.scrollHeight;
-        }
+        // Coalesce the scroll-follow to one forced reflow per frame. Reading
+        // scrollHeight synchronously on every chunk was the O(n²) hot spot: chunk
+        // k forced a layout over all k appended text nodes. rAF batching flushes
+        // at most once per frame no matter how many chunks land between frames.
+        if (this.followStreamRafId !== null)
+            return;
+        this.followStreamRafId = requestAnimationFrame(() => {
+            this.followStreamRafId = null;
+            // Re-check: the user may have scrolled up between scheduling and flush.
+            if (this.userScrolledUp)
+                return;
+            const container = document.getElementById('chat-messages');
+            if (container) {
+                container.scrollTop = container.scrollHeight;
+            }
+        });
     }
     /** Count of messages that arrived while the user was scrolled up. */
     newMessagesWhileScrolledUp = 0;

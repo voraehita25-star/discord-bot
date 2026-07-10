@@ -235,6 +235,44 @@ class TestWriteGuardDeniedSubtrees:
         res = run_guard(write_payload(home / ".claude.json"), [home])
         assert res.returncode == DENY
 
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1",  # PS 5.1
+            "Documents/PowerShell/Microsoft.PowerShell_profile.ps1",  # PS 7+
+            "Documents/PowerShell/profile.ps1",  # all-hosts profile
+        ],
+    )
+    def test_denies_powershell_profile_inside_documents_root(self, rel):
+        # The default write roots include ~/Documents, and the PowerShell profile
+        # scripts under it auto-execute on every new shell — an RCE/persistence
+        # vector of the same class as ~/.claude.json. The denylist must block them
+        # even when Documents itself is an allowed root.
+        home = Path.home()
+        res = run_guard(write_payload(home / rel), [home / "Documents"])
+        assert res.returncode == DENY
+
+    def test_denies_onedrive_powershell_profile(self, monkeypatch, tmp_path):
+        # OneDrive-redirected Documents is also a default write root; its
+        # PowerShell profile must be denied too. Drive the guard's OneDrive
+        # resolution via the ONEDRIVE env var (as _dashboard_cli_write_dirs does).
+        od = tmp_path / "OneDrive"
+        (od / "Documents" / "PowerShell").mkdir(parents=True)
+        env = dict(os.environ)
+        env["ONEDRIVE"] = str(od)
+        env["DASHBOARD_CLI_WRITE_DIRS_RESOLVED"] = str(od / "Documents")
+        target = od / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1"
+        res = subprocess.run(
+            [sys.executable, SCRIPT],
+            input=json.dumps(write_payload(target)),
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+        assert res.returncode == DENY
+
 
 class TestWriteGuardUnits:
     def test_is_within_self_and_child(self, tmp_path):

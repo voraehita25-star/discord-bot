@@ -76,6 +76,31 @@ def _is_within(target: Path, root: Path) -> bool:
     return target == root or root in target.parents
 
 
+def _powershell_profile_dirs(home: Path) -> list[Path]:
+    """PowerShell profile directories — RCE/persistence vectors under Documents.
+
+    The default write roots (see ``_dashboard_cli_write_dirs``) include the
+    user's ``Documents`` folder AND its OneDrive-redirected twin. The PowerShell
+    profile scripts live directly under Documents:
+    ``Documents\\WindowsPowerShell\\`` (PS 5.1) and ``Documents\\PowerShell\\``
+    (PS 7+), each holding ``Microsoft.PowerShell_profile.ps1`` / ``profile.ps1``
+    which auto-execute on every new shell. A write there resolves strictly
+    inside the allowed ``Documents`` root, so — like a malicious ``~/.claude.json``
+    mcpServers entry — it would sail past the allow check and get auto-approved.
+    This repo drives PowerShell heavily, so the profile is virtually guaranteed
+    to be sourced. Deny the whole profile dir (covers every profile filename +
+    any module it autoloads), mirroring the ~/.ssh / ~/.claude directory bans.
+    """
+    dirs = [home / "Documents" / "WindowsPowerShell", home / "Documents" / "PowerShell"]
+    # OneDrive-redirected Documents — resolved from the same env vars
+    # _dashboard_cli_write_dirs uses to add the OneDrive Documents write root.
+    onedrive = os.environ.get("ONEDRIVE") or os.environ.get("ONEDRIVECONSUMER")
+    if onedrive:
+        od_docs = Path(onedrive) / "Documents"
+        dirs += [od_docs / "WindowsPowerShell", od_docs / "PowerShell"]
+    return [d.resolve() for d in dirs]
+
+
 def _denied_subtrees() -> list[Path]:
     """Subtrees that are NEVER writable, even inside an allowed root.
 
@@ -83,9 +108,11 @@ def _denied_subtrees() -> list[Path]:
     repo (which contains ``.env``, the bot source, AND this guard script) held
     only positionally — a repo cloned under ``~/Documents`` sat inside a
     default write root and everything in it became auto-approved. Subtract the
-    repo tree plus ``~/.ssh`` / ``~/.claude`` here so the promise is enforced
-    in code regardless of where the repo lives or what roots an operator
-    configures. Fails closed: an unresolvable entry denies via the caller.
+    repo tree plus ``~/.ssh`` / ``~/.claude`` (credential/config RCE vectors)
+    and the PowerShell profile dirs (a shell-startup RCE vector that likewise
+    sits inside the default ``Documents`` write root) here so the promise is
+    enforced in code regardless of where the repo lives or what roots an
+    operator configures. Fails closed: an unresolvable entry denies via the caller.
     """
     # cogs/ai_core/api/cli_write_guard.py → parents[3] is the repo root.
     repo_root = Path(__file__).resolve().parents[3]
@@ -95,6 +122,7 @@ def _denied_subtrees() -> list[Path]:
         (home / ".ssh").resolve(),
         (home / ".claude").resolve(),
         (home / ".claude.json").resolve(),
+        *_powershell_profile_dirs(home),
     ]
 
 
