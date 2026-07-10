@@ -3360,7 +3360,12 @@ export class ChatManager {
         // upper bound on the time the browser needs to start streaming.
         setTimeout(() => URL.revokeObjectURL(url), 1000);
 
-        showToast('Conversation exported!', { type: 'success' });
+        // A synthetic <a download>.click() has no success/failure callback — the
+        // WebView2 runtime may silently decline to write the file (blocked path,
+        // no download handler). Don't assert success we can't observe; a neutral
+        // info toast states only what we actually did (handed the file to the
+        // browser's download flow).
+        showToast('Export sent to your downloads.', { type: 'info' });
     }
 
     init(): void {

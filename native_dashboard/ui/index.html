@@ -959,7 +959,10 @@
                         <div class="history-header" id="ai-history-header">
                             <h2>Select a channel</h2>
                         </div>
-                        <div class="history-messages" id="ai-history-messages" aria-label="AI chat history messages">
+                        <!-- role="log": an aria-label on a bare (role-less) div
+                             is ignored by AT — same fix as #chat-tags / #chat-messages.
+                             'log' also announces appended history to screen readers. -->
+                        <div class="history-messages" id="ai-history-messages" role="log" aria-label="AI chat history messages">
                             <div class="empty-state">
                                 <svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg>
                                 <h3>Select a channel</h3>
@@ -1229,14 +1232,19 @@
                 <button class="modal-close" id="avatar-crop-close" aria-label="Close">&times;</button>
             </div>
             <div class="crop-container">
-                <div class="crop-area" id="crop-area">
+                <!-- tabindex=0 + label: the reposition is drag-based, so the
+                     crop area must be focusable and describe its keyboard
+                     operation (arrow keys pan — see cropKeyPan in app.ts) to
+                     satisfy WCAG 2.1.1. -->
+                <div class="crop-area" id="crop-area" tabindex="0" role="group"
+                     aria-label="Avatar position — drag, or use arrow keys to pan">
                     <img id="crop-image" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Crop preview">
                     <div class="crop-circle" id="crop-circle"></div>
                 </div>
                 <div class="crop-controls">
                     <label for="crop-zoom">Zoom</label>
                     <input type="range" id="crop-zoom" min="100" max="300" value="100" aria-label="Zoom level">
-                    <div class="crop-position-hint">Drag image to position</div>
+                    <div class="crop-position-hint">Drag or use arrow keys to position</div>
                 </div>
             </div>
             <div class="modal-actions">

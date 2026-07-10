@@ -2228,7 +2228,13 @@ let boundEndDrag: (() => void) | null = null;
 let cropEscBound = false;  // ESC-to-close handler is bound once for the page lifetime
 let boundStartDrag: ((e: MouseEvent) => void) | null = null;
 let boundStartDragTouch: ((e: TouchEvent) => void) | null = null;
+let boundCropKeyPan: ((e: KeyboardEvent) => void) | null = null;
 let cropListenersAttached = false;
+// px the crop image pans per arrow-key press (Shift = a larger step). Keyboard
+// parity for the pointer-drag reposition (WCAG 2.1.1 — the "Drag image to
+// position" affordance had no keyboard operation).
+const CROP_KEY_STEP = 10;
+const CROP_KEY_STEP_LARGE = 40;
 
 function openAvatarCropModal(imageUrl: string): void {
     cropState = {
@@ -2308,6 +2314,7 @@ function setupCropEventListeners(): void {
     if (cropListenersAttached) {
         if (boundStartDrag) cropArea.removeEventListener('mousedown', boundStartDrag);
         if (boundStartDragTouch) cropArea.removeEventListener('touchstart', boundStartDragTouch);
+        if (boundCropKeyPan) cropArea.removeEventListener('keydown', boundCropKeyPan);
         if (boundOnDrag) document.removeEventListener('mousemove', boundOnDrag);
         if (boundOnDragTouch) document.removeEventListener('touchmove', boundOnDragTouch);
         if (boundEndDrag) {
@@ -2319,6 +2326,7 @@ function setupCropEventListeners(): void {
     // Create bound functions for proper cleanup
     boundStartDrag = startDrag;
     boundStartDragTouch = startDragTouch;
+    boundCropKeyPan = cropKeyPan;
     boundOnDrag = onDrag;
     boundOnDragTouch = onDragTouch;
     boundEndDrag = endDrag;
@@ -2326,6 +2334,10 @@ function setupCropEventListeners(): void {
     // Mouse/touch drag
     cropArea.addEventListener('mousedown', boundStartDrag);
     cropArea.addEventListener('touchstart', boundStartDragTouch, { passive: false });
+    // Keyboard pan (arrow keys) — #crop-area is focusable (tabindex=0 in the
+    // markup); mirrors the drag offset math so the reposition is operable
+    // without a pointer.
+    cropArea.addEventListener('keydown', boundCropKeyPan);
     document.addEventListener('mousemove', boundOnDrag);
     document.addEventListener('touchmove', boundOnDragTouch, { passive: false });
     document.addEventListener('mouseup', boundEndDrag);
@@ -2412,6 +2424,26 @@ function onDragTouch(e: TouchEvent): void {
 
 function endDrag(): void {
     cropState.isDragging = false;
+}
+
+// Arrow-key panning of the crop image — keyboard parity for the pointer drag
+// (WCAG 2.1.1). Adjusts the same offsetX/offsetY the drag handlers write, then
+// repaints. Shift takes a larger step for coarse positioning.
+function cropKeyPan(e: KeyboardEvent): void {
+    let dx = 0;
+    let dy = 0;
+    const step = e.shiftKey ? CROP_KEY_STEP_LARGE : CROP_KEY_STEP;
+    switch (e.key) {
+        case 'ArrowUp': dy = -step; break;
+        case 'ArrowDown': dy = step; break;
+        case 'ArrowLeft': dx = -step; break;
+        case 'ArrowRight': dx = step; break;
+        default: return;  // not a pan key — let it through (Tab, Enter, …)
+    }
+    e.preventDefault();  // don't scroll the modal/page while panning
+    cropState.offsetX += dx;
+    cropState.offsetY += dy;
+    updateCropPreview();
 }
 
 function updateCropPreview(): void {

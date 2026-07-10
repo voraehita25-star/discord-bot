@@ -227,6 +227,23 @@ test.describe('Modal interactions', () => {
         await expect(page.locator('#avatar-crop-modal')).not.toHaveClass(/active/);
     });
 
+    test('avatar crop: arrow keys pan the image (WCAG 2.1.1 keyboard parity)', async ({ page }) => {
+        // The reposition was pointer-drag only; #crop-area is now focusable and
+        // arrow keys pan it (cropKeyPan writes the same offset the drag does).
+        await page.evaluate(() => {
+            document.getElementById('avatar-crop-modal')?.classList.add('active');
+        });
+        await page.locator('#crop-area').focus();
+        await page.keyboard.press('ArrowRight');
+        await page.keyboard.press('ArrowDown');
+        const pos = await page.evaluate(() => {
+            const i = document.getElementById('crop-image') as HTMLImageElement;
+            return { left: i.style.left, top: i.style.top };
+        });
+        expect(pos.left).toBe('10px');   // one CROP_KEY_STEP right
+        expect(pos.top).toBe('10px');    // one CROP_KEY_STEP down
+    });
+
     test('rename modal in chat page: Escape closes (when shown via chatManager flow)', async ({ page }) => {
         await page.click('[data-page="chat"]');
         // Show rename modal via the proper API so the Escape handler binds.
