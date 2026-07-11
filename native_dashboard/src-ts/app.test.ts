@@ -213,12 +213,14 @@ describe('Chart Y-scale (niceChartScale)', () => {
 // Chart Area-fill Closure Tests
 // ============================================================================
 
-describe('Chart area fill closure (drawChart)', () => {
+describe('Chart hold-to-edge rendering (drawChart)', () => {
     // Exercises the SHIPPED drawChart against a recording 2D-context mock.
-    // The regression this guards: the x-axis is clock-anchored (right edge =
-    // "now") while the last sample lags seconds behind, and the area polygon
-    // used to close via lineTo(plotRight, plotBottom) — smearing a diagonal
-    // wedge of fill across the sampleless gap on BOTH charts.
+    // The regressions this guards: the x-axis is clock-anchored (right edge =
+    // "now") while the last sample lags seconds behind, and that gap first
+    // rendered as a diagonal fill wedge (polygon closed at the plot corner),
+    // then as a vertical fill cliff (polygon closed under the last sample).
+    // The latest reading must instead HOLD out to the clock edge — line,
+    // fill, and endpoint marker all meet at "now".
 
     function makeRecordingCtx() {
         const calls: Array<{ method: string; args: unknown[] }> = [];
@@ -246,7 +248,7 @@ describe('Chart area fill closure (drawChart)', () => {
         return ctx;
     }
 
-    it('closes the fill under the last sample, not at the plot corner', () => {
+    it('holds the latest reading out to the clock edge (no cliff or wedge)', () => {
         vi.useFakeTimers();
         vi.setSystemTime(new Date('2026-07-11T18:22:05'));
         const originalRaf = window.requestAnimationFrame;
@@ -263,10 +265,10 @@ describe('Chart area fill closure (drawChart)', () => {
             const now = Date.now();
             // Last sample 5s stale — the messages series lags up to
             // refresh + dbStats TTL behind the clock-anchored right edge,
-            // so 25% of this 20s window has no data yet.
+            // so 25% of this 20s window has no sample yet.
             drawChart('fill-test-chart', [
-                { timestamp: now - 20_000, value: 214 },
-                { timestamp: now - 10_000, value: 214 },
+                { timestamp: now - 20_000, value: 210 },
+                { timestamp: now - 10_000, value: 220 },
                 { timestamp: now - 5_000, value: 214 },
             ], '#b2a4ff', { decimals: 0, unit: '' });
 
@@ -279,15 +281,24 @@ describe('Chart area fill closure (drawChart)', () => {
             const closure = areaPath.filter(c => c.method === 'lineTo');
             expect(closure).toHaveLength(2);
 
-            // The endpoint marker arcs share the last sample's x.
+            // The endpoint marker rides the clock edge (x = 480 − 14 = 466),
+            // not the stale sample's mid-plot position.
             const arcs = ctx.calls.filter(c => c.method === 'arc');
             const markerX = arcs[arcs.length - 1].args[0] as number;
+            expect(markerX).toBeCloseTo(466, 6);
 
-            // Right closure drops straight down from the last sample…
-            expect(closure[0].args[0] as number).toBeCloseTo(markerX, 6);
-            // …never sweeps to the plot's right edge (x = 480 − 14 = 466).
-            expect(closure[0].args[0] as number).toBeLessThan(400);
-            // Left closure returns to where the data starts.
+            // The path grows one horizontal hold segment past the 2 sample
+            // gaps: its endpoint sits at the edge AT the last sample's y.
+            const curves = areaPath.filter(c => c.method === 'bezierCurveTo');
+            expect(curves).toHaveLength(3);
+            const holdEnd = curves[curves.length - 1].args;
+            const lastSampleY = curves[1].args[5] as number;
+            expect(holdEnd[4] as number).toBeCloseTo(466, 6);
+            expect(holdEnd[5] as number).toBeCloseTo(lastSampleY, 6);
+
+            // Fill closes straight down at the edge under the hold line…
+            expect(closure[0].args[0] as number).toBeCloseTo(466, 6);
+            // …and returns to where the data starts.
             expect(closure[1].args[0] as number).toBeCloseTo(pathStart!.args[0] as number, 6);
             // Both closure points sit on the plot floor (height 200 − 22).
             expect(closure[0].args[1] as number).toBe(178);

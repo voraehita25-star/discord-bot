@@ -947,6 +947,20 @@ export function drawChart(canvasId: string, data: ChartDataPoint[], color: strin
     const pts = data.map(p => ({ x: xAt(p.timestamp), y: yAt(p.value) }));
     chartDrawParams.set(canvasId, { data, color, spec, xs: pts.map(p => p.x) });
 
+    // Hold the latest reading out to the clock edge: the right edge is "now",
+    // which runs seconds past the last sample (up to refresh + dbStats TTL on
+    // the messages series), so a line that halts at the sample leaves a
+    // sampleless gap that renders as an artifact — a diagonal fill wedge or a
+    // vertical fill cliff, depending on where the polygon closes. The held
+    // value IS the latest known reading, and the hold is drawing-only: xs /
+    // hover hit-testing stay on real samples, so the tooltip never reports a
+    // fabricated timestamp. Skip the sub-pixel case so a fresh sample doesn't
+    // grow a zero-length bezier.
+    const lastReal = pts[pts.length - 1];
+    const linePts = plotRight - lastReal.x > 0.5
+        ? [...pts, { x: plotRight, y: lastReal.y }]
+        : pts;
+
     // Grid: solid hairlines at nice ticks, each labeled in the left gutter.
     ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
@@ -978,19 +992,15 @@ export function drawChart(canvasId: string, data: ChartDataPoint[], color: strin
     }
 
     // Area wash from the theme fill tokens (top → bottom). The polygon closes
-    // straight down from the DATA endpoints, not the plot corners: the right
-    // edge is "now" on the clock-anchored axis and runs seconds past the last
-    // sample, so closing at plotRight smeared a diagonal wedge of fill across
-    // the sampleless gap (worst right after launch, when that gap is a large
-    // share of a short window — and on both charts, since the messages series
-    // lags up to refresh + dbStats TTL).
+    // straight down from the drawn line's endpoints (the hold segment carries
+    // it to the clock edge), so the fill ends exactly where the line does.
     const gradient = ctx.createLinearGradient(0, plotTop, 0, plotBottom);
     gradient.addColorStop(0, fillTop);
     gradient.addColorStop(1, fillBot);
     ctx.beginPath();
-    traceSmoothPath(ctx, pts);
-    ctx.lineTo(pts[pts.length - 1].x, plotBottom);
-    ctx.lineTo(pts[0].x, plotBottom);
+    traceSmoothPath(ctx, linePts);
+    ctx.lineTo(linePts[linePts.length - 1].x, plotBottom);
+    ctx.lineTo(linePts[0].x, plotBottom);
     ctx.closePath();
     ctx.fillStyle = gradient;
     ctx.fill();
@@ -998,7 +1008,7 @@ export function drawChart(canvasId: string, data: ChartDataPoint[], color: strin
     // Line with a soft neon glow (shadowBlur ignores ctx.scale → × dpr).
     ctx.save();
     ctx.beginPath();
-    traceSmoothPath(ctx, pts);
+    traceSmoothPath(ctx, linePts);
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.lineCap = 'round';
@@ -1020,7 +1030,7 @@ export function drawChart(canvasId: string, data: ChartDataPoint[], color: strin
     // repeats the number, but here it rides the line it belongs to. Skip the
     // label while the last sample is hovered — the tooltip shows the same
     // value in the same spot.
-    const lastPt = pts[pts.length - 1];
+    const lastPt = linePts[linePts.length - 1];
     drawChartMarker(ctx, lastPt.x, lastPt.y, color);
     if (hoverIdx !== data.length - 1) {
         const current = data[data.length - 1].value;
@@ -1029,8 +1039,8 @@ export function drawChart(canvasId: string, data: ChartDataPoint[], color: strin
         ctx.fillStyle = inkStrong;
         ctx.textAlign = 'right';
         const endLabelY = lastPt.y - 14 < plotTop ? lastPt.y + 20 : lastPt.y - 12;
-        // The label follows its dot (which sits left of the plot edge while
-        // the clock runs past the last sample), clamped inside the plot.
+        // The label follows its dot (riding the hold segment's end at the
+        // clock edge), clamped inside the plot.
         const endLabelW = ctx.measureText(endLabel).width;
         const endLabelX = Math.min(plotRight, Math.max(lastPt.x + endLabelW / 2, plotLeft + endLabelW));
         ctx.fillText(endLabel, endLabelX, endLabelY);
