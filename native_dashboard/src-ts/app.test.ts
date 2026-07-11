@@ -21,6 +21,7 @@ import {
     DataCache,
     addChartDataPoint,
     niceChartScale,
+    drawChart,
     pickTopmostModal,
     initTheme,
 } from './app';
@@ -205,6 +206,97 @@ describe('Chart Y-scale (niceChartScale)', () => {
     it('never drops a non-negative series below zero', () => {
         const { lo } = niceChartScale(0, 0.2, false);
         expect(lo).toBe(0);
+    });
+});
+
+// ============================================================================
+// Chart Area-fill Closure Tests
+// ============================================================================
+
+describe('Chart area fill closure (drawChart)', () => {
+    // Exercises the SHIPPED drawChart against a recording 2D-context mock.
+    // The regression this guards: the x-axis is clock-anchored (right edge =
+    // "now") while the last sample lags seconds behind, and the area polygon
+    // used to close via lineTo(plotRight, plotBottom) — smearing a diagonal
+    // wedge of fill across the sampleless gap on BOTH charts.
+
+    function makeRecordingCtx() {
+        const calls: Array<{ method: string; args: unknown[] }> = [];
+        const record = (method: string) => (...args: unknown[]): void => {
+            calls.push({ method, args });
+        };
+        const ctx = {
+            calls,
+            scale: record('scale'),
+            clearRect: record('clearRect'),
+            beginPath: record('beginPath'),
+            moveTo: record('moveTo'),
+            lineTo: record('lineTo'),
+            bezierCurveTo: record('bezierCurveTo'),
+            closePath: record('closePath'),
+            fill: record('fill'),
+            stroke: record('stroke'),
+            save: record('save'),
+            restore: record('restore'),
+            arc: record('arc'),
+            fillText: record('fillText'),
+            measureText: () => ({ width: 20 }),
+            createLinearGradient: () => ({ addColorStop: (): void => undefined }),
+        };
+        return ctx;
+    }
+
+    it('closes the fill under the last sample, not at the plot corner', () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-07-11T18:22:05'));
+        const originalRaf = window.requestAnimationFrame;
+        window.requestAnimationFrame = ((): number => 0) as typeof window.requestAnimationFrame;
+        const canvas = document.createElement('canvas');
+        canvas.id = 'fill-test-chart';
+        document.body.appendChild(canvas);
+        canvas.getBoundingClientRect = () =>
+            ({ width: 480, height: 200, top: 0, left: 0, right: 480, bottom: 200, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+        const ctx = makeRecordingCtx();
+        canvas.getContext = (() => ctx) as unknown as typeof canvas.getContext;
+
+        try {
+            const now = Date.now();
+            // Last sample 5s stale — the messages series lags up to
+            // refresh + dbStats TTL behind the clock-anchored right edge,
+            // so 25% of this 20s window has no data yet.
+            drawChart('fill-test-chart', [
+                { timestamp: now - 20_000, value: 214 },
+                { timestamp: now - 10_000, value: 214 },
+                { timestamp: now - 5_000, value: 214 },
+            ], '#b2a4ff', { decimals: 0, unit: '' });
+
+            // The area polygon is the only closePath'd path: isolate it.
+            const closeIdx = ctx.calls.findIndex(c => c.method === 'closePath');
+            expect(closeIdx).toBeGreaterThan(-1);
+            const beginIdx = ctx.calls.slice(0, closeIdx).map(c => c.method).lastIndexOf('beginPath');
+            const areaPath = ctx.calls.slice(beginIdx, closeIdx);
+            const pathStart = areaPath.find(c => c.method === 'moveTo');
+            const closure = areaPath.filter(c => c.method === 'lineTo');
+            expect(closure).toHaveLength(2);
+
+            // The endpoint marker arcs share the last sample's x.
+            const arcs = ctx.calls.filter(c => c.method === 'arc');
+            const markerX = arcs[arcs.length - 1].args[0] as number;
+
+            // Right closure drops straight down from the last sample…
+            expect(closure[0].args[0] as number).toBeCloseTo(markerX, 6);
+            // …never sweeps to the plot's right edge (x = 480 − 14 = 466).
+            expect(closure[0].args[0] as number).toBeLessThan(400);
+            // Left closure returns to where the data starts.
+            expect(closure[1].args[0] as number).toBeCloseTo(pathStart!.args[0] as number, 6);
+            // Both closure points sit on the plot floor (height 200 − 22).
+            expect(closure[0].args[1] as number).toBe(178);
+            expect(closure[1].args[1] as number).toBe(178);
+        } finally {
+            window.requestAnimationFrame = originalRaf;
+            canvas.remove();
+            vi.useRealTimers();
+        }
     });
 });
 

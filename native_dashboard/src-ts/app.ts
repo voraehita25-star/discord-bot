@@ -841,7 +841,9 @@ function drawChartMarker(ctx: CanvasRenderingContext2D, x: number, y: number, co
     ctx.fill();
 }
 
-function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec: ChartSeriesSpec): void {
+// Exported so app.test.ts exercises the SHIPPED canvas draw sequence (fill
+// closure geometry) against a recording 2D-context mock.
+export function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec: ChartSeriesSpec): void {
     const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
     if (!canvas) return;
 
@@ -975,14 +977,20 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec
         ctx.fillText(formatChartTime(tStart + tSpan / 2), plotLeft + plotW / 2, height - 7);
     }
 
-    // Area wash from the theme fill tokens (top → bottom).
+    // Area wash from the theme fill tokens (top → bottom). The polygon closes
+    // straight down from the DATA endpoints, not the plot corners: the right
+    // edge is "now" on the clock-anchored axis and runs seconds past the last
+    // sample, so closing at plotRight smeared a diagonal wedge of fill across
+    // the sampleless gap (worst right after launch, when that gap is a large
+    // share of a short window — and on both charts, since the messages series
+    // lags up to refresh + dbStats TTL).
     const gradient = ctx.createLinearGradient(0, plotTop, 0, plotBottom);
     gradient.addColorStop(0, fillTop);
     gradient.addColorStop(1, fillBot);
     ctx.beginPath();
     traceSmoothPath(ctx, pts);
-    ctx.lineTo(plotRight, plotBottom);
-    ctx.lineTo(plotLeft, plotBottom);
+    ctx.lineTo(pts[pts.length - 1].x, plotBottom);
+    ctx.lineTo(pts[0].x, plotBottom);
     ctx.closePath();
     ctx.fillStyle = gradient;
     ctx.fill();
