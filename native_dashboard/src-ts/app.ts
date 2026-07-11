@@ -100,6 +100,9 @@ let currentPage = 'status';
 let historyManager: HistoryManager | null = null;
 let refreshInterval: number | null = null;
 let logsRefreshInterval: number | null = null;
+// Governs the LIVE state of the log feed, not just scrolling: false pauses
+// the 1s poll entirely (startLogsRefresh no-ops) AND the scroll-to-bottom.
+// The Pause/Resume button flips it; persisted as settings.autoScroll.
 let logsAutoScrollEnabled = true;
 let lastLogSignature: string | null = null;
 // True after the failure toast for the CURRENT get_logs failure streak has
@@ -2226,6 +2229,13 @@ async function loadLogs(): Promise<void> {
 function startLogsRefresh(): void {
     if (logsRefreshInterval) {
         clearInterval(logsRefreshInterval);
+        logsRefreshInterval = null;
+    }
+    // The user pressed Pause: every restart path (page switch, tab becoming
+    // visible again, post-clearLogs) must respect it, so the gate lives here
+    // rather than at each call site. Resume goes through toggleAutoScroll.
+    if (!logsAutoScrollEnabled) {
+        return;
     }
     // Don't poll while the dashboard tab is hidden — the sakura
     // visibility handler already pauses heavy work on hide; mirroring
@@ -2275,13 +2285,31 @@ function applyAutoScrollButtonState(): void {
     }
 }
 
-function toggleAutoScroll(): void {
+// Pause/Resume the LIVE log feed. Pausing only the scroll position wasn't
+// enough — the 1s poll kept rebuilding the list, so the view visibly "kept
+// running" after pressing Pause. Pausing now stops the poll itself (also
+// saving IPC while the user reads); resuming does an instant catch-up load
+// (the backend keeps the 200-line tail, so nothing is missed beyond what
+// the tail window itself drops) and restarts the poll.
+// Exported so app.test.ts exercises the SHIPPED pause/resume behavior
+// against the real 1s poller.
+export function toggleAutoScroll(): void {
     logsAutoScrollEnabled = !logsAutoScrollEnabled;
     // Persist the pause/resume preference so it survives a reload.
     settings.autoScroll = logsAutoScrollEnabled;
     saveSettings();
     applyAutoScrollButtonState();
-    showToast(`Auto-scroll ${logsAutoScrollEnabled ? 'enabled' : 'disabled'}`, { type: 'info', duration: 1500 });
+    if (logsAutoScrollEnabled) {
+        // The button lives on the logs page, but guard anyway so a future
+        // shortcut can't start a poll that leaks into other pages.
+        if (currentPage === 'logs') {
+            void loadLogs();
+            startLogsRefresh();
+        }
+    } else {
+        stopLogsRefresh();
+    }
+    showToast(`Logs ${logsAutoScrollEnabled ? 'live' : 'paused'}`, { type: 'info', duration: 1500 });
 }
 
 async function clearLogs(): Promise<void> {

@@ -22,6 +22,7 @@ import {
     addChartDataPoint,
     niceChartScale,
     drawChart,
+    toggleAutoScroll,
     pickTopmostModal,
     initTheme,
 } from './app';
@@ -306,6 +307,46 @@ describe('Chart hold-to-edge rendering (drawChart)', () => {
         } finally {
             window.requestAnimationFrame = originalRaf;
             canvas.remove();
+            vi.useRealTimers();
+        }
+    });
+});
+
+// ============================================================================
+// Logs Pause/Resume Tests
+// ============================================================================
+
+describe('Logs pause/resume (toggleAutoScroll)', () => {
+    // Exercises the SHIPPED toggleAutoScroll + startLogsRefresh against the
+    // real 1s poller. The regression this guards: the PAUSE button only
+    // gated the scroll-to-bottom while the poll kept fetching and rebuilding
+    // the list every second — logs visibly "kept running" after pressing it.
+
+    it('pause freezes the log poll; resume catches up and restarts it', async () => {
+        vi.useFakeTimers();
+        const invokeMock = vi.fn(async (cmd: string) =>
+            cmd === 'get_logs' ? ['[2026-01-01 00:00:00] INFO - line'] : null);
+        (window as unknown as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: invokeMock } };
+        const getLogsCalls = (): number =>
+            invokeMock.mock.calls.filter(c => c[0] === 'get_logs').length;
+        const showPage = (window as unknown as { showPage: (p: string) => void }).showPage;
+
+        try {
+            showPage('logs');                               // one-shot load + poll start
+            await vi.advanceTimersByTimeAsync(3000);        // 3 poll ticks
+            const live = getLogsCalls();
+            expect(live).toBeGreaterThanOrEqual(4);         // 1 immediate + 3 ticks
+
+            toggleAutoScroll();                             // PAUSE
+            await vi.advanceTimersByTimeAsync(5000);
+            expect(getLogsCalls()).toBe(live);              // feed frozen
+
+            toggleAutoScroll();                             // RESUME
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(getLogsCalls()).toBe(live + 3);          // instant catch-up + 2 ticks
+        } finally {
+            showPage('status');                             // stops the poll
+            delete (window as unknown as { __TAURI__?: unknown }).__TAURI__;
             vi.useRealTimers();
         }
     });
