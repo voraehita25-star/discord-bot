@@ -20,6 +20,7 @@ import {
     _resetModalInertState,
     DataCache,
     addChartDataPoint,
+    niceChartScale,
     pickTopmostModal,
     initTheme,
 } from './app';
@@ -152,6 +153,58 @@ describe('Chart Data Management', () => {
 
         expect(history[0].timestamp).toBeGreaterThanOrEqual(before);
         expect(history[0].timestamp).toBeLessThanOrEqual(after);
+    });
+});
+
+// ============================================================================
+// Chart Y-scale Tests
+// ============================================================================
+
+describe('Chart Y-scale (niceChartScale)', () => {
+    // Exercises the REAL niceChartScale exported from app.ts — the y-domain
+    // policy that decides how dramatic a series looks. The regression this
+    // guards: memory idling at ~232 MB (drifting 228 → 232, a <2% wobble)
+    // used to get a min/max-hugging domain, stretching the wobble across the
+    // full plot height so a flat-in-practice series read as a runaway surge.
+
+    it('keeps a sub-10% wobble visually small (minimum span rule)', () => {
+        const { lo, hi } = niceChartScale(228, 232, false);
+        // The axis must open at least 10% of the value's own magnitude…
+        expect(hi - lo).toBeGreaterThanOrEqual(232 * 0.1);
+        // …so the 4 MB drift occupies well under half the plot height.
+        expect((232 - 228) / (hi - lo)).toBeLessThanOrEqual(0.35);
+        expect(lo).toBeLessThanOrEqual(228);
+        expect(hi).toBeGreaterThanOrEqual(232);
+    });
+
+    it('applies the same flatness rule to integer count series', () => {
+        const { lo, hi, ticks, step } = niceChartScale(5000, 5010, true);
+        expect(hi - lo).toBeGreaterThanOrEqual(5010 * 0.1);
+        expect(Number.isInteger(step)).toBe(true);
+        expect(ticks[0]).toBe(lo);
+        expect(ticks[ticks.length - 1]).toBe(hi);
+        ticks.forEach(t => expect(Number.isInteger(t)).toBe(true));
+    });
+
+    it('lets a genuine large move fill the plot', () => {
+        const { lo, hi } = niceChartScale(100, 400, false);
+        // A 3× move is real signal — the minimum-span rule must not dilute it.
+        expect((400 - 100) / (hi - lo)).toBeGreaterThanOrEqual(0.5);
+        expect(lo).toBeLessThanOrEqual(100);
+        expect(hi).toBeGreaterThanOrEqual(400);
+    });
+
+    it('opens a window around a perfectly flat series', () => {
+        const { lo, hi, ticks } = niceChartScale(232, 232, false);
+        expect(hi).toBeGreaterThan(lo);
+        expect(lo).toBeLessThanOrEqual(232);
+        expect(hi).toBeGreaterThanOrEqual(232);
+        expect(ticks.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('never drops a non-negative series below zero', () => {
+        const { lo } = niceChartScale(0, 0.2, false);
+        expect(lo).toBe(0);
     });
 });
 

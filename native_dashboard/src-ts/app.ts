@@ -751,15 +751,22 @@ function formatChartTime(timestamp: number): string {
 
 // Y-scale with ticks on "nice" steps (1/2/2.5/5 × 10ⁿ) so the axis reads
 // 210 · 215 · 220 instead of the raw min×0.9 / max×1.1 endpoints the old
-// chart printed. A flat series (the idle message counter) opens a small
-// window around the value so the axis never degenerates to "214 … 214".
-function niceChartScale(rawMin: number, rawMax: number, integer: boolean): { lo: number; hi: number; ticks: number[]; step: number } {
+// chart printed. The drawn span never shrinks below 10% of the value's own
+// magnitude: a min/max-hugging domain turns a <2% wobble (memory idling at
+// ~232 MB) into a full-height mountain, so sub-threshold series get a window
+// centered on their midpoint instead — flat-in-practice data reads as flat,
+// while a genuine move (leak, restart) still fills the plot. Span 0 (the
+// idle message counter) falls out of the same rule via the absolute floor.
+// Exported so app.test.ts exercises the SHIPPED y-domain policy.
+export function niceChartScale(rawMin: number, rawMax: number, integer: boolean): { lo: number; hi: number; ticks: number[]; step: number } {
     let min = rawMin;
     let max = rawMax;
-    if (min === max) {
-        const pad = Math.max(integer ? 2 : 0.5, Math.abs(min) * 0.02);
-        min -= pad;
-        max += pad;
+    const magnitude = Math.max(Math.abs(rawMin), Math.abs(rawMax));
+    const minSpan = Math.max(integer ? 4 : 1, magnitude * 0.1);
+    if (max - min < minSpan) {
+        const mid = (min + max) / 2;
+        min = mid - minSpan / 2;
+        max = mid + minSpan / 2;
     } else {
         const pad = (max - min) * 0.08;
         min -= pad;
