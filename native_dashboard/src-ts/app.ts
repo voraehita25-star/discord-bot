@@ -607,12 +607,20 @@ function initCharts(): void {
             scheduleChartRedraw(id);
         });
         canvas.addEventListener('focus', () => {
-            const params = chartDrawParams.get(id);
-            if (!params || params.data.length < 2) return;
-            chartHoverIndex.set(id, params.data.length - 1);
+            // Keyboard focus only (:focus-visible is false for mouse-click
+            // focus) — a click on the canvas must not teleport an active
+            // pointer crosshair to the latest sample. Set the pin even with
+            // <2 samples: Infinity means "always the latest", drawChart
+            // clamps it to the live last index once data arrives, so a chart
+            // focused during startup still gets its readout.
+            if (!canvas.matches(':focus-visible')) return;
+            chartHoverIndex.set(id, Number.POSITIVE_INFINITY);
             scheduleChartRedraw(id);
         });
         canvas.addEventListener('blur', () => {
+            // Only clear the keyboard pin — a finite index belongs to the
+            // pointer, which may still be hovering the chart.
+            if (chartHoverIndex.get(id) !== Number.POSITIVE_INFINITY) return;
             chartHoverIndex.set(id, null);
             scheduleChartRedraw(id);
         });
@@ -637,15 +645,48 @@ export function seedChartHistories(memoryValues: number[], messageValues: number
     updateCharts();
 }
 
+// dbStats cache TTL (used by updateStatus). Also feeds chartMaxWindowMs:
+// message-count samples land only when this cache is cold, so their real
+// cadence is one tick past the TTL (~4s at the 1s and 2s intervals) — the
+// chart window must be sized off that, not the raw tick interval, or the
+// prune below silently caps the messages series short of chartHistory.
+const DB_STATS_TTL_MS = 3000;
+
+// The widest time span a chart may draw, covering the slowest series at 2×
+// slack: worst sample gap = refreshInterval + DB_STATS_TTL_MS.
+function chartMaxWindowMs(): number {
+    return Math.max(60_000, settings.chartHistory * (settings.refreshInterval + DB_STATS_TTL_MS) * 2);
+}
+
 // Exported so app.test.ts exercises the SHIPPED chart-history capping (which
 // caps at the live `settings.chartHistory`), not a re-implementation.
 export function addChartDataPoint(history: ChartDataPoint[], value: number): void {
+    const now = Date.now();
+
+    // Clock stepped backward (NTP/manual change): samples stamped in the
+    // future would wreck the temporal axis — tSpan clamps to 1 and the line
+    // renders as a garbled band until the count cap cycles them out. They
+    // form a suffix (timestamps are appended ascending), so drop from the
+    // end. The 1s tolerance ignores sub-second slew corrections.
+    while (history.length > 0 && history[history.length - 1].timestamp > now + 1000) {
+        history.pop();
+    }
+
     history.push({
-        timestamp: Date.now(),
+        timestamp: now,
         value
     });
 
     while (history.length > settings.chartHistory) {
+        history.shift();
+    }
+
+    // Samples that predate the drawable window are dead weight: after a
+    // system sleep the [old, now] span would compress every live sample into
+    // the left edge of the plot (drawChart also guards, this keeps the
+    // arrays clean).
+    const cutoff = now - chartMaxWindowMs();
+    while (history.length > 0 && history[0].timestamp < cutoff) {
         history.shift();
     }
 }
@@ -690,13 +731,17 @@ function formatChartValue(value: number, decimals: number): string {
     return decimals === 0 ? Math.round(value).toLocaleString() : value.toFixed(decimals);
 }
 
-// Count series always print whole ticks; value series print just enough
-// decimals to keep adjacent ticks distinct (a step of 0.05 needs 2 places —
-// a fixed toFixed(1) would render "230.5, 230.5, 230.6, 230.6").
+// Count series always print whole ticks; value series print enough decimals
+// to render the step EXACTLY — ceil(-log10(step)) undershoots the 2.5×10⁻ⁿ
+// family (step 0.25 → 1 place → the gridline at 230.25 would be labeled
+// "230.3", off by a fifth of a step), so derive places from the step's own
+// decimal expansion (steps are 1/2/2.5/5 × 10ⁿ, which terminates ≤ 3 places
+// in the ranges these charts see).
 function formatChartTick(tick: number, decimals: number, step: number): string {
     if (decimals === 0) return Math.round(tick).toLocaleString();
     if (Number.isInteger(step) && Number.isInteger(tick)) return tick.toLocaleString();
-    const places = Math.min(3, Math.max(1, Math.ceil(-Math.log10(step))));
+    const stepDecimals = (step.toString().split('.')[1] ?? '').length;
+    const places = Math.min(3, Math.max(1, stepDecimals));
     return tick.toFixed(places);
 }
 
@@ -820,6 +865,25 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
 
+    // Hidden page (display:none) → 0×0 rect. Bail BEFORE touching the bitmap:
+    // assigning canvas.width = 0 wipes the last frame, and the reader would
+    // get a blank canvas for up to a second when switching back to Status.
+    if (rect.width === 0 || rect.height === 0) return;
+
+    // Samples outside the drawable window would corrupt the temporal axis:
+    // too-old ones (system sleep, long stall) compress the live data into the
+    // left edge of a huge [old, now] span; future-stamped ones (clock stepped
+    // backward) collapse tSpan to 1 and garble the line. Draw only the
+    // in-window slice — addChartDataPoint prunes the arrays on the next tick;
+    // this covers the frames in between.
+    const tNow = Date.now();
+    const staleCutoff = tNow - chartMaxWindowMs();
+    const futureCutoff = tNow + 1000;
+    if (data.length > 0 &&
+        (data[0].timestamp < staleCutoff || data[data.length - 1].timestamp > futureCutoff)) {
+        data = data.filter(p => p.timestamp >= staleCutoff && p.timestamp <= futureCutoff);
+    }
+
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
@@ -867,7 +931,6 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec
     // memory ticks, and the right edge showed a seconds-old sample as if it
     // were current.
     const tStart = data[0].timestamp;
-    const tNow = Date.now();
     const tSpan = Math.max(1, tNow - tStart);
     const xAt = (t: number): number => plotLeft + plotW * Math.min(1, Math.max(0, (t - tStart) / tSpan));
     const yAt = (v: number): number => plotBottom - ((v - lo) / (hi - lo)) * plotH;
@@ -930,25 +993,35 @@ function drawChart(canvasId: string, data: ChartDataPoint[], color: string, spec
     ctx.stroke();
     ctx.restore();
 
+    // Resolve the hover target first: Infinity is the keyboard-focus pin
+    // ("always the latest sample") and clamps to the live last index even as
+    // new samples land; a stale pointer index past the end clamps the same
+    // way instead of dropping the crosshair.
+    const hoverRaw = chartHoverIndex.get(canvasId) ?? null;
+    const hoverIdx = hoverRaw === null ? null : Math.min(Math.max(0, hoverRaw), data.length - 1);
+
     // Endpoint marker + its value in text ink (never the series color — the
     // colored dot beside it carries identity). The header readout chip
-    // repeats the number, but here it rides the line it belongs to.
+    // repeats the number, but here it rides the line it belongs to. Skip the
+    // label while the last sample is hovered — the tooltip shows the same
+    // value in the same spot.
     const lastPt = pts[pts.length - 1];
     drawChartMarker(ctx, lastPt.x, lastPt.y, color);
-    const current = data[data.length - 1].value;
-    const endLabel = `${formatChartValue(current, spec.decimals)}${spec.unit}`;
-    ctx.font = `600 11px ${monoFont}`;
-    ctx.fillStyle = inkStrong;
-    ctx.textAlign = 'right';
-    const endLabelY = lastPt.y - 14 < plotTop ? lastPt.y + 20 : lastPt.y - 12;
-    // The label follows its dot (which sits left of the plot edge while the
-    // clock runs past the last sample), clamped inside the plot.
-    const endLabelW = ctx.measureText(endLabel).width;
-    const endLabelX = Math.min(plotRight, Math.max(lastPt.x + endLabelW / 2, plotLeft + endLabelW));
-    ctx.fillText(endLabel, endLabelX, endLabelY);
+    if (hoverIdx !== data.length - 1) {
+        const current = data[data.length - 1].value;
+        const endLabel = `${formatChartValue(current, spec.decimals)}${spec.unit}`;
+        ctx.font = `600 11px ${monoFont}`;
+        ctx.fillStyle = inkStrong;
+        ctx.textAlign = 'right';
+        const endLabelY = lastPt.y - 14 < plotTop ? lastPt.y + 20 : lastPt.y - 12;
+        // The label follows its dot (which sits left of the plot edge while
+        // the clock runs past the last sample), clamped inside the plot.
+        const endLabelW = ctx.measureText(endLabel).width;
+        const endLabelX = Math.min(plotRight, Math.max(lastPt.x + endLabelW / 2, plotLeft + endLabelW));
+        ctx.fillText(endLabel, endLabelX, endLabelY);
+    }
 
     // Hover layer: crosshair snapped to the sample + a value-first tooltip.
-    const hoverIdx = chartHoverIndex.get(canvasId) ?? null;
     if (hoverIdx !== null && hoverIdx >= 0 && hoverIdx < data.length) {
         const hp = pts[hoverIdx];
         ctx.strokeStyle = inkMuted;
@@ -1674,7 +1747,7 @@ async function updateStatus(): Promise<void> {
         // half above.
         if (dbStats) {
             if (!cachedDbStats) {
-                dataCache.set('dbStats', dbStats, 3000);
+                dataCache.set('dbStats', dbStats, DB_STATS_TTL_MS);
                 addChartDataPoint(messagesHistory, dbStats.total_messages);
             }
         }

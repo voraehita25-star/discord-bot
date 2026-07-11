@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { installDashboardMocks } from './_fixtures/mock-tauri';
 
 /**
@@ -26,6 +27,17 @@ const SNAP_OPTS = {
     maxDiffPixelRatio: 0.005,
     animations: 'disabled' as const,
 };
+
+// The chart canvases draw a temporal axis anchored to the wall clock, so
+// their pixels are nondeterministic the moment ≥2 samples land (which is a
+// race against the 2s status tick — baselines happened to capture the
+// "Collecting data..." placeholder). Mask them out of every snapshot; on
+// pages without charts the locator resolves to hidden elements and the mask
+// is a no-op.
+const snapOpts = (page: Page) => ({
+    ...SNAP_OPTS,
+    mask: [page.locator('.chart-card canvas')],
+});
 
 test.beforeEach(async ({ page }) => {
     await installDashboardMocks(page);
@@ -56,7 +68,7 @@ for (const pageName of BASELINE_PAGES) {
             fn?.(p);
         }, pageName);
         await page.waitForTimeout(200);
-        await expect(page).toHaveScreenshot(`page-${pageName}.png`, SNAP_OPTS);
+        await expect(page).toHaveScreenshot(`page-${pageName}.png`, snapOpts(page));
     });
 }
 
@@ -66,13 +78,13 @@ test('visual: dark vs light theme — status page', async ({ page }) => {
         fn?.('status');
     });
     await page.waitForTimeout(150);
-    await expect(page).toHaveScreenshot('theme-dark-status.png', SNAP_OPTS);
+    await expect(page).toHaveScreenshot('theme-dark-status.png', snapOpts(page));
 
     await page.evaluate(() => {
         document.documentElement.setAttribute('data-theme', 'light');
     });
     await page.waitForTimeout(150);
-    await expect(page).toHaveScreenshot('theme-light-status.png', SNAP_OPTS);
+    await expect(page).toHaveScreenshot('theme-light-status.png', snapOpts(page));
 });
 
 test('visual: avatar crop modal', async ({ page }) => {
@@ -80,7 +92,7 @@ test('visual: avatar crop modal', async ({ page }) => {
         document.getElementById('avatar-crop-modal')?.classList.add('active');
     });
     await page.waitForTimeout(150);
-    await expect(page).toHaveScreenshot('modal-avatar-crop.png', SNAP_OPTS);
+    await expect(page).toHaveScreenshot('modal-avatar-crop.png', snapOpts(page));
 });
 
 test('visual: rename modal (chat page)', async ({ page }) => {
@@ -92,5 +104,5 @@ test('visual: rename modal (chat page)', async ({ page }) => {
         if (input) input.value = 'Sample Conversation';
     });
     await page.waitForTimeout(200);
-    await expect(page).toHaveScreenshot('modal-rename.png', SNAP_OPTS);
+    await expect(page).toHaveScreenshot('modal-rename.png', snapOpts(page));
 });
