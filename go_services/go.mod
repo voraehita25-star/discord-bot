@@ -6,7 +6,7 @@ require (
 	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/prometheus/client_golang v1.23.2
-	golang.org/x/net v0.56.0
+	golang.org/x/net v0.57.0
 	golang.org/x/time v0.15.0
 )
 
@@ -18,7 +18,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.68.1 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
-	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
