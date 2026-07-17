@@ -326,9 +326,7 @@ class HistoryManager:
                 # len(discarded) — the model then treated lost context as
                 # summarized. compress_history fixed this identical trap the
                 # same way.
-                summary_text = await summarizer.summarize(
-                    discarded, max_messages=len(discarded)
-                )
+                summary_text = await summarizer.summarize(discarded, max_messages=len(discarded))
                 if summary_text:
                     summary_entry = {
                         "role": "user",

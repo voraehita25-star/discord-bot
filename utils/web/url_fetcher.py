@@ -253,6 +253,7 @@ def _extract_html_text(html: str, url: str) -> tuple[str, str]:
     lines = [line.strip() for line in main_content.split("\n") if line.strip()]
     return title, "\n".join(lines)
 
+
 # Request timeout in seconds (from centralized constants)
 REQUEST_TIMEOUT = HTTP_REQUEST_TIMEOUT
 
