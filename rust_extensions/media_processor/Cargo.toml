@@ -17,6 +17,13 @@ thiserror.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 base64 = "0.22"
 
+[features]
+# On by default so `cargo build --release` still produces a loadable .pyd/.so.
+# CI's `cargo test --no-default-features` drops it so the test harness can link
+# libpython — see the pyo3 note in the workspace manifest.
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
 [dev-dependencies]
 criterion.workspace = true
 

@@ -12,7 +12,15 @@ authors = ["voraehita25-star"]
 license = "MIT"
 
 [workspace.dependencies]
-pyo3 = { version = "0.29", features = ["extension-module"] }
+# `extension-module` is NOT enabled here — each crate re-exports it as a
+# default-on feature instead. That feature tells PyO3 to leave the CPython
+# symbols unresolved for the interpreter to supply at import time, which is
+# right for the .pyd/.so but breaks `cargo test`: a test harness is a normal
+# executable and must link libpython, so on Linux the link fails with
+# undefined `PyErrStateNormalized::ptraceback` &c. Windows hid this because
+# PyO3 links pythonXX.lib there regardless. CI runs the tests with
+# --no-default-features; release builds keep the default and stay unchanged.
+pyo3 = { version = "0.29" }
 rayon = "1.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

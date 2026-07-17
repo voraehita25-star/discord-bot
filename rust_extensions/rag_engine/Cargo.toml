@@ -24,7 +24,11 @@ parking_lot.workspace = true
 simsimd = "6.5"
 
 [features]
-default = []
+# On by default so `cargo build --release` still produces a loadable .pyd/.so.
+# CI's `cargo test --no-default-features` drops it so the test harness can link
+# libpython — see the pyo3 note in the workspace manifest.
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
 
 [dev-dependencies]
 criterion.workspace = true
