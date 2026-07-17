@@ -15,7 +15,7 @@ tzdata>=2026.1,<2027          # IANA timezone data (required on Windows)
 # ==================== AI ====================
 google-genai==2.10.0          # Google Gemini API (latest — unified GenAI SDK v2)
 anthropic>=0.109.2,<1.0       # Anthropic Claude API (CVE-2026-34450, CVE-2026-34452)
-Pillow==12.2.0                # Image processing (CVE-2026-40192/42308/42309/42310/42311)
+Pillow==12.3.0                # Image processing (PYSEC-2026-2253/2254/2255/2256/2257/3451/3452/3453)
 beautifulsoup4==4.15.0        # HTML parsing for URL content (latest)
 lxml==6.1.1                   # Fast HTML parser (CVE-2026-41066)
 numpy==2.5.0                  # Numerical operations (for RAG embeddings, latest)
