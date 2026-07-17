@@ -4,6 +4,7 @@ CLI tool to manage the Discord bot processes.
 """
 
 import datetime
+import ntpath
 import os
 import re
 import subprocess
@@ -273,11 +274,24 @@ def print_banner():
     print(box_bottom())
 
 
+def _arg_basename(arg):
+    """Basename of a launcher command-line argument.
+
+    Parsed with ``ntpath``, not ``os.path``: every cmdline this module reads is
+    a Windows one (``powershell -File scripts\\startup\\start_dev.ps1``), and
+    ``os.path`` only treats ``\\`` as a separator when the host itself is
+    Windows — elsewhere it returns the whole path and the match silently fails.
+    ``ntpath`` splits on both ``\\`` and ``/``, so the parse is the same
+    everywhere.
+    """
+    return ntpath.basename(arg)
+
+
 def _find_processes(match_terms, exclude_terms=None, exact_basenames=None):
     """Find process IDs matching ALL terms (not ANY).
 
     ``exact_basenames`` is an optional iterable of basenames that MUST appear
-    as a script-file argument (after ``os.path.basename``). This avoids the
+    as a script-file argument (after ``_arg_basename``). This avoids the
     substring trap where a user path like
     ``C:\\Users\\bot.py-tools\\start.py`` would falsely match a search for
     ``bot.py``.
@@ -295,7 +309,7 @@ def _find_processes(match_terms, exclude_terms=None, exact_basenames=None):
                 continue
             # If callers requested an exact basename match, enforce it now.
             if exact_basenames:
-                arg_basenames = {os.path.basename(a).lower() for a in cmdline if a}
+                arg_basenames = {_arg_basename(a).lower() for a in cmdline if a}
                 if not exact_basenames.issubset(arg_basenames):
                     continue
             # Exclude VS Code extensions and other non-project Python processes
@@ -341,7 +355,7 @@ def _get_launcher_info(proc):
         cmdline_list = proc.cmdline() or []
         cmdline_str = " ".join(cmdline_list).lower()
         name = proc.name().lower()
-        arg_basenames = {os.path.basename(a).lower() for a in cmdline_list if a}
+        arg_basenames = {_arg_basename(a).lower() for a in cmdline_list if a}
 
         # Check dev watcher. Real launchers are scripts/startup/dev.bat →
         # start_dev.ps1 (the old start_dev_mode.bat no longer exists).

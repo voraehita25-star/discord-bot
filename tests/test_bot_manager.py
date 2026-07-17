@@ -411,7 +411,11 @@ class TestStopProcessList:
     def test_empty_list_returns_zero(self):
         assert bm.stop_process_list([], "bot") == 0
 
-    def test_graceful_terminate_counts(self):
+    def test_graceful_terminate_counts(self, monkeypatch):
+        # Pin win32: off-Windows, stop_process_list sends SIGINT first and
+        # returns before ever reaching terminate(). Without this the assertions
+        # below only hold because the host happens to be Windows.
+        monkeypatch.setattr(bm.sys, "platform", "win32")
         proc = MagicMock()
         proc.wait.return_value = None
         with patch.object(bm.psutil, "Process", return_value=proc):
@@ -420,7 +424,8 @@ class TestStopProcessList:
         assert proc.terminate.called
         assert not proc.kill.called
 
-    def test_timeout_triggers_force_kill(self):
+    def test_timeout_triggers_force_kill(self, monkeypatch):
+        monkeypatch.setattr(bm.sys, "platform", "win32")
         proc = MagicMock()
         # First wait (after terminate) times out, second (after kill) succeeds.
         proc.wait.side_effect = [psutil.TimeoutExpired(5), None]
@@ -428,6 +433,18 @@ class TestStopProcessList:
             count = bm.stop_process_list([7], "bot")
         assert count == 1
         assert proc.kill.called
+
+    def test_posix_sigint_stops_before_terminate(self, monkeypatch):
+        # The other side of that branch: on POSIX a SIGINT the process honours
+        # counts as stopped and terminate() is never needed.
+        monkeypatch.setattr(bm.sys, "platform", "linux")
+        proc = MagicMock()
+        proc.wait.return_value = None
+        with patch.object(bm.psutil, "Process", return_value=proc):
+            count = bm.stop_process_list([11], "bot")
+        assert count == 1
+        assert proc.send_signal.called
+        assert not proc.terminate.called
 
     def test_no_such_process_not_counted(self):
         with patch.object(bm.psutil, "Process", side_effect=psutil.NoSuchProcess(5)):
@@ -437,7 +454,8 @@ class TestStopProcessList:
         with patch.object(bm.psutil, "Process", side_effect=psutil.AccessDenied(5)):
             assert bm.stop_process_list([5], "bot") == 0
 
-    def test_os_error_during_stop_not_counted(self):
+    def test_os_error_during_stop_not_counted(self, monkeypatch):
+        monkeypatch.setattr(bm.sys, "platform", "win32")
         proc = MagicMock()
         proc.terminate.side_effect = OSError("boom")
         with patch.object(bm.psutil, "Process", return_value=proc):
