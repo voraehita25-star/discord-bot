@@ -10,7 +10,7 @@ psutil==7.2.2                 # Process and system utilities
 certifi>=2026.6.17,<2027      # SSL certificates (security updates)
 cryptography>=49.0.0,<50      # Transitive dep — pinned for CVE-2026-34073, CVE-2026-39892
 requests>=2.34.2,<3           # Transitive dep — pinned for CVE-2026-25645
-tzdata>=2026.1,<2027          # IANA timezone data (required on Windows)
+tzdata>=2026.3,<2027          # IANA timezone data (required on Windows)
 
 # ==================== AI ====================
 google-genai==2.10.0          # Google Gemini API (latest — unified GenAI SDK v2)
