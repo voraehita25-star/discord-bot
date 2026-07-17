@@ -142,6 +142,6 @@ Prior G6 catalogued 126 items (0 CRIT / 0 HIGH / 10 MED / ~110 LOW). Status of t
 
 ## Confirmation
 
-- Files read in full (working tree): `__init__.py` (9), `rag.py` (1467), `rag_rust.py` (277), `long_term_memory.py` (834), `entity_memory.py` (672), `consolidator.py` (677), `memory_consolidator.py` (632), `conversation_branch.py` (477), `history_manager.py` (487), `state_tracker.py` (391), `summarizer.py` (269). 
+- Files read in full (working tree): `__init__.py` (9), `rag.py` (1467), `rag_rust.py` (277), `long_term_memory.py` (834), `entity_memory.py` (672), `consolidator.py` (677), `memory_consolidator.py` (632), `conversation_branch.py` (477), `history_manager.py` (487), `state_tracker.py` (391), `summarizer.py` (269).
 - Cross-references verified: DB connection pool semantics (`get_connection` auto-commit + `aiosqlite.Row` row_factory), `save_rag_memory`/`get_all_rag_memories` (channel-only scoping), schema creation sites (`entity_memories`/`ai_long_term_memory`/`user_facts` created in main schema; `conversation_summaries` NOT), `summarized_at` migration 015, the live memory→prompt injection surface in `logic.py:930-989`, and the `remember` write-time scrub in `tool_executor.py:386-497`.
 - No source files were modified. Only this report was written.

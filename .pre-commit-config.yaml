@@ -19,11 +19,19 @@ repos:
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
     hooks:
       - id: trailing-whitespace
+        # Keep markdown hard line breaks (a deliberate two-space line ending).
+        # Without this the hook rewrites docs/reviews/*.md — changing how they
+        # render — and fails CI's `pre-commit run --all-files` gate.
+        args: [--markdown-linebreak-ext=md]
         exclude: ^native_dashboard/
       - id: end-of-file-fixer
         exclude: ^native_dashboard/
       - id: check-yaml
       - id: check-json
+        # tsconfig.e2e.json / tsconfig.test.json are JSONC — TypeScript allows
+        # `//` comments and both files rely on them, but check-json is strict
+        # JSON and can't parse them.
+        exclude: ^native_dashboard/tsconfig\.(e2e|test)\.json$
       - id: check-added-large-files
         args: ['--maxkb=1000']
       - id: check-merge-conflict
@@ -46,9 +54,14 @@ repos:
     rev: 92ae8b82fb422a639f0ed8d99e96cea769594e08  # 1.9.4
     hooks:
       - id: bandit
-        args: [-c, pyproject.toml]
+        # Mirror ci.yml's security step exactly (`bandit -c pyproject.toml -r
+        # cogs/ utils/ -ll`) so the local gate can't diverge from CI. Without
+        # -ll the hook reports LOW findings and fails on code CI accepts —
+        # pristine main has 56 of them, which blocked every commit touching an
+        # affected file. Scope is pinned to the same two trees CI scans.
+        args: [-c, pyproject.toml, -ll]
         additional_dependencies: ["bandit[toml]"]
-        exclude: ^tests/
+        files: ^(cogs|utils)/.*\.py$
 
 # CI config
 ci:
