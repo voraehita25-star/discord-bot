@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Set up Python
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
       with:
         python-version: '3.14'
         cache: 'pip'
@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       with:
         # TruffleHog diffs github.event.before..after on push — with the
         # default depth-1 clone the base commit is absent and the scan
@@ -56,7 +56,7 @@ jobs:
         fetch-depth: 0
 
     - name: Set up Python
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
       with:
         python-version: '3.14'
         cache: 'pip'
@@ -82,7 +82,7 @@ jobs:
     - name: Scan for hardcoded secrets
       # Third-party action — SHA-pin to insulate CI from upstream
       # supply-chain compromise (retag, deleted release, etc.).
-      uses: trufflesecurity/trufflehog@37b77001d0174ebec2fcca2bd83ff83a6d45a3ab  # v3.95.3
+      uses: trufflesecurity/trufflehog@00155c9dc586f34d189adc83d3ac2698c2ec551f  # v3.95.8
       with:
         extra_args: --only-verified
 
@@ -123,10 +123,10 @@ jobs:
         python-version: ['3.14']
 
     steps:
-    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
       with:
         python-version: ${{ matrix.python-version }}
         cache: 'pip'
@@ -244,10 +244,10 @@ jobs:
         working-directory: go_services
 
     steps:
-    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Set up Go
-      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6.5.0
       with:
         go-version: '1.26'
         cache-dependency-path: go_services/go.sum
@@ -257,7 +257,7 @@ jobs:
 
     - name: Run Go linter
       # Third-party — SHA-pin.
-      uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20  # v9
+      uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9.3.0
       with:
         # Pin to a specific linter binary version. ``v2.12.1`` is the
         # binary release tag, not a floating branch — the action resolves
@@ -284,7 +284,7 @@ jobs:
     timeout-minutes: 25
 
     steps:
-    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Set up Rust
       # Third-party — SHA-pin so a force-pushed ``stable`` branch doesn't
@@ -309,7 +309,7 @@ jobs:
       # The test harness links libpython (see below), so PyO3's build script
       # needs an interpreter to locate it. setup-python also exports
       # LD_LIBRARY_PATH for its shared build, which the linker needs.
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
       with:
         python-version: '3.14'
 
@@ -347,7 +347,7 @@ jobs:
         working-directory: native_dashboard
 
     steps:
-    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Set up Rust
       # Third-party — SHA-pin so a force-pushed ``stable`` branch doesn't
@@ -432,7 +432,7 @@ jobs:
         working-directory: native_dashboard
 
     steps:
-    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-04
@@ -476,7 +476,7 @@ jobs:
     timeout-minutes: 30
     needs: [qa-gate]
     steps:
-    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Build Docker image (dev)
       run: docker build -f docker/Dockerfile -t discord-bot:test .
@@ -516,10 +516,10 @@ jobs:
       GEMINI_API_KEY: "test-gemini-key-not-real"
       CREATOR_ID: "123456789"
     steps:
-    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Set up Python
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
       with:
         python-version: '3.14'
         cache: 'pip'
