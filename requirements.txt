@@ -10,15 +10,15 @@ psutil==7.2.2                 # Process and system utilities
 certifi>=2026.6.17,<2027      # SSL certificates (security updates)
 cryptography>=49.0.0,<50      # Transitive dep — pinned for CVE-2026-34073, CVE-2026-39892
 requests>=2.34.2,<3           # Transitive dep — pinned for CVE-2026-25645
-tzdata>=2026.1,<2027          # IANA timezone data (required on Windows)
+tzdata>=2026.3,<2027          # IANA timezone data (required on Windows)
 
 # ==================== AI ====================
-google-genai==2.10.0          # Google Gemini API (latest — unified GenAI SDK v2)
-anthropic>=0.109.2,<1.0       # Anthropic Claude API (CVE-2026-34450, CVE-2026-34452)
+google-genai==2.12.1          # Google Gemini API (latest — unified GenAI SDK v2)
+anthropic>=0.117.0,<1.0       # Anthropic Claude API (CVE-2026-34450, CVE-2026-34452)
 Pillow==12.3.0                # Image processing (PYSEC-2026-2253/2254/2255/2256/2257/3451/3452/3453)
 beautifulsoup4==4.15.0        # HTML parsing for URL content (latest)
 lxml==6.1.1                   # Fast HTML parser (CVE-2026-41066)
-numpy==2.5.0                  # Numerical operations (for RAG embeddings, latest)
+numpy==2.5.1                  # Numerical operations (for RAG embeddings, latest)
 faiss-cpu==1.14.3             # Vector similarity search (latest)
 imageio[ffmpeg]==2.37.3       # GIF to video conversion for Gemini (latest)
 pypdf>=6.14.2,<7              # PDF text extraction; floor must stay >=6.9.2 (CVE-2026-33699 infinite-loop DoS, +27628/24688/28351 on untrusted PDFs)
@@ -26,10 +26,10 @@ python-docx>=1.2.0,<2         # DOCX text extraction for dashboard document memo
 defusedxml>=0.7.1,<1          # No longer imported by our code (python-docx self-protects via resolve_entities=False); kept as a harmless pin, safe to drop
 
 # ==================== Music ====================
-yt-dlp==2026.6.9              # YouTube downloader — IMPORTANT: old versions freeze on changed APIs
+yt-dlp==2026.7.4              # YouTube downloader — IMPORTANT: old versions freeze on changed APIs
 spotipy==2.26.0               # Spotify API wrapper (latest)
 PyNaCl>=1.6.2,<2              # Voice transport encryption for discord.py voice
-davey>=0.1.5,<1              # DAVE protocol (E2EE) — REQUIRED by discord.py 2.7+ for voice alongside PyNaCl (voice_client raises without it)
+davey>=0.1.6,<1              # DAVE protocol (E2EE) — REQUIRED by discord.py 2.7+ for voice alongside PyNaCl (voice_client raises without it)
 
 # ==================== Database ====================
 aiosqlite==0.22.1             # Async SQLite (latest)
@@ -42,7 +42,7 @@ types-PyYAML>=6.0.12.20260518,<7         # Type stubs for mypy
 types-requests>=2.33.0.20260518,<3  # Type stubs for requests/spotipy integration
 
 # ==================== Monitoring (Optional) ====================
-sentry-sdk==2.63.0            # Error tracking (optional)
+sentry-sdk==2.66.0            # Error tracking (optional)
 prometheus-client==0.25.0     # Metrics & monitoring (latest)
 
 # ==================== Performance ====================
