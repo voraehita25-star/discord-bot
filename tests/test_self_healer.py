@@ -783,10 +783,19 @@ class TestDiagnoseEdgeCases:
         healer = SelfHealer()
         mock_bots = [{"pid": 1001, "cmdline": "python bot.py", "create_time": time.time()}]
 
-        with patch.object(healer, "find_all_bot_processes", return_value=mock_bots):
-            with patch.object(healer, "find_all_dev_watchers", return_value=[]):
-                with patch.object(healer, "get_pid_from_file", return_value=9999):
-                    result = healer.diagnose()
+        # Treat the stored PID as dead — the scenario this test covers. diagnose()
+        # falls back to psutil.pid_exists when the PID isn't among `bots` (a live
+        # venv-launcher PID gets filtered out of that list), so without this mock
+        # the test silently assumed nothing on the host owns PID 9999. That
+        # assumption fails on any developer machine where it does, while CI's
+        # near-empty PID space hid it. Same fix as clean_pid_file's below.
+        with (
+            patch.object(healer, "find_all_bot_processes", return_value=mock_bots),
+            patch.object(healer, "find_all_dev_watchers", return_value=[]),
+            patch.object(healer, "get_pid_from_file", return_value=9999),
+            patch("utils.reliability.self_healer.psutil.pid_exists", return_value=False),
+        ):
+            result = healer.diagnose()
 
         assert any(i["type"] == "STALE_PID_FILE" for i in result["issues"])
         assert result["pid_file_valid"] is False
