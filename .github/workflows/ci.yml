@@ -82,7 +82,7 @@ jobs:
     - name: Scan for hardcoded secrets
       # Third-party action — SHA-pin to insulate CI from upstream
       # supply-chain compromise (retag, deleted release, etc.).
-      uses: trufflesecurity/trufflehog@00155c9dc586f34d189adc83d3ac2698c2ec551f  # v3.95.8
+      uses: trufflesecurity/trufflehog@27b0417c16317ca9a472a9a8092acce143b49c55  # v3.95.9
       with:
         extra_args: --only-verified
 
@@ -247,7 +247,7 @@ jobs:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
     - name: Set up Go
-      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6.5.0
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
       with:
         go-version: '1.26'
         cache-dependency-path: go_services/go.sum
