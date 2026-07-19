@@ -8,10 +8,10 @@ A **polyglot monorepo** for a production Discord AI bot (v3.5.0). One repo, four
 
 | Area | Path | Stack | Tests |
 | --- | --- | --- | --- |
-| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-4-8`), Gemini, FAISS RAG, yt-dlp/spotipy | ~5,424 pytest |
+| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-4-8`), Gemini, FAISS RAG, yt-dlp/spotipy | ~5,327 pytest |
 | Rust extensions | `rust_extensions/` | Rust 2021 + PyO3 — `rag_engine` (SIMD vector search), `media_processor`; compiled to `.pyd` | `cargo test` |
 | Go services | `go_services/` | Go 1.26 — `url_fetcher` (:8081), `health_api` (:8082, Prometheus) | `go test` |
-| Native dashboard | `native_dashboard/` | Tauri 2 + TypeScript 6 — Korean UI | 472 vitest + 90 Playwright |
+| Native dashboard | `native_dashboard/` | Tauri 2 + TypeScript 6 — Korean UI | 484 vitest + 93 Playwright |
 
 The AI core (`cogs/ai_core/`) is deeply nested: `api/ core/ response/ commands/ tools/ memory/ processing/ cache/ data/`.
 
@@ -27,7 +27,8 @@ The AI core (`cogs/ai_core/`) is deeply nested: `api/ core/ response/ commands/ 
   - **Ruff** — `.venv\Scripts\ruff.exe` (ruff 0.15.17)
   - **Node v24 / npm** — `C:\Users\ME\.local\node` (also holds npm-global LSP shims)
   - **Go 1.26** — `C:\Users\ME\.local\go\bin` (GOROOT); `go install` tools land in `C:\Users\ME\go\bin`
-  - **Rust** — `C:\Users\ME\.cargo\bin` (cargo/rustc 1.95). MSVC build tools are installed, so `cargo build`/`cargo test`/`cargo check` of the `.pyd` extensions link and run locally.
+  - **Rust** — `C:\Users\ME\.cargo\bin` (cargo/rustc 1.97). MSVC build tools are installed, so `cargo build`/`cargo test`/`cargo check` of the `.pyd` extensions link and run locally. `cargo test` needs an interpreter for PyO3 — set `PYO3_PYTHON` to the venv python, and keep the base Python dir (which holds `python314.dll`) on PATH or the test binary dies with `STATUS_DLL_NOT_FOUND`.
+  - **Docker Desktop** — WSL2 backend, no separate distro. Only needed to reproduce CI's `docker-build` job locally; the engine runs only while Docker Desktop is open.
 - **Never run raw `pytest -v` — it can hang.** Use the wrapper, which clears the `-v` from `pyproject.toml` and avoids the pipe freeze:
   ```powershell
   .\scripts\run_tests.ps1                 # all tests
@@ -36,6 +37,7 @@ The AI core (`cogs/ai_core/`) is deeply nested: `api/ core/ response/ commands/ 
   .\scripts\run_tests.ps1 -File test_ai_core.py
   .\scripts\run_tests.ps1 -Coverage
   ```
+- **The pre-commit hook needs the venv on PATH.** `.git/hooks/pre-commit` is installed. Its `pytest-fast` hook is `language: system` and runs a bare `python -m pytest`, so committing from a shell where `python` isn't the venv's fails with a misleading `No module named pytest` — activate `.venv` first (GUI clients like VS Code / GitHub Desktop hit this). CI sets `SKIP: pytest-fast` for the same reason, so use `SKIP=pytest-fast` when reproducing its gate locally. Note the hooks **auto-fix files**, so `pre-commit run --all-files` is not a read-only diagnostic.
 - **Persona files are git-ignored** and must be copied from examples before the bot runs fully: `cogs/ai_core/data/faust_data.py` (from `faust_data_example.py`) and `roleplay_data.py`. The README warns the repo is intentionally incomplete ("some assembly required").
 
 ## Commands
@@ -82,6 +84,6 @@ A cross-platform `Makefile` mirrors most of these (`make test`, `make lint-all`,
 
 **Plugins.** Project scope (`.claude/settings.json`, all `@claude-plugins-official`): `frontend-design`, `security-guidance` (auto-reviews edits for injection/SSRF/XSS/secrets), `pyright-lsp`, `rust-analyzer-lsp`, `gopls-lsp`, `typescript-lsp`, `sentry`, `context7`, `commit-commands`. User scope (`~/.claude/settings.json`, every project): `claude-md-management`, `hookify`, `skill-creator`, `lumen`, `superpowers`, `vercel`, `typescript-lsp`, `plugin-dev`, `claude-code-setup`, `mcp-server-dev`, `playground` (all `@claude-plugins-official`), plus `autoresearch` (marketplace `uditgoenka/autoresearch`) and `context-meter` (local-dev plugin — drives the status-line context-% meter). Repo-local skills live in `.claude/skills/`: `repo-audit`, `build-dashboard`, `cut-release`.
 
-**MCP servers.** Local, in `~/.claude.json` (global): `github` (HTTP, GitHub Copilot endpoint), `playwright` (stdio, `npx @playwright/mcp`), `chrome-devtools`, `mcpcontrol` (desktop control), `google-drive` (full Docs/Sheets/Slides/Calendar), `magic` (21st.dev UI gen). Plugin-bundled: `context7`, `sentry`, `lumen`, `vercel`. Browser extension: `claude-in-chrome`. claude.ai account connectors (interactive auth — may be absent in headless/cron runs): Canva, Gmail, Google Calendar, Google Drive — note this Drive connector is distinct from the local `google-drive` MCP. Semgrep MCP was evaluated and skipped (needs Docker/WSL, unavailable on this Windows host).
+**MCP servers.** Local, in `~/.claude.json` (global): `github` (HTTP, GitHub Copilot endpoint), `playwright` (stdio, `npx @playwright/mcp`), `chrome-devtools`, `mcpcontrol` (desktop control), `google-drive` (full Docs/Sheets/Slides/Calendar), `magic` (21st.dev UI gen). Plugin-bundled: `context7`, `sentry`, `lumen`, `vercel`. Browser extension: `claude-in-chrome`. claude.ai account connectors (interactive auth — may be absent in headless/cron runs): Canva, Gmail, Google Calendar, Google Drive — note this Drive connector is distinct from the local `google-drive` MCP. Semgrep MCP was evaluated and skipped for needing Docker/WSL — both are installed now, so that objection no longer applies if it's ever reconsidered.
 
 The four LSP server binaries are **installed** and on the User PATH: `pyright-langserver` + `typescript-language-server` (`~\.local\node`), `gopls` (`~\go\bin`), `rust-analyzer` (`~\.cargo\bin`). They activate in Claude Code after a session restart (the host must pick up the new PATH).
