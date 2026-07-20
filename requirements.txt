@@ -39,7 +39,7 @@ watchdog==6.0.0               # File watcher for hot reload (latest)
 colorama==0.4.6               # Windows ANSI color support (latest)
 pyyaml>=6.0.3,<7             # YAML parsing for prompt templates
 types-PyYAML>=6.0.12.20260518,<7         # Type stubs for mypy
-types-requests>=2.33.0.20260518,<3  # Type stubs for requests/spotipy integration
+types-requests>=2.33.0.20260712,<3  # Type stubs for requests/spotipy integration
 
 # ==================== Monitoring (Optional) ====================
 sentry-sdk==2.66.0            # Error tracking (optional)
