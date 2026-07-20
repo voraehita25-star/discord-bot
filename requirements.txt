@@ -20,7 +20,7 @@ beautifulsoup4==4.15.0        # HTML parsing for URL content (latest)
 lxml==6.1.1                   # Fast HTML parser (CVE-2026-41066)
 numpy==2.5.1                  # Numerical operations (for RAG embeddings, latest)
 faiss-cpu==1.14.3             # Vector similarity search (latest)
-imageio[ffmpeg]==2.37.3       # GIF to video conversion for Gemini (latest)
+imageio[ffmpeg]==2.37.4       # GIF to video conversion for Gemini (latest)
 pypdf>=6.14.2,<7              # PDF text extraction; floor must stay >=6.9.2 (CVE-2026-33699 infinite-loop DoS, +27628/24688/28351 on untrusted PDFs)
 python-docx>=1.2.0,<2         # DOCX text extraction for dashboard document memory
 defusedxml>=0.7.1,<1          # No longer imported by our code (python-docx self-protects via resolve_entities=False); kept as a harmless pin, safe to drop
