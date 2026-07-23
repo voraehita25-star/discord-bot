@@ -40,8 +40,10 @@ def _isolated_sessions(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     # The map is module-global; clear before + after to keep tests independent.
     cli_mod._CONVERSATION_SESSIONS.clear()
+    cli_mod._DELETED_CONVERSATIONS.clear()
     yield
     cli_mod._CONVERSATION_SESSIONS.clear()
+    cli_mod._DELETED_CONVERSATIONS.clear()
 
 
 async def _settle_session_cleanups() -> None:

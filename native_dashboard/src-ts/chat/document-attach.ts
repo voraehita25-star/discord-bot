@@ -163,6 +163,13 @@ export class DocumentAttachManager {
         this.renderPreview();
     }
 
+    /** Re-stage a previously captured snapshot (see get()). Used by
+     *  retryFailedSend to restore attachments a text-only retry cleared. */
+    restore(docs: DocumentPayload[]): void {
+        this.docs = docs.slice();
+        this.renderPreview();
+    }
+
     /** Try to attach a single file. Validates type + size; toasts on reject. */
     attach(file: File): void {
         if (file.size > MAX_DOC_SIZE) {

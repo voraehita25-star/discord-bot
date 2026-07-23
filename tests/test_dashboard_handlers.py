@@ -441,7 +441,9 @@ class TestEditMessage:
             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
         ):
-            await handle_edit_message(ws, {"message_id": "1", "content": "new"})
+            await handle_edit_message(
+                ws, {"message_id": "1", "content": "new", "conversation_id": "c1"}
+            )
         assert ws.last()["code"] == "MSG_NOT_FOUND"
 
     @pytest.mark.asyncio
@@ -452,7 +454,9 @@ class TestEditMessage:
             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
         ):
-            await handle_edit_message(ws, {"message_id": "1", "content": "updated"})
+            await handle_edit_message(
+                ws, {"message_id": "1", "content": "updated", "conversation_id": "c1"}
+            )
         assert ws.last()["type"] == "message_edited"
 
     @pytest.mark.asyncio
@@ -640,7 +644,7 @@ class TestDeleteMessage:
             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
         ):
-            await handle_delete_message(ws, {"message_id": "999"})
+            await handle_delete_message(ws, {"message_id": "999", "conversation_id": "c1"})
         assert ws.last()["code"] == "MSG_NOT_FOUND"
 
     @pytest.mark.asyncio
@@ -651,7 +655,7 @@ class TestDeleteMessage:
             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
         ):
-            await handle_delete_message(ws, {"message_id": "1"})
+            await handle_delete_message(ws, {"message_id": "1", "conversation_id": "c1"})
         assert ws.last()["type"] == "message_deleted"
 
     @pytest.mark.asyncio
@@ -669,7 +673,7 @@ class TestDeleteMessage:
                 patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
                 patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
             ):
-                await handle_delete_message(ws, {"message_id": "1"})
+                await handle_delete_message(ws, {"message_id": "1", "conversation_id": "c3"})
             assert "c3" not in cli_mod._CONVERSATION_SESSIONS
         finally:
             cli_mod._CONVERSATION_SESSIONS.pop("c3", None)
@@ -683,7 +687,13 @@ class TestDeleteMessage:
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
         ):
             await handle_delete_message(
-                ws, {"message_id": "1", "delete_pair": True, "pair_message_id": "2"}
+                ws,
+                {
+                    "message_id": "1",
+                    "delete_pair": True,
+                    "pair_message_id": "2",
+                    "conversation_id": "c1",
+                },
             )
         assert ws.last()["pair_message_id"] == "2"
 

@@ -109,10 +109,13 @@ def _denied_subtrees() -> list[Path]:
     only positionally — a repo cloned under ``~/Documents`` sat inside a
     default write root and everything in it became auto-approved. Subtract the
     repo tree plus ``~/.ssh`` / ``~/.claude`` (credential/config RCE vectors)
-    and the PowerShell profile dirs (a shell-startup RCE vector that likewise
-    sits inside the default ``Documents`` write root) here so the promise is
-    enforced in code regardless of where the repo lives or what roots an
-    operator configures. Fails closed: an unresolvable entry denies via the caller.
+    the PowerShell profile dirs (a shell-startup RCE vector that likewise
+    sits inside the default ``Documents`` write root), and the CLI workdir
+    ``~/.discord_bot`` (the ``claude -p`` spawn cwd and, under the OAuth fast
+    path, the child's live ``CLAUDE_CONFIG_DIR`` — a settings.json/PreToolUse-hook
+    RCE vector) here so the promise is enforced in code regardless of where the
+    repo lives or what roots an operator configures. Fails closed: an
+    unresolvable entry denies via the caller.
     """
     # cogs/ai_core/api/cli_write_guard.py → parents[3] is the repo root.
     repo_root = Path(__file__).resolve().parents[3]
@@ -122,6 +125,17 @@ def _denied_subtrees() -> list[Path]:
         (home / ".ssh").resolve(),
         (home / ".claude").resolve(),
         (home / ".claude.json").resolve(),
+        # The dashboard CLI's own workdir. ~/.discord_bot/claude_cli_workdir is
+        # the claude -p spawn cwd (Claude Code loads project-scope
+        # .claude/settings.json from there) AND, under the OAuth fast path,
+        # holds claude_home == the child's live CLAUDE_CONFIG_DIR. A write to
+        # either registers a PreToolUse hook that executes on the next spawn —
+        # the same RCE-via-config vector for which ~/.claude is denylisted. The
+        # parent (dashboard_chat_claude_cli._dashboard_cli_write_dirs) only drops
+        # this from the DEFAULT roots via its using_defaults gate; denylisting
+        # the whole ~/.discord_bot tree here makes the exclusion hold under an
+        # explicit DASHBOARD_CLI_WRITE_DIRS override too, as this module promises.
+        (home / ".discord_bot").resolve(),
         *_powershell_profile_dirs(home),
     ]
 

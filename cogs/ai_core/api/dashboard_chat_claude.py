@@ -1095,6 +1095,21 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                 # full_response via the continuation prefill, so its spend must
                 # survive into the final stream_end accounting.
                 prior_attempt_output_tokens += output_tokens
+                # If this attempt failed mid-thinking, the client already got a
+                # thinking_start with no matching thinking_end. Resetting
+                # is_thinking below (and popping the thinking config for the
+                # continuation) means the end-of-stream flush won't fire and the
+                # retried attempt may emit no thinking block at all, leaving the
+                # client's "Thinking…" panel open indefinitely. Close it now,
+                # carrying this attempt's partial reasoning, before the reset.
+                if is_thinking:
+                    await ws.send_json(
+                        {
+                            "type": "thinking_end",
+                            "conversation_id": conversation_id,
+                            "full_thinking": thinking_content,
+                        }
+                    )
                 thinking_content = ""
                 chunks_count = 0
                 is_thinking = False

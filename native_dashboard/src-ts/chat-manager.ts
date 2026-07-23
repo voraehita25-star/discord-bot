@@ -686,6 +686,22 @@ export class ChatManager {
             }
 
             case 'stream_end':
+                // A stream_end flagged is_edit while we are NOT edit-streaming is
+                // a stale ack for an AI edit that was already abandoned — e.g. the
+                // user switched conversations mid-edit, which clears isEditStreaming
+                // but does NOT cancel the server-side edit turn. Handle it FIRST:
+                // if a normal stream has since started, isStreaming and
+                // streamingConversationId now belong to THAT live turn, so every
+                // teardown path below would corrupt it (null its binding, wipe its
+                // buffer, unlock the composer mid-stream). Discard the stale ack,
+                // touching shared stream state only when nothing is live.
+                if (data.is_edit && !this.isEditStreaming) {
+                    if (!this.isStreaming) {
+                        this.clearStreamBuffers();
+                        this.setInputEnabled(true);
+                    }
+                    break;
+                }
                 // Drop a stream_end for a conversation the user has navigated
                 // away from (mid-stream switch) — otherwise full_response would
                 // be appended into the now-current (wrong) conversation.
@@ -1652,10 +1668,11 @@ export class ChatManager {
      * normal send path so the same message is re-attempted.
      *
      * Deferral (documented): attachments (images/documents) that rode on the
-     * original send are NOT re-attached here — they were cleared from the
-     * composer on the optimistic path and the retry resends text only. A user
-     * who needs to resend files re-attaches them. This keeps the retry path
-     * simple and avoids re-serialising stale base64 payloads.
+     * original send are NOT re-attached here — the retry resends text only. A
+     * user who needs to resend files re-attaches them. This keeps the retry path
+     * simple and avoids re-serialising stale base64 payloads. Any attachments
+     * the user has staged for their NEXT message are snapshotted and restored
+     * around the resend so the retry neither consumes nor destroys them.
      */
     retryFailedSend(idx: number): void {
         const msg = this.messages[idx];
@@ -1665,6 +1682,16 @@ export class ChatManager {
             return;
         }
         const content = msg.content;
+        // Snapshot any attachments the user has staged for their NEXT message.
+        // The retry routes through sendMessage(), which sends whatever is staged
+        // and then clear()s it — so without this it would attach these to the
+        // retried OLD message (wrong turn context) AND destroy them from the
+        // composer. Clear them so the retry resends text only (as documented),
+        // then restore them after the resend.
+        const stagedImages = this.imageAttach.get();
+        const stagedDocs = this.docAttach.get();
+        this.imageAttach.clear();
+        this.docAttach.clear();
         // Remove the failed bubble so sendMessage() re-pushes a fresh one
         // (re-marking it failed if the resend also fails).
         this.messages.splice(idx, 1);
@@ -1686,6 +1713,9 @@ export class ChatManager {
             this.autoResizeInput();
             refreshSendButtonGlow();
         }
+        // Re-stage the attachments the user had queued for their next message.
+        this.imageAttach.restore(stagedImages);
+        this.docAttach.restore(stagedDocs);
     }
 
     appendStreamingMessage(mode: string = ''): void {
@@ -3293,6 +3323,17 @@ export class ChatManager {
 
     regenerateAfterEdit(editedMsg: ChatMessage): void {
         if (!this.currentConversation) return;
+        // Guard against a second concurrent stream (mirrors sendMessage,
+        // submitEdit and saveEdit). This runs from the DEFERRED message_edited
+        // ack, by which time the user may have started another turn — the
+        // composer stays enabled during the edit_message round-trip. A second
+        // `message` frame would interleave with the live stream in the single
+        // #streaming-message bubble, or trip the backend's per-client
+        // concurrency cap and tear the live turn down.
+        if (this.isStreaming) {
+            showToast('Wait for the current response to finish', { type: 'warning' });
+            return;
+        }
 
         // Build history from messages before the edited message
         // Strip unnecessary fields (images/thinking/mode) to reduce payload size,

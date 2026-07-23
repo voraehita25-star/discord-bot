@@ -1181,6 +1181,25 @@ impl BotManager {
                         "Bot stopped (no PID file; killed tracked startup process)".to_string(),
                     ));
                 }
+                // Dev mode tracks the watcher in dev_watcher_child, NOT
+                // self.child (start_dev spawns dev_watcher.py, which spawns
+                // bot.py as a grandchild). bot.pid is legitimately absent while
+                // dev mode is live — during the multi-second cold start and on
+                // every hot-reload/crash respawn (dev_watcher.py unlinks bot.pid
+                // before relaunching bot.py). Reaching here with a live watcher
+                // means Stop was pressed in that gap: without tearing the watcher
+                // down it survives and respawns bot.py, so Stop silently fails.
+                // Mirror the stale-PID branches below and stop it here.
+                if self.dev_watcher_child.is_some() || self.get_dev_watcher_pid().is_some() {
+                    self.stop_dev_watcher();
+                    // Sweep an orphaned watcher and any bot.py it respawned whose
+                    // pid we never captured, so nothing is left to relaunch.
+                    self.reap_orphan_dev_watcher();
+                    self.kill_orphan_bot_processes();
+                    return Ok(StopOutcome::Done(
+                        "Dev mode stopped (watcher terminated)".to_string(),
+                    ));
+                }
                 return Err("Bot is not running".to_string());
             }
         };

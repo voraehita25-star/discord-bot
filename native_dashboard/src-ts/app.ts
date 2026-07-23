@@ -1545,8 +1545,12 @@ function initNavigation(): void {
     });
     
     document.getElementById('avatar-input')?.addEventListener('change', (e) => {
-        const file = (e.target as HTMLInputElement).files?.[0];
+        const input = e.target as HTMLInputElement;
+        const file = input.files?.[0];
         if (file) handleAvatarUpload(file, 'user');
+        // Reset so re-selecting the SAME file after cancelling the cropper fires
+        // 'change' again — a file input emits it only when the value differs.
+        input.value = '';
     });
     
     document.getElementById('btn-remove-avatar')?.addEventListener('click', () => {
@@ -1559,8 +1563,12 @@ function initNavigation(): void {
     });
     
     document.getElementById('ai-avatar-input')?.addEventListener('change', (e) => {
-        const file = (e.target as HTMLInputElement).files?.[0];
+        const input = e.target as HTMLInputElement;
+        const file = input.files?.[0];
         if (file) handleAvatarUpload(file, 'ai');
+        // Reset so re-selecting the SAME file after cancelling the cropper fires
+        // 'change' again — a file input emits it only when the value differs.
+        input.value = '';
     });
     
     document.getElementById('btn-remove-ai-avatar')?.addEventListener('click', () => {
@@ -3151,6 +3159,11 @@ function renderApiFailoverUI(data: Record<string, unknown>): void {
     container.innerHTML = '';
 
     for (const ep of endpoints) {
+        // A frame element that isn't an object (null, string, number) would
+        // throw on the property access below and abort the whole loop AFTER
+        // container.innerHTML was cleared, blanking the panel. WS frame contents
+        // are untrusted (misbehaving/compromised backend) — skip malformed items.
+        if (!ep || typeof ep !== 'object') continue;
         const item = document.createElement('div');
         item.className = 'api-endpoint-item' +
             (ep.active ? ' active' : '') +
@@ -3215,6 +3228,9 @@ function renderHealthCheckResults(results: Array<Record<string, unknown>>): void
     div.id = 'api-health-results';
     div.className = 'api-health-result';
     div.innerHTML = results.map(r => {
+        // Skip a malformed (non-object) entry from an untrusted WS frame — a null
+        // r would throw on the property access below and break the whole list.
+        if (!r || typeof r !== 'object') return '';
         // Coerce latency to a number — escape the rest. r is Record<string, unknown>,
         // so any string from a misbehaving WS frame would otherwise land in
         // innerHTML unescaped. Also coerce label/error to string so a non-string

@@ -699,6 +699,38 @@ async def _unlink_session_file_by_id(session_id: str | None) -> bool:
     return False
 
 
+# Tombstones for conversations deleted while one of their turns was still in
+# flight. The conversation-delete handler (WSDashboardServer.handle_delete_
+# conversation) records the id here via remember_deleted_conversation. That
+# delete runs inline on the WS read loop and does NOT take the per-conversation
+# lock (a live turn can hold it for the whole streaming window), so it can land
+# AFTER a turn captured its new session id but BEFORE the post-turn
+# _track_session re-records it — which would resurrect the deleted conversation's
+# session entry and orphan the child's new .jsonl on disk. _track_session
+# consults these tombstones and, for a just-deleted conversation, skips the
+# re-insert and unlinks the new transcript. Recorded ONLY on the true
+# conversation-delete path — NOT inside delete_session_file, which the
+# edit/rebuild paths also call (there the conversation continues and its next
+# turn MUST re-track). Bounded; conversation ids are never reused, so evicted
+# entries are harmless.
+_DELETED_CONVERSATIONS: dict[str, None] = {}
+_MAX_DELETED_TOMBSTONES = 1024
+
+
+def remember_deleted_conversation(conversation_id: str) -> None:
+    """Tombstone ``conversation_id`` as deleted (see ``_DELETED_CONVERSATIONS``).
+
+    Called by the conversation-delete handler so an in-flight turn that finishes
+    after the delete doesn't re-track (resurrect) the gone conversation's session.
+    """
+    if not conversation_id:
+        return
+    _DELETED_CONVERSATIONS.pop(conversation_id, None)
+    _DELETED_CONVERSATIONS[conversation_id] = None
+    while len(_DELETED_CONVERSATIONS) > _MAX_DELETED_TOMBSTONES:
+        _DELETED_CONVERSATIONS.pop(next(iter(_DELETED_CONVERSATIONS)), None)
+
+
 async def delete_session_file(conversation_id: str) -> bool:
     """Remove the Claude Code .jsonl for a dashboard conversation.
 
@@ -947,6 +979,21 @@ def _track_session(conversation_id: str, session_id: str) -> None:
     # projects folder on the delete path. Refuse to track it.
     if not _SESSION_ID_PATTERN.match(session_id):
         logger.warning("Refusing to track Claude session with suspicious id %r", session_id)
+        return
+    if conversation_id in _DELETED_CONVERSATIONS:
+        # The conversation was deleted while this turn was still streaming
+        # (delete_session_file runs without the per-conversation lock). Don't
+        # resurrect the session entry; unlink the child's just-written .jsonl so
+        # the deleted conversation's transcript doesn't linger on disk.
+        logger.info(
+            "Not tracking session for deleted conversation %s; unlinking orphaned transcript",
+            conversation_id,
+        )
+        with contextlib.suppress(RuntimeError):
+            loop = asyncio.get_running_loop()
+            orphan_task = loop.create_task(_unlink_session_file_by_id(session_id))
+            _PENDING_SESSION_CLEANUPS.add(orphan_task)
+            orphan_task.add_done_callback(_PENDING_SESSION_CLEANUPS.discard)
         return
     # Pop first (if present) so the re-insert below puts the entry at the
     # end of insertion order. Without this, dict[key] = value keeps the
@@ -2081,6 +2128,12 @@ async def _run_claude_subprocess(
     # stdout phase a verbose warning chain filling the stderr pipe would
     # block the child and stall consume_stdout the same way.
     stderr_chunks: list[bytes] = []
+    # Cap stderr retention: a child wedged in a verbose error/retry loop could
+    # otherwise append to this list for the whole (up to 1800s) timeout window
+    # and exhaust memory. Only the first ~1 KiB is ever read (consumers slice
+    # [:500]/[:1000]), so 256 KiB is ample. Reading continues PAST the cap so the
+    # stderr pipe never fills and deadlocks the child — we just stop retaining.
+    stderr_retain_cap = 256 * 1024
 
     def _start_stderr_pump(p: asyncio.subprocess.Process) -> asyncio.Task[None]:
         async def _pump() -> None:
@@ -2091,8 +2144,11 @@ async def _run_claude_subprocess(
             # abort an otherwise-successful, already-streamed turn.
             if hasattr(p.stderr, "_limit"):
                 p.stderr._limit = MAX_STDOUT_LINE_BYTES
+            retained = 0
             async for chunk in p.stderr:
-                stderr_chunks.append(chunk)
+                if retained < stderr_retain_cap:
+                    stderr_chunks.append(chunk)
+                    retained += len(chunk)
 
         return asyncio.create_task(_pump())
 
@@ -2705,6 +2761,16 @@ async def handle_chat_message_claude_cli(
         else []
     )
 
+    def _unlink_this_turns_attachments() -> None:
+        # Cancellation-safe cleanup for the window BEFORE the main try/finally
+        # (entered at the ``try:`` before the CLI spawn) takes ownership. A
+        # CancelledError from a client disconnect / shutdown at any await in
+        # between (extract_and_persist, DB history load, build_user_context)
+        # would otherwise orphan these just-written temp files on disk.
+        for _attach in (*image_paths, *(doc_paths or [])):
+            with contextlib.suppress(Exception):
+                _attach.unlink(missing_ok=True)
+
     # Re-check emptiness AFTER saving: the earlier guard only knew the raw
     # attachment lists were non-empty, but _save_inline_images/_documents can
     # drop every attachment (decode/size failures), leaving image_paths and
@@ -2748,6 +2814,9 @@ async def handle_chat_message_claude_cli(
                             "conversation_id": conversation_id,
                         }
                     )
+        except asyncio.CancelledError:
+            _unlink_this_turns_attachments()
+            raise
         except Exception:
             logger.exception("Document extraction/persistence failed (CLI backend)")
 
@@ -2812,6 +2881,9 @@ async def handle_chat_message_claude_cli(
             hist_msgs = db_msgs[:-1] if db_msgs and db_msgs[-1].get("role") == "user" else db_msgs
             if hist_msgs:
                 history = hist_msgs
+        except asyncio.CancelledError:
+            _unlink_this_turns_attachments()
+            raise
         except Exception:
             logger.exception("Failed to load DB history for CLI prompt; using frontend payload")
 
@@ -2825,6 +2897,9 @@ async def handle_chat_message_claude_cli(
             unrestricted_requested,
             conversation_id=conversation_id,
         )
+    except asyncio.CancelledError:
+        _unlink_this_turns_attachments()
+        raise
     except Exception:
         logger.exception("build_user_context failed (CLI backend)")
         user_context = f"Name: {user_name}"
@@ -3209,6 +3284,10 @@ async def handle_chat_message_claude_cli(
         # _track_session is synchronous, so doing it here under the lock is atomic.
         if conversation_id and new_session_id:
             _track_session(conversation_id, new_session_id)
+        # Don't prewarm a conversation that was deleted mid-turn: _track_session
+        # above already no-op'd its resurrected session entry and unlinked the
+        # orphaned transcript, so spawning a warm process for it would just leak.
+        if conversation_id and new_session_id and conversation_id not in _DELETED_CONVERSATIONS:
             # Pre-warm the next turn's process (#1). The common follow-up is a
             # plain-text turn in the same conversation + persona, so spawn that
             # exact argv now — booted and blocked on stdin — to hide its cold

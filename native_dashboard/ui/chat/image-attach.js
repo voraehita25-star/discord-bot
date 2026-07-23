@@ -30,6 +30,12 @@ export class ImageAttachManager {
         this.images = [];
         this.renderPreview();
     }
+    /** Re-stage a previously captured snapshot (see get()). Used by
+     *  retryFailedSend to restore attachments a text-only retry cleared. */
+    restore(images) {
+        this.images = images.slice();
+        this.renderPreview();
+    }
     /** Add one file — size + count limits enforced. Base64 encoded via FileReader.
      *
      * Pushes onto `images` only after the FileReader successfully resolves

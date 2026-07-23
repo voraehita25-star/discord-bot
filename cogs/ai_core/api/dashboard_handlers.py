@@ -410,6 +410,15 @@ async def handle_star_conversation(ws: WebSocketResponse, data: dict[str, Any]) 
         db = _get_db()
         result = await db.update_dashboard_conversation_star(conversation_id, starred)
         logger.info("Star update result: %s", result)
+        if not result:
+            # No row updated → the conversation doesn't exist (e.g. deleted in
+            # another window). Don't ack success; reply not-found like the pin/
+            # like/edit message handlers so the client doesn't optimistically
+            # render a star change that never persisted.
+            await ws.send_json(
+                {"type": "error", "code": "CONV_NOT_FOUND", "message": "Conversation not found"}
+            )
+            return
         await ws.send_json(
             {
                 "type": "conversation_starred",
@@ -477,7 +486,14 @@ async def handle_rename_conversation(ws: WebSocketResponse, data: dict[str, Any]
 
     try:
         db = _get_db()
-        await db.rename_dashboard_conversation(conversation_id, new_title)
+        renamed = await db.rename_dashboard_conversation(conversation_id, new_title)
+        if not renamed:
+            # No row updated → conversation no longer exists. Reply not-found
+            # instead of falsely acking the rename (see handle_star_conversation).
+            await ws.send_json(
+                {"type": "error", "code": "CONV_NOT_FOUND", "message": "Conversation not found"}
+            )
+            return
         await ws.send_json(
             {
                 "type": "conversation_renamed",
@@ -593,15 +609,21 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
 
     # Validate format (defense in depth, consistent with every other
     # conversation-scoped handler — load/delete/star/rename/export/tag).
-    # Gated on ``is not None`` because edit permits a null conversation_id;
-    # this rejects junk ids (spaces, control chars) before they churn the
-    # LRU-capped _REGEN_LOCKS dict and reach the DB / CLI-session map.
+    # Gated on ``is not None`` so a genuinely absent id falls through to the
+    # required-field check below (CANNOT_EDIT) rather than INVALID_ID; this
+    # rejects junk ids (spaces, control chars) before they churn the LRU-capped
+    # _REGEN_LOCKS dict and reach the DB.
     if conversation_id is not None and not _validate_conversation_id(conversation_id):
         await ws.send_json(
             {"type": "error", "code": "INVALID_ID", "message": "Invalid conversation ID format"}
         )
         return
 
+    # conversation_id is REQUIRED. Without it the update below would run with
+    # expected_conversation_id=None, which the DB layer treats as an UNSCOPED
+    # UPDATE (edit any message id in any conversation). The dashboard TS client
+    # always sends it; older unscoped clients are rejected rather than allowed to
+    # bypass ownership — matching the hardened doc-memory / delete handlers.
     if not message_id or not content or not DB_AVAILABLE:
         await ws.send_json(
             {
@@ -630,6 +652,20 @@ async def handle_edit_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
         message_id_int = int(message_id)
     except (ValueError, TypeError):
         await ws.send_json({"type": "error", "code": "INVALID_ID", "message": "Invalid message ID"})
+        return
+
+    # conversation_id is REQUIRED here (its format was validated above). Without
+    # it the update below runs with expected_conversation_id=None — an UNSCOPED
+    # update that could edit any message id in any conversation. The dashboard TS
+    # client always sends it; reject the ownership bypass rather than allow it.
+    if not conversation_id:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "MISSING_CONVERSATION",
+                "message": "conversation_id is required",
+            }
+        )
         return
 
     try:
@@ -913,17 +949,18 @@ async def handle_delete_message(ws: WebSocketResponse, data: dict[str, Any]) -> 
     message_id = data.get("message_id")
     delete_pair = data.get("delete_pair", False)
     pair_message_id = data.get("pair_message_id")
-    # Conversation scope: callers that have already authenticated a
-    # conversation context should pass it so a forged ``message_id`` from
-    # an unrelated conversation can't be deleted via this handler. Older
-    # clients that don't send it fall through to an unscoped delete (no
-    # behaviour change), but the dashboard's TS client always sends it.
+    # Conversation scope: the delete must be scoped to a conversation so a
+    # forged ``message_id`` from an unrelated conversation can't be deleted via
+    # this handler. conversation_id is REQUIRED — a missing/invalid one is
+    # rejected rather than falling through to an unscoped delete (the earlier
+    # bypass). The dashboard TS client always sends it. Matches
+    # handle_edit_message and the hardened doc-memory handlers.
     expected_conv_raw = data.get("conversation_id")
     expected_conv: str | None = None
     if isinstance(expected_conv_raw, str) and _validate_conversation_id(expected_conv_raw):
         expected_conv = expected_conv_raw
 
-    if not message_id or not DB_AVAILABLE:
+    if not message_id or expected_conv is None or not DB_AVAILABLE:
         await ws.send_json(
             {
                 "type": "error",

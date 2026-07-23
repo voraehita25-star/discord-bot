@@ -50,6 +50,7 @@ from .dashboard_chat_claude import (
 from .dashboard_chat_claude_cli import (
     handle_ai_edit_message_claude_cli as _handle_ai_edit_message_claude_cli,
     handle_chat_message_claude_cli as _handle_chat_message_claude_cli,
+    remember_deleted_conversation as _remember_deleted_cli_conversation,
     reset_session as _reset_cli_session,
     shutdown_prewarm as _shutdown_cli_prewarm,
 )
@@ -195,6 +196,13 @@ class DashboardWebSocketServer:
 
     # Limits
     MAX_CLIENTS = 20
+    # Max concurrent UNAUTHENTICATED sockets waiting to send their auth message.
+    # Each pre-auth socket is sized (max_msg_size) for the worst legal chat
+    # payload and aiohttp buffers a whole frame before the 4 KiB pre-auth cap can
+    # reject it, so this bounds the aggregate memory an unauthenticated
+    # localhost-origin peer can force during the auth window. Upgrade-time
+    # authenticated clients are already trusted and exempt.
+    _MAX_PENDING_PREAUTH = 4
     # Max simultaneously-running AI tasks (chat / ai_edit) per client. Enforced
     # authoritatively by the read-loop gate (which counts not-done tasks in
     # _client_tasks BEFORE spawning); the inner _client_inflight backstops in
@@ -874,6 +882,25 @@ class DashboardWebSocketServer:
         # safe). Must be installed before the ws is exposed to any sender below.
         _install_send_lock(ws)
 
+        # Bound concurrent unauthenticated sockets (see _MAX_PENDING_PREAUTH):
+        # len(self.clients) - len(self._authenticated_ws) is the number of
+        # currently-connected sockets that have not authenticated yet. Reject a
+        # new message-auth connection once that many are already pending so an
+        # unauthenticated peer can't tie up a large pre-auth frame buffer on
+        # every slot. Checked BEFORE adding to self.clients so this early return
+        # (which runs before the try/finally cleanup) doesn't leak an entry.
+        if (
+            not _upgrade_authenticated
+            and (len(self.clients) - len(self._authenticated_ws)) >= self._MAX_PENDING_PREAUTH
+        ):
+            logger.warning(
+                "Rejecting WS connection: %d unauthenticated connections already pending",
+                len(self.clients) - len(self._authenticated_ws),
+            )
+            with contextlib.suppress(ConnectionError, RuntimeError):
+                await ws.close(code=4001, message=b"Too many pending connections")
+            return ws
+
         self.clients.add(ws)
         client_id = str(uuid.uuid4())[:8]
         logger.info("👋 Dashboard client connected: %s", client_id)
@@ -1022,10 +1049,22 @@ class DashboardWebSocketServer:
                         client_id,
                         self._auth_deadline,
                     )
-                    await ws.send_json(
-                        {"type": "error", "message": "Authentication required. Connection closing."}
-                    )
-                    await ws.close(code=4001, message=b"Authentication deadline exceeded")
+                    # The deadline is also reached when the client already sent a
+                    # CLOSE/ERROR frame (tab closed, dashboard restart): aiohttp
+                    # has then closed the transport, so these writes raise
+                    # ConnectionResetError, which would surface as a spurious
+                    # "WebSocket handler error" traceback (masking real errors)
+                    # and skip the 4001 close. Guard on ws.closed and suppress the
+                    # check-vs-write race.
+                    if not ws.closed:
+                        with contextlib.suppress(ConnectionError, RuntimeError):
+                            await ws.send_json(
+                                {
+                                    "type": "error",
+                                    "message": "Authentication required. Connection closing.",
+                                }
+                            )
+                            await ws.close(code=4001, message=b"Authentication deadline exceeded")
                     return ws
 
             async for msg in ws:
@@ -1656,6 +1695,15 @@ class DashboardWebSocketServer:
         await handle_load_conversation(ws, data)
 
     async def handle_delete_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
+        conv_id = data.get("id")
+        # Tombstone the conversation BEFORE the delete so an in-flight turn that
+        # finishes mid-delete can't resurrect its CLI session: that turn's
+        # post-run _track_session checks this and skips the re-insert + unlinks
+        # the orphaned transcript. Recorded here (the true conversation-delete
+        # path) rather than inside delete_session_file, which the edit/rebuild
+        # paths also call — there the conversation continues and must re-track.
+        if isinstance(conv_id, str) and conv_id:
+            _remember_deleted_cli_conversation(conv_id)
         # Delete FIRST: delete_session_file inside the handler needs the
         # session-map entry to find and unlink the .jsonl transcript.
         # Resetting before the delete popped that entry, so the transcript
@@ -1665,7 +1713,6 @@ class DashboardWebSocketServer:
         # Then forget the CLI session — this drops the per-conversation send
         # lock, which delete_session_file does not (the map entry is already
         # popped by delete_session_file, so reset_session's pop is a no-op).
-        conv_id = data.get("id")
         if isinstance(conv_id, str) and conv_id:
             _reset_cli_session(conv_id)
 
