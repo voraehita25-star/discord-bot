@@ -47,13 +47,19 @@ rust_extensions/target/
 native_dashboard/node_modules/
 /node_modules/
 
-# TypeScript compiled output (regenerated from src-ts/)
-native_dashboard/ui/app.js
-native_dashboard/ui/app.js.map
+# TypeScript compiled output.
+#
+# NOTE: ui/ is Tauri's `frontendDist` — the bundler ships that directory as-is,
+# and the other ~30 emitted files (ui/shared.js, ui/chat-manager.js,
+# ui/chat/*.js + their .map siblings) ARE tracked. Ignoring the entry point too
+# meant a fresh clone had a ui/ that could not boot: index.html loads app.js,
+# which only exists after `npm run build`. Track the two entry-point outputs so
+# the checked-in ui/ is internally consistent.
+#
+# Test-only output stays ignored — tsconfig.json excludes src-ts/**/*.test.ts
+# from the build, so these are stale artifacts if they ever appear at all.
 native_dashboard/ui/app.test.js
 native_dashboard/ui/app.test.js.map
-native_dashboard/ui/faust_avatar.js
-native_dashboard/ui/faust_avatar.js.map
 
 # Duplicate base64 data (source of truth is ui/assets/)
 native_dashboard/faust_base64.txt

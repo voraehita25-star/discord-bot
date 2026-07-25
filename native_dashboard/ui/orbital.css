@@ -727,7 +727,8 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
 .sidebar { border-right: 1px solid var(--border-strong); }
 .logo-text { font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
 /* Hangul has no Latin tracking — tighten the Korean logo label naturally.
-   Scoped to .logo-text ONLY (nav labels are Latin but inherit lang=ko). */
+   The document is lang="en"; the logo span carries its own lang="ko", which is
+   exactly what this :lang() selector keys off. */
 .logo-text:lang(ko) { letter-spacing: normal; }
 .nav-item {
     font-family: var(--font-ui);
@@ -1069,6 +1070,10 @@ html[data-theme="light"] .log-container {
     stroke-width: 1.75;
     color: currentColor;
 }
+/* h2 included: the logs zero-data state uses <h2> because it is injected
+   directly under the page <h1> (heading-order), while the empty states nested
+   under a section <h2> correctly use <h3>. Both must look identical. */
+.empty-state h2,
 .empty-state h3 {
     margin: 0;
     font-family: var(--font-display);
@@ -1239,8 +1244,24 @@ html[data-theme="light"] .chat-connection-status.connected {
    ============================================================================ */
 /* The chat view IS the content — drop the page title bar (eyebrow + h1) there;
    the flex chat-layout absorbs the reclaimed height. Every other page keeps
-   its header. */
-#page-chat .page-title-bar { display: none; }
+   its header.
+   VISUALLY hidden, not display:none: the latter also stripped the section's
+   <h1> from the accessibility tree, leaving the chat page with no level-one
+   heading at all (axe: moderate page-has-heading-one). position:absolute takes
+   it out of flow so the flex column still reclaims 100% of the height. */
+#page-chat .page-title-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    background: none;
+}
 .chat-messages { padding: var(--space-4); gap: 11px; }
 .chat-message { gap: 9px; max-width: min(78%, calc(100% - 40px)); }
 .message-avatar { width: 30px; height: 30px; font-size: 15px; }
@@ -1559,16 +1580,42 @@ h1 .ic, h2 .ic, h3 .ic,
 /* ============================================================================
    RESPONSIVE — keep the deck readable on narrow windows
    ============================================================================ */
-/* ≤1100px: collapse the sidebar to an icon rail. */
+/* ≤1100px: collapse the sidebar to an icon rail.
+   This block is the SOLE owner of the collapsed rail — the old duplicate at
+   styles.css @900px (width:80px) was dead code shadowed by this one, and its
+   two unique rules (.logo / .theme-toggle centering) are folded in below so
+   the rail looks the same across the whole ≤1100 range instead of only ≤900. */
 @media (max-width: 1100px) {
     .sidebar { width: 64px; padding-left: var(--space-2); padding-right: var(--space-2); }
     .nav-item { justify-content: center; gap: 0; padding-left: 0; padding-right: 0; }
     .nav-item > span:not(.nav-icon),
     .nav-item .shortcut,
-    .theme-toggle span:not(#theme-icon),
-    .status-text { display: none; }
+    .theme-toggle span:not(#theme-icon) { display: none; }
     .nav-icon { margin: 0; }
     .logo-text { display: none; }
+    .logo { justify-content: center; }
+    .theme-toggle { justify-content: center; }
+
+    /* .status-text is VISUALLY hidden, not display:none — #status-badge is an
+       aria-live region, and display:none would pull the text out of the a11y
+       tree and silence the Online/Offline announcement in the collapsed rail. */
+    .status-text {
+        position: absolute;
+        width: 1px; height: 1px;
+        padding: 0; margin: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+    .sidebar .status-badge { justify-content: center; }
+
+    /* The "SYSTEM" eyebrow measures ~55px at 0.22em tracking but the collapsed
+       rail leaves ~47px between the corner ticks, so the full word collided
+       with them and rendered as "S¦S T¦M". Abbreviate + tighten in the rail. */
+    .sidebar .theme-toggle::after {
+        content: 'SYS';
+        letter-spacing: 0.12em;
+    }
 }
 
 /* ≤920px: shrink the corner ticks. */
@@ -1587,6 +1634,58 @@ h1 .ic, h2 .ic, h3 .ic,
         min-width: 0;
         max-height: 38vh;
     }
+}
+
+/* SHORT windows (the Tauri minimum is 800x600, and 600px of height is not much
+   once a page title bar + a stacked two-pane layout are in play). The zero-data
+   recipe is sized for a roomy panel: 48px block padding around a 52px glyph chip
+   means the AI History empty states did not fit their panes at all — both were
+   sliced through the middle of the icon, hiding their <h3> and <p> entirely, and
+   the Undo button landed on top of the leftover glyph.
+   Compact the recipe instead of letting it clip. Gated on height only, so the
+   1280x800 visual baselines are untouched. */
+@media (max-height: 720px) {
+    .empty-state {
+        padding: var(--space-4) var(--space-3);
+        gap: var(--space-2);
+    }
+    .empty-state .ic {
+        padding: var(--space-2);
+        margin-bottom: 0;
+        background-size:
+            8px 2px, 2px 8px, 8px 2px, 2px 8px,
+            8px 2px, 2px 8px, 8px 2px, 2px 8px,
+            auto;
+    }
+    .empty-state h3 { font-size: var(--step-1); }
+    .empty-state p { font-size: var(--step--1); }
+}
+
+/* Stacked AND short — the AI History page.
+   #page-history.active is height:100%, so once the two panes stack there were
+   only ~416px of layout to share at 800x600. Both panes host a zero-data block
+   that wants ~150px plus its own header/filter chrome, so whichever pane lost
+   the split got sliced through the middle of its icon. Capping one pane just
+   moved the damage to the other.
+   Stop pinning the page to the viewport here and let .content scroll (it is
+   already overflow-y:auto). Each pane then keeps a workable minimum instead of
+   being crushed, which is the ordinary narrow-window behaviour anyway.
+   NOTE: deliberately scoped to #page-history — the chat page's height model is
+   load-bearing (the composer must stay put while only .chat-messages scrolls)
+   and it already lays out correctly at this size. */
+@media (max-width: 820px) and (max-height: 720px) {
+    #page-history.active { height: auto; }
+    .history-layout { flex: 0 0 auto; }
+    .history-sidebar {
+        flex: 0 0 auto;
+        max-height: none;
+    }
+    .history-channel-list { max-height: 34vh; }
+    .history-main {
+        flex: 0 0 auto;
+        min-height: 300px;
+    }
+    .history-messages { min-height: 190px; }
 }
 
 /* ============================================================================
@@ -1741,6 +1840,17 @@ html[data-theme="light"] .send-icon .ic { color: #fff; }
 .live-indicator {
     border-radius: var(--radius-sm);
 }
+/* PAUSED state — applyAutoScrollButtonState() toggles .paused in lockstep with
+   the Pause/Resume button. Kill the pulse and drop to a neutral chip so the
+   badge reads as "feed stopped" instead of a red LIVE claim. */
+.live-indicator.paused {
+    animation: none;
+    background: var(--surface-2);
+    border-color: var(--border-color);
+    -webkit-text-fill-color: var(--text-tertiary);
+    color: var(--text-tertiary);
+}
+.live-indicator.paused .ic { color: var(--text-tertiary); }
 
 /* ============================================================================
    POLISH — interaction feel. APPEND-ONLY, additive; kept BEFORE the

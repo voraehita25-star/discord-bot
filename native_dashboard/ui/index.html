@@ -1,5 +1,9 @@
 <!DOCTYPE html>
-<html lang="ko" data-theme="dark">
+<!-- lang="en": the visible UI is English (604 words of body copy, 8 of them
+     Korean). The handful of Korean strings carry their own lang="ko" so a
+     screen reader switches voice for those and reads the rest with an English
+     pronunciation model. The product NAME stays Korean (see <title lang="ko">). -->
+<html lang="en" data-theme="dark">
 
 <head>
     <meta charset="UTF-8">
@@ -416,7 +420,9 @@
     <!-- Sakura Petals Animation -->
     <div id="sakura-container"></div>
 
-    <a class="skip-link" href="#main-content">메인 콘텐츠로 건너뛰기</a>
+    <!-- lang="ko": one of the few Korean strings in an otherwise-English UI
+         (the document is lang="en"), so mark it for the correct TTS voice. -->
+    <a class="skip-link" href="#main-content" lang="ko">메인 콘텐츠로 건너뛰기</a>
 
     <div class="app">
         <!-- Sidebar -->
@@ -426,36 +432,55 @@
                 <span class="logo-text" lang="ko">봇 대시보드</span>
             </div>
 
+            <!-- Every nav button carries BOTH aria-label and title. Below 1100px
+                 the sidebar collapses to a 64px icon rail and the label <span> +
+                 <kbd> are visually hidden, which used to leave these buttons with
+                 NO accessible name at all (axe: critical button-name x6) and no
+                 tooltip for mouse users. aria-label keeps the AT name independent
+                 of the breakpoint; title supplies the hover tooltip the icon-only
+                 rail needs. The visible word is contained in the label, so WCAG
+                 2.5.3 (Label in Name) still holds.
+                 ORDER: matches the Ctrl+N numbering below (and VALID_PAGES in
+                 app.ts) so the rail reads 1,2,3,4,5,6 top-to-bottom. -->
             <div class="nav-items">
-                <button class="nav-item active" data-page="status">
+                <!-- aria-current is ALSO set here for the initial paint: switchPage()
+                     maintains it on every navigation, but it never runs at boot, so
+                     the hardcoded .active item shipped without it. -->
+                <button class="nav-item active" data-page="status" aria-current="page"
+                        aria-label="Status (Ctrl+1)" title="Status (Ctrl+1)">
                     <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-gauge"/></svg></span>
                     <span>Status</span>
                     <kbd class="shortcut">Ctrl+1</kbd>
                 </button>
-                <button class="nav-item" data-page="chat">
+                <button class="nav-item" data-page="chat"
+                        aria-label="AI Chat (Ctrl+2)" title="AI Chat (Ctrl+2)">
                     <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg></span>
                     <span>AI Chat</span>
                     <kbd class="shortcut">Ctrl+2</kbd>
                 </button>
-                <button class="nav-item" data-page="logs">
+                <button class="nav-item" data-page="logs"
+                        aria-label="Logs (Ctrl+3)" title="Logs (Ctrl+3)">
                     <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg></span>
                     <span>Logs</span>
                     <kbd class="shortcut">Ctrl+3</kbd>
                 </button>
-                <button class="nav-item" data-page="database">
+                <button class="nav-item" data-page="database"
+                        aria-label="Database (Ctrl+4)" title="Database (Ctrl+4)">
                     <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-database"/></svg></span>
                     <span>Database</span>
                     <kbd class="shortcut">Ctrl+4</kbd>
                 </button>
-                <button class="nav-item" data-page="history">
-                    <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg></span>
-                    <span>AI History</span>
-                    <kbd class="shortcut">Ctrl+6</kbd>
-                </button>
-                <button class="nav-item" data-page="settings">
+                <button class="nav-item" data-page="settings"
+                        aria-label="Settings (Ctrl+5)" title="Settings (Ctrl+5)">
                     <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg></span>
                     <span>Settings</span>
                     <kbd class="shortcut">Ctrl+5</kbd>
+                </button>
+                <button class="nav-item" data-page="history"
+                        aria-label="AI History (Ctrl+6)" title="AI History (Ctrl+6)">
+                    <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg></span>
+                    <span>AI History</span>
+                    <kbd class="shortcut">Ctrl+6</kbd>
                 </button>
             </div>
 
@@ -464,7 +489,13 @@
                 <span>Toggle Theme</span>
             </button>
 
-            <div class="status-badge" id="status-badge">
+            <!-- role=status + aria-live: updateStatusBadge() swaps .status-text
+                 between Online/Offline on every poll; without a live region the
+                 bot going down was announced to nobody. Mirrors the existing
+                 #chat-connection-status treatment. In the collapsed rail
+                 .status-text is visually hidden (NOT display:none) so it stays in
+                 the a11y tree and the announcement still fires. -->
+            <div class="status-badge" id="status-badge" role="status" aria-live="polite">
                 <span class="status-dot"></span>
                 <span class="status-text">Offline</span>
             </div>
@@ -945,7 +976,11 @@
                             <h2><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg> AI History</h2>
                             <button class="btn btn-sm" id="ai-history-refresh" title="Refresh channel list" aria-label="Refresh AI history channel list"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg> Refresh</button>
                         </div>
-                        <div class="history-channel-list" id="ai-channel-list">
+                        <!-- tabindex=0: this is an overflow:auto scroll container,
+                             so it must be focusable or keyboard-only users cannot
+                             scroll it (axe: serious scrollable-region-focusable). -->
+                        <div class="history-channel-list" id="ai-channel-list" tabindex="0"
+                             role="group" aria-label="Channels with saved AI history">
                             <div class="empty-state">
                                 <svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>
                                 <h3>No channels loaded</h3>
@@ -962,7 +997,9 @@
                         <!-- role="log": an aria-label on a bare (role-less) div
                              is ignored by AT — same fix as #chat-tags / #chat-messages.
                              'log' also announces appended history to screen readers. -->
-                        <div class="history-messages" id="ai-history-messages" role="log" aria-label="AI chat history messages">
+                        <!-- tabindex=0: scroll container, same reason as
+                             #ai-channel-list above (axe scrollable-region-focusable). -->
+                        <div class="history-messages" id="ai-history-messages" tabindex="0" role="log" aria-label="AI chat history messages">
                             <div class="empty-state">
                                 <svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg>
                                 <h3>Select a channel</h3>
@@ -1001,7 +1038,7 @@
                                 <span class="avatar-placeholder"><svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg></span>
                             </div>
                             <button class="btn btn-secondary" id="btn-change-ai-avatar"><svg class="ic" aria-hidden="true"><use href="#i-camera"/></svg> Change</button>
-                            <button class="btn btn-danger btn-small hidden" id="btn-remove-ai-avatar" aria-label="AI 아바타 제거"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
+                            <button class="btn btn-danger btn-small hidden" id="btn-remove-ai-avatar" title="Remove AI avatar" aria-label="Remove AI avatar"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
                             <input type="file" id="ai-avatar-input" accept="image/*" hidden>
                         </div>
                     </div>
@@ -1028,7 +1065,7 @@
                                 <span class="avatar-placeholder"><svg class="ic" aria-hidden="true"><use href="#i-user"/></svg></span>
                             </div>
                             <button class="btn btn-secondary" id="btn-change-avatar"><svg class="ic" aria-hidden="true"><use href="#i-camera"/></svg> Change</button>
-                            <button class="btn btn-danger btn-small hidden" id="btn-remove-avatar" aria-label="프로필 사진 제거"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
+                            <button class="btn btn-danger btn-small hidden" id="btn-remove-avatar" title="Remove profile picture" aria-label="Remove profile picture"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
                             <input type="file" id="avatar-input" accept="image/*" hidden>
                         </div>
                     </div>
