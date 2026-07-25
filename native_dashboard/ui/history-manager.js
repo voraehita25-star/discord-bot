@@ -1660,9 +1660,16 @@ export class HistoryManager {
         if (!header)
             return;
         if (this.currentChannelId === null) {
-            header.innerHTML = '<h2>Select a channel</h2>';
+            // The header is the channel-NAME slot. It used to render "Select a
+            // channel" directly above an empty state whose own <h3> said
+            // "Select a channel" — the same sentence twice, 190px apart. With
+            // nothing picked it now carries a quiet mono eyebrow instead and
+            // lets the empty state below own the instruction.
+            header.classList.add('is-placeholder');
+            header.innerHTML = '<h2>AI History</h2>';
             return;
         }
+        header.classList.remove('is-placeholder');
         const ch = this.channels.find(c => c.channel_id === this.currentChannelId);
         const name = ch?.name || `Channel ${this.currentChannelId}`;
         const meta = this.messages.length > 0

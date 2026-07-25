@@ -1986,6 +1986,460 @@ html[data-theme="light"],
 }
 
 /* ============================================================================
+   v5 "BLOOM" — density, hierarchy, and a calmer dawn.
+   ----------------------------------------------------------------------------
+   v4 established the Sakura Midnight identity; v5 fixes how it USES the space
+   it was given. The audit that drove this section, page by page:
+     · Status    — five metric cards, each a 145px box holding ~24px of ink.
+                   Centre-stacked icon/value/label wasted two thirds of every
+                   tile and pushed the charts below the fold.
+     · Status    — the gold DEV button outshouted the primary START, inverting
+                   the action hierarchy on the app's most important control.
+     · Light     — the dawn lattice ran at opacity 1 with no mask, so the grid
+                   striped straight across the page and read as noise.
+     · Database  — "No channels found." was bare italic text floating in a
+                   200px void, while other empties got the full icon treatment.
+     · Settings  — a label at the far left and its control at the far right,
+                   1000px apart with nothing tying them together.
+     · Sidebar   — ~240px of dead rail between the last nav item and the footer.
+   Nothing here renames a token, an id, a class or a data-* attribute — this
+   section changes VALUES and LAYOUT only, same contract rule as v4.
+   ============================================================================ */
+
+/* ---- ATMOSPHERE — the dawn lattice becomes a whisper ------------------------
+   Was: opacity 1, 24px minor + 120px major lines, mask-image:none — a hard
+   grid over the whole page. Now it fades from the top like the dark theme's
+   constellation grid and the alphas drop by ~40%, so it textures the paper
+   instead of ruling it. */
+html[data-theme="light"] body::before {
+    opacity: 0.6;
+    background-image:
+        linear-gradient(rgba(163, 37, 93, 0.028) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(163, 37, 93, 0.028) 1px, transparent 1px),
+        linear-gradient(rgba(163, 37, 93, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(163, 37, 93, 0.05) 1px, transparent 1px);
+    background-size: 28px 28px, 28px 28px, 140px 140px, 140px 140px;
+    -webkit-mask-image: radial-gradient(135% 105% at 50% 0%, #000 22%, transparent 82%);
+    mask-image: radial-gradient(135% 105% at 50% 0%, #000 22%, transparent 82%);
+}
+/* ---- Dawn panels: flat fills, because near-white gradients BAND -------------
+   The visible vertical striping across every light-theme card was NOT the
+   lattice showing through (the cards are opaque and .app already sits at
+   z-index 1 above the atmosphere). It was 8-bit quantization: --card-bg was
+   `linear-gradient(165deg, #ffffff, #faf3f5)`, a delta of only 5/12/10 RGB
+   stretched over a ~950px-wide panel. Ten quantization steps across that
+   distance render as ~30px bands, which is exactly what shipped. Verified by
+   swapping in a flat fill — the striping disappears completely.
+   A 5-value gradient contributes no perceptible depth anyway, so the dawn
+   panels go flat and get their depth from --shadow-* and the border instead.
+   Dark theme keeps its gradients: the plum deltas are ~10x larger and dither
+   invisibly on a dark surface. */
+html[data-theme="light"],
+:root[data-theme="light"] {
+    --card-bg: #fffdfe;
+    --glass: #fffdfe;
+}
+
+/* ============================================================================
+   TELEMETRY TILES — the status/database metric cards.
+   From a centred stack in a tall box to a dense left-read tile: icon chip at
+   the left, mono label over a big tabular numeral. Same three children, same
+   ids — grid-template-areas does the rearranging.
+   ============================================================================ */
+.stat-card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+        "icon label"
+        "icon value";
+    align-content: center;
+    align-items: center;
+    column-gap: var(--space-3);
+    row-gap: 3px;
+    text-align: left;
+    position: relative;
+    overflow: hidden;
+    padding: calc(var(--space-4) * var(--density)) calc(var(--space-4) * var(--density));
+}
+.stat-card .stat-icon {
+    grid-area: icon;
+    align-self: center;
+    margin-bottom: 0;
+    width: 40px;
+    height: 40px;
+}
+.stat-card .stat-label {
+    grid-area: label;
+    align-self: end;
+    margin: 0;
+    /* the label is the quiet caption now — the numeral carries the card */
+    letter-spacing: 0.14em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.stat-card .stat-value {
+    grid-area: value;
+    align-self: start;
+    margin: 0;
+    line-height: 1.08;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* bloom bar — a brand-gradient hairline that draws itself along the bottom
+   edge on hover. Left-origin scaleX so it reads as "filling", not fading. */
+.stat-card::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    background: var(--brand-grad);
+    opacity: 0.9;
+    transform: scaleX(0);
+    transform-origin: left center;
+}
+@media (prefers-reduced-motion: no-preference) {
+    .stat-card::after { transition: transform var(--dur-slow) var(--ease-out-expo); }
+}
+.stat-card:hover::after { transform: scaleX(1); }
+
+/* Compact tiles need a numeral that fits a ~180px column, not a ~300px one.
+   --step-2 mono still towers over the 11.5px label, so the value keeps the
+   hierarchy without truncating "12h 34m" style readouts. */
+.stat-card .stat-value { font-size: var(--step-2); }
+
+/* Hero tile (Messages) — v4 gave it a 2-column span, which at the old card
+   height meant a ~620px banner holding one digit. It now earns its emphasis
+   from TREATMENT rather than width: a sakura inset rail, a thicker bloom bar,
+   the existing radial wash, and the oversized numeral it already declared. */
+.stat-card--hero {
+    box-shadow: var(--shadow-md), var(--glass-hi), inset 3px 0 0 -1px var(--accent-sakura);
+}
+.stat-card--hero::after { height: 3px; }
+.stat-card--hero .stat-label { color: var(--text-secondary); }
+.stat-card--hero .stat-value { font-size: var(--step-3); }
+
+/* The metric strip.
+   Selectors are #page-* scoped (1,1,0) on purpose: the v4 "rectangular stat
+   grids" rule above is itself #page-scoped, so a bare .stats-grid here would
+   lose to it and silently do nothing.
+     ≥1150px  — Status 5 across, Database 4 across: ONE clean row each, every
+                tile the same size. Both heroes drop their span.
+     821–1149 — Status keeps the v4 3-col + hero span 2 (row two fills exactly);
+                Database pairs off 2x2.
+     ≤820px   — untouched: the existing fluid auto-fit still rules.
+   The v4 shape was 3 across then "wide hero + one orphan", and on Database a
+   full-bleed hero banner holding a single digit. */
+@media (min-width: 1150px) {
+    #page-status .stats-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    #page-database .stats-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    #page-status .stat-card--hero,
+    #page-database .stat-card--hero { grid-column: span 1; }
+}
+@media (min-width: 821px) and (max-width: 1149px) {
+    #page-database .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #page-database .stat-card--hero { grid-column: span 1; }
+}
+
+/* ============================================================================
+   ACTION HIERARCHY — one loud button per card.
+   START keeps the brand gradient. DEV drops from a solid gold fill to a tinted
+   outline: it is a developer affordance, not the primary action, and its fill
+   was the brightest object on the page. STOP/RESTART are unchanged.
+   ============================================================================ */
+.btn-warning {
+    background: rgba(255, 184, 92, 0.13);
+    border: 1px solid rgba(255, 184, 92, 0.42);
+    color: var(--accent-orange);
+    box-shadow: none;
+}
+.btn-warning:hover:not(:disabled) {
+    background: rgba(255, 184, 92, 0.22);
+    border-color: rgba(255, 184, 92, 0.64);
+    color: var(--accent-orange);
+}
+html[data-theme="light"] .btn-warning {
+    /* #8f5310 on the 9%-tinted paper ≈ 6.1:1 (AA). */
+    background: rgba(143, 83, 16, 0.09);
+    border: 1px solid rgba(143, 83, 16, 0.36);
+    color: var(--accent-orange);
+}
+html[data-theme="light"] .btn-warning:hover:not(:disabled) {
+    background: rgba(143, 83, 16, 0.16);
+    border-color: rgba(143, 83, 16, 0.55);
+    color: var(--accent-orange);
+}
+/* Honest disabled state. The offline STOP button rendered at full saturation
+   in dark (looked clickable) and washed-out-pink in light (looked broken);
+   now both read as the same deliberate "not available". axe exempts disabled
+   controls from color-contrast, so the dim is safe. */
+.btn:disabled,
+.btn[disabled] {
+    opacity: 0.42;
+    filter: saturate(0.5);
+    box-shadow: none;
+    cursor: not-allowed;
+}
+
+/* ============================================================================
+   IN-PANEL EMPTY STATES — one recipe.
+   .no-data (Database "No channels/users found.") and .no-conversations (chat
+   sidebar) were bare text in a void. They now share a dashed blossom frame,
+   which distinguishes "this list is empty" from "this panel failed to load"
+   without borrowing the full-page .empty-state illustration.
+   ============================================================================ */
+.no-data,
+.no-conversations {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-1);
+    margin: var(--space-2) 0;
+    padding: var(--space-5) var(--space-4);
+    border: 1px dashed var(--border-color);
+    border-radius: var(--radius);
+    background: var(--cyan-50);
+    color: var(--text-tertiary);
+    font-style: normal;
+    font-size: var(--step-0);
+    text-align: center;
+    text-wrap: balance;
+}
+.no-data::before,
+.no-conversations::before {
+    /* a single fallen petal — the lightest possible "nothing here yet" mark */
+    content: '';
+    width: 22px;
+    height: 22px;
+    margin-bottom: var(--space-1);
+    background: var(--brand-grad);
+    opacity: 0.5;
+    -webkit-mask-image: var(--petal-mark);
+    mask-image: var(--petal-mark);
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-size: contain;
+    mask-size: contain;
+}
+.no-conversations p { margin: 0; }
+.no-conversations p:first-of-type {
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: var(--step-0);
+    margin-bottom: 2px;
+}
+
+/* ============================================================================
+   SETTINGS ROWS — bind the label to its control.
+   A 1000px-wide flex row put the caption and its input at opposite ends of the
+   card with nothing connecting them. A full-bleed hover band now lights the
+   whole row, and the caption takes primary ink so it stops reading as a hint.
+   ============================================================================ */
+.setting-row {
+    gap: var(--space-5);
+    padding: 14px var(--space-3);
+    margin-inline: calc(var(--space-3) * -1);
+    border-radius: var(--radius-sm);
+}
+@media (prefers-reduced-motion: no-preference) {
+    .setting-row { transition: background var(--dur-fast) var(--ease-smooth); }
+}
+.setting-row:hover { background: var(--cyan-50); }
+.setting-row label,
+.setting-row .setting-label {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: var(--step-0);
+}
+/* sub-captions ("(tighter spacing across cards and panels)") stay quiet */
+.setting-row .setting-hint,
+.setting-row small {
+    color: var(--text-tertiary);
+    font-weight: 400;
+}
+
+/* ============================================================================
+   MODAL FORMS — give the fields chrome, and stop centring their labels.
+   Two defects met in the Rename dialog:
+     · .modal-content.modal-small sets text-align:center for the delete-confirm
+       modal's one-line message, but Rename reuses that class, so its field
+       CAPTION rendered centred over a left-aligned input.
+     · .form-input only ever declared `width:100%` — no padding, no height — so
+       it fell through to the UA default (~1px 2px) and painted as a 20px
+       hairline that barely read as an input at all.
+   ============================================================================ */
+.modal-body .form-group { text-align: left; }
+.modal-body label {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: var(--step--1);
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+.modal-body .form-input,
+.modal-body input[type="text"]:not(.code-copy-btn input),
+.modal-body input[type="search"],
+.modal-body textarea,
+.modal-body select {
+    min-height: 40px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: var(--step-0);
+}
+.modal-body .form-input::placeholder,
+.modal-body textarea::placeholder { color: var(--text-muted); }
+
+/* ============================================================================
+   SIDEBAR — fill the rail.
+   ~240px sat empty between the last nav item and the SYSTEM footer. .nav-items
+   is already flex:1, so a margin-top:auto pseudo pins a sakura sprig watermark
+   to the bottom of that gap: the emptiness becomes intentional negative space
+   with the brand blooming quietly into it. Masked, so it takes --brand-grad
+   and re-tints itself in both themes.
+   ============================================================================ */
+:root {
+    --petal-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='%23fff' transform='translate(12 12)'%3E%3Ccircle cy='-6.2' r='4.8'/%3E%3Ccircle cx='5.9' cy='-1.9' r='4.8'/%3E%3Ccircle cx='3.65' cy='5' r='4.8'/%3E%3Ccircle cx='-3.65' cy='5' r='4.8'/%3E%3Ccircle cx='-5.9' cy='-1.9' r='4.8'/%3E%3C/g%3E%3C/svg%3E");
+    --sakura-sprig: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 150'%3E%3Cdefs%3E%3Cg id='b' fill='%23fff'%3E%3Ccircle cx='0' cy='-7' r='5.4'/%3E%3Ccircle cx='6.66' cy='-2.16' r='5.4'/%3E%3Ccircle cx='4.11' cy='5.66' r='5.4'/%3E%3Ccircle cx='-4.11' cy='5.66' r='5.4'/%3E%3Ccircle cx='-6.66' cy='-2.16' r='5.4'/%3E%3C/g%3E%3C/defs%3E%3Cg fill='none' stroke='%23fff' stroke-linecap='round'%3E%3Cpath d='M16 148C30 120 40 106 58 88C72 74 82 58 88 38' stroke-width='3.2'/%3E%3Cpath d='M58 88C50 78 44 72 34 66' stroke-width='2.4'/%3E%3Cpath d='M74 62C82 55 91 51 103 49' stroke-width='2.4'/%3E%3C/g%3E%3Cuse href='%23b' x='31' y='62'/%3E%3Cuse href='%23b' x='104' y='46'/%3E%3Cuse href='%23b' x='88' y='33'/%3E%3Ccircle cx='66' cy='78' r='3.4' fill='%23fff'/%3E%3Ccircle cx='47' cy='101' r='2.8' fill='%23fff'/%3E%3C/svg%3E");
+}
+.nav-items::after {
+    content: '';
+    margin-top: auto;
+    align-self: stretch;
+    height: 148px;
+    flex: 0 0 auto;
+    background: var(--brand-grad);
+    opacity: 0.15;
+    pointer-events: none;
+    -webkit-mask-image: var(--sakura-sprig);
+    mask-image: var(--sakura-sprig);
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center bottom;
+    mask-position: center bottom;
+    -webkit-mask-size: 132px auto;
+    mask-size: 132px auto;
+}
+html[data-theme="light"] .nav-items::after { opacity: 0.13; }
+
+/* ============================================================================
+   CHAT — the composer reads as ONE object.
+   The options row and the textarea row were two separate bands separated by a
+   full-width rule, so the toggles looked like page chrome rather than part of
+   the message you are about to send. They now share a single rounded surface.
+   ============================================================================ */
+.chat-input-area {
+    padding: var(--space-3) var(--space-5) var(--space-4);
+    background: transparent;
+    border-top: 1px solid var(--border-color);
+}
+.chat-input-options {
+    border-bottom: none;
+    padding: var(--space-2) var(--space-3) 0;
+    margin: 0;
+    flex-wrap: wrap;
+    row-gap: var(--space-2);
+}
+.chat-input-container {
+    padding: var(--space-2) var(--space-3) var(--space-3);
+}
+/* the shared composer shell — options + textarea inside one blossom frame */
+.chat-input-options,
+.chat-input-container {
+    background: var(--surface-2);
+    border-inline: 1px solid var(--border-color);
+}
+.chat-input-options {
+    border-top: 1px solid var(--border-color);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.chat-input-container {
+    border-bottom: 1px solid var(--border-color);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+/* the textarea sits INSIDE the shell now, so drop its own heavy chrome */
+#chat-input {
+    background: transparent;
+    border-color: transparent;
+    border-radius: var(--radius);
+    padding: 10px 12px;
+}
+#chat-input:focus,
+#chat-input:focus-visible {
+    background: var(--surface-1);
+    border-color: var(--border-focus);
+}
+/* focus-within lights the whole composer, so the send target feels connected */
+.chat-input-area:focus-within .chat-input-options,
+.chat-input-area:focus-within .chat-input-container {
+    border-color: var(--border-strong);
+}
+
+/* ---- conversation sidebar header — room to breathe ------------------------- */
+.chat-sidebar-header {
+    padding: var(--space-4) var(--space-4) var(--space-3);
+    gap: var(--space-3);
+}
+.chat-sidebar-header h2 {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: var(--step--1);
+    color: var(--text-secondary);
+}
+
+/* ---- assistant bubble — square off the "speaking" corner ------------------- */
+.chat-message.assistant .message-content {
+    border-radius: var(--radius-lg);
+    border-top-left-radius: var(--radius-sm);
+}
+.chat-message.user .message-content {
+    border-radius: var(--radius-lg);
+    border-top-right-radius: var(--radius-sm);
+}
+
+/* ============================================================================
+   LOG VIEWER — actually fill the window.
+   v4 added `#page-logs.active { display:flex }` + `.log-container { flex:1 }`
+   to replace the base sheet's calc(100vh - 220px), but the fill never
+   happened: #page-logs is itself a flex ITEM of .content (a flex column), and
+   with the default `flex: 0 1 auto` it only ever grew to fit its content. So
+   `flex:1` on the container distributed a free space of zero, and the log
+   stream sat in a ~320px box with ~290px of dead canvas underneath it.
+   Stretching the page item is the missing half of that fix — the same
+   `flex:1 / min-height:0` pair #page-chat.active already carries.
+   ============================================================================ */
+#page-logs.active {
+    flex: 1;
+    min-height: 0;
+}
+
+/* ============================================================================
+   AI HISTORY — kill the doubled heading.
+   The placeholder header said "Select a channel" directly above an empty state
+   whose own <h3> said "Select a channel". The header is a channel-name slot;
+   with no channel picked it now shows a quiet mono eyebrow instead (the text
+   swap lives in history-manager.ts updateHeader()).
+   ============================================================================ */
+.history-header.is-placeholder h2 {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    font-size: var(--step--1);
+    color: var(--text-tertiary);
+}
+
+/* ============================================================================
    FOCUS / FORCED-COLORS / CONTRAST — ONE authoritative ruleset, kept LAST so
    it wins source-order over every base + skin focus style. Satisfies
    interactions.spec.ts (real outline required under forced-colors).

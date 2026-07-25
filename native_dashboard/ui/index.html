@@ -916,7 +916,13 @@
                         <button class="btn" id="btn-refresh-logs"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg> Refresh</button>
                     </div>
                 </div>
-                <div class="log-container" id="log-container">
+                <!-- tabindex=0: scroll container, same reason as #ai-channel-list
+                     and #ai-history-messages (axe scrollable-region-focusable).
+                     This became load-bearing when the log body started filling
+                     the window: until then the container sized to its content
+                     and .content did the scrolling, so it never owned a
+                     scrollbar and axe had nothing to flag. -->
+                <div class="log-container" id="log-container" tabindex="0">
                     <pre id="log-content" role="log" aria-live="polite" aria-relevant="additions" aria-label="Bot logs">Loading logs...</pre>
                 </div>
             </section>
@@ -996,8 +1002,14 @@
 
                     <!-- Message Viewer -->
                     <div class="history-main">
-                        <div class="history-header" id="ai-history-header">
-                            <h2>Select a channel</h2>
+                        <!-- .is-placeholder: no channel picked yet, so this
+                             channel-name slot renders a quiet mono eyebrow and
+                             lets the empty state below own the "Select a
+                             channel" instruction (it used to say the same
+                             sentence twice). updateHeader() in
+                             history-manager.ts maintains the class from here on. -->
+                        <div class="history-header is-placeholder" id="ai-history-header">
+                            <h2>AI History</h2>
                         </div>
                         <!-- role="log": an aria-label on a bare (role-less) div
                              is ignored by AT — same fix as #chat-tags / #chat-messages.
