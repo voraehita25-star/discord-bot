@@ -182,6 +182,24 @@ function ensureLinkHook(purify: DOMPurifyGlobal): void {
 const FORMAT_CACHE_MAX = 300;
 const formatCache = new Map<string, string>();
 
+/**
+ * Format a PARTIAL message while it is still streaming.
+ *
+ * Same pipeline as {@link formatMessage} but deliberately UNCACHED: every chunk
+ * produces a distinct key, so memoizing partials would evict the whole LRU on a
+ * single long answer and every entry written is garbage the moment the next
+ * chunk lands.
+ *
+ * Partial input is safe because the pipeline already carries a streaming guard
+ * for the one construct that breaks catastrophically half-written — an unclosed
+ * ``` fence gets a virtual close for this pass. Unfinished inline markers
+ * (`**bo`) simply render as literal text and correct themselves on the next
+ * pass, which is what the user would see mid-word anyway.
+ */
+export function formatStreamingMessage(content: string): string {
+    return formatMessageUncached(content);
+}
+
 export function formatMessage(content: string): string {
     const cached = formatCache.get(content);
     if (cached !== undefined) {

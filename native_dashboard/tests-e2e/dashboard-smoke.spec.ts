@@ -246,26 +246,27 @@ test.describe('Theme + CSS sanity', () => {
         expect(found).toBe(true);
     });
 
-    test('streaming text preserves newlines while the reply arrives', async ({ page }) => {
-        // Chunks land as raw text nodes in .streaming-text and are only rendered
-        // as markdown at stream_end. Under the default `white-space: normal`
-        // every newline collapsed to a space, so a live reply read as one
-        // run-on paragraph and then visibly re-flowed into paragraphs/lists the
-        // instant it finished. Asserted on the real cascade (jsdom doesn't
-        // apply the stylesheet) against a node built the same way the app does.
-        const whiteSpace = await page.evaluate(() => {
+    test('streaming text is a block box for the live-rendered markdown', async ({ page }) => {
+        // The live reply is re-rendered as markdown each frame, so this span
+        // holds real block markup (<pre>, <ul>, paragraph breaks). An inline
+        // span containing block children lays out unpredictably, and the rule
+        // must NOT be white-space: pre-wrap either — that would turn the
+        // newlines BETWEEN the generated tags into visible blank lines.
+        // Asserted on the real cascade; jsdom doesn't apply the stylesheet.
+        const style = await page.evaluate(() => {
             const host = document.createElement('div');
             host.className = 'message-content';
             const span = document.createElement('span');
             span.className = 'streaming-text';
-            span.appendChild(document.createTextNode('line one\nline two'));
             host.appendChild(span);
             document.body.appendChild(host);
-            const value = getComputedStyle(span).whiteSpace;
+            const computed = getComputedStyle(span);
+            const value = { display: computed.display, whiteSpace: computed.whiteSpace };
             host.remove();
             return value;
         });
-        expect(whiteSpace).toBe('pre-wrap');
+        expect(style.display).toBe('block');
+        expect(style.whiteSpace).not.toBe('pre-wrap');
     });
 });
 

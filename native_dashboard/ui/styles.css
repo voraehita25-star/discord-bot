@@ -2543,15 +2543,14 @@ margin-bottom: 8px;
     word-break: break-word;
 }
 
-/* While a reply streams, chunks land as raw text nodes in this span — markdown
-   is only rendered once at stream_end (appending text nodes keeps the growing
-   answer O(n) instead of re-parsing the whole string every chunk). With the
-   default `white-space: normal` every newline collapsed to a space, so the live
-   text arrived as one run-on paragraph and then visibly re-flowed into
-   paragraphs, lists, and code blocks the moment it finished. pre-wrap keeps the
-   line structure during the stream so the layout no longer jumps. */
+/* The live reply is re-rendered as markdown once per animation frame, so this
+   span holds real block markup (<br>, paragraph breaks, <pre>, <ul>) rather
+   than raw text. It must therefore be a block box — an inline span containing
+   block children lays out unpredictably — and must NOT set white-space:
+   pre-wrap, which would turn the newlines BETWEEN the generated tags into
+   visible blank lines. The formatter supplies the line structure itself. */
 .streaming-text {
-    white-space: pre-wrap;
+    display: block;
 }
 
 .chat-message.user .message-content {

@@ -40,7 +40,7 @@ import type {
 } from './chat/types.js';
 
 import { highlightCodeBlocks } from './chat/prism.js';
-import { formatMessage, stripThinkTags } from './chat/formatter.js';
+import { formatMessage, formatStreamingMessage, stripThinkTags } from './chat/formatter.js';
 import { ChatSearch } from './chat/search.js';
 import { promptExportFormat } from './chat/export-picker.js';
 import { WebSocketClient } from './chat/ws-client.js';
@@ -305,6 +305,9 @@ export class ChatManager {
     // into ``editStreamContent`` and only push to the DOM once per frame to
     // avoid O(n²) string concatenation costs as the response grows.
     private editStreamRafId: number | null = null;
+    // rAF id for the pending live-markdown re-render of the response bubble.
+    // One format pass per frame no matter how many chunks land in it.
+    private streamRenderRafId: number | null = null;
     // rAF id for the pending scroll-follow flush. Reading container.scrollHeight
     // forces a synchronous layout; the RESPONSE stream calls followStream() on
     // every chunk, so an un-batched read made the reflow cost grow with DOM size
@@ -1790,6 +1793,13 @@ export class ChatManager {
     // which finalizeStreamingMessage consumes on stream_end (stream_start clears
     // it separately).
     private clearStreamBuffers(): void {
+        // Cancel the queued partial re-render alongside the buffer it reads:
+        // a frame that fires after the reset would repaint an emptied buffer
+        // over whatever the teardown put on screen.
+        if (this.streamRenderRafId !== null) {
+            cancelAnimationFrame(this.streamRenderRafId);
+            this.streamRenderRafId = null;
+        }
         this.streamPartialChunks = [];
         this.streamPartialThinkingChunks = [];
         this.streamThinkingActive = false;
@@ -1803,11 +1813,10 @@ export class ChatManager {
         if (document.getElementById('streaming-message')) return;  // already present
         this.appendStreamingMessage(this.currentMode || '');
         // Restore the response text (DOM-only — don't re-push into the buffer).
-        const partial = this.streamPartialChunks.join('');
-        if (partial) {
-            const streamingText = document.querySelector('#streaming-message .streaming-text');
-            if (streamingText) streamingText.appendChild(document.createTextNode(partial));
-        }
+        // Rendered synchronously rather than through the rAF path: this is a
+        // one-shot repaint on conversation switch, and the bubble must be
+        // correct the instant the view returns.
+        if (this.streamPartialChunks.length) this.renderStreamingPartial();
         // Restore thinking: finalized (collapsed) if thinking_end already arrived,
         // otherwise the live partial.
         if (this.currentThinking) {
@@ -1884,17 +1893,52 @@ export class ChatManager {
         // the #streaming-message DOM isn't currently mounted (user viewing
         // another chat). restoreStreamingBubble replays this on return.
         this.streamPartialChunks.push(text);
+        if (!document.querySelector('#streaming-message .streaming-text')) return;
+        // Re-render the whole partial as markdown, coalesced to one pass per
+        // animation frame (same batching rationale as appendEditStreamChunk).
+        // Chunks used to be appended as raw text nodes, which is cheaper but
+        // meant the live answer showed markdown SOURCE — literal `>` , `**`, and
+        // `- ` — until stream_end swapped in the rendered HTML. Formatting the
+        // accumulated buffer is O(n) per frame rather than per chunk, so a fast
+        // stream costs frames, not chunks.
+        if (this.streamRenderRafId !== null) return;
+        this.streamRenderRafId = requestAnimationFrame(() => {
+            this.streamRenderRafId = null;
+            this.renderStreamingPartial();
+        });
+    }
+
+    /** Paint the accumulated partial into the live bubble as rendered markdown. */
+    private renderStreamingPartial(): void {
         const streamingText = document.querySelector('#streaming-message .streaming-text');
-        if (streamingText) {
-            // Same O(n²) avoidance as ``appendThinkingChunk`` above —
-            // append a text node instead of concatenating onto
-            // ``textContent`` so chunk N doesn't re-copy chunks 1..N-1.
-            streamingText.appendChild(document.createTextNode(text));
-            this.followStream();
-        }
+        if (!streamingText) return;
+        // stripThinkTags mirrors finalizeStreamingMessage so a <think> block
+        // that reaches this channel doesn't flash on screen mid-stream.
+        //
+        // innerHTML is safe here for the same reason it is in
+        // finalizeStreamingMessage: the string is not model output, it is the
+        // return of the formatter pipeline, whose final step is
+        // DOMPurify.sanitize() with an explicit ALLOWED_TAGS/ALLOWED_ATTR set
+        // and ALLOWED_URI_REGEXP=/^https:/i. Assigning the raw chunk text here
+        // would be the bug.
+        streamingText.innerHTML = formatStreamingMessage(
+            this.stripThinkTags(this.streamPartialChunks.join('')),
+        );
+        // Prism is NOT run here: highlighting every code block on every frame is
+        // far more expensive than the markdown pass, and finalizeStreamingMessage
+        // highlights once the answer is complete.
+        this.followStream();
     }
 
     finalizeStreamingMessage(fullResponse: string): void {
+        // Drop any queued partial re-render: we're about to paint the COMPLETE
+        // response below, and a frame landing after that would repaint the
+        // bubble with the (shorter) buffered partial. Mirrors the same guard in
+        // finalizeEditStreaming.
+        if (this.streamRenderRafId !== null) {
+            cancelAnimationFrame(this.streamRenderRafId);
+            this.streamRenderRafId = null;
+        }
         // Push first so msgIdx is the actual post-trim index. The previous
         // version captured `this.messages.length` BEFORE push, which was
         // correct for indices < MAX_LOCAL_MESSAGES but went one past the end

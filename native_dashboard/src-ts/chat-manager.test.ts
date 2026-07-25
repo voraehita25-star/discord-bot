@@ -1277,3 +1277,80 @@ describe('resolveSearchWriteConflict — Search wins, and the user is told', () 
         expect(sent!.write_enabled).toBe(false);
     });
 });
+
+describe('streaming renders markdown live, not raw source', () => {
+    // Chunks used to be appended as plain text nodes, so the live answer showed
+    // markdown SOURCE — a literal `>` for a quote, `**` around bold, `- ` on
+    // list items — and only became real markup when stream_end swapped in the
+    // formatted HTML. The bubble now re-renders the accumulated buffer each
+    // frame, so what you read while it types matches what you get when it ends.
+    const streamText = () => document.querySelector('#streaming-message .streaming-text');
+    const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+
+    function startStream(): import('./chat-manager.js').ChatManager {
+        const cm = mountDomAndChat();
+        cm.currentConversation = {
+            id: 'c1', title: 't', role_preset: 'general', thinking_enabled: false,
+            is_starred: false, created_at: '2026-04-01',
+        };
+        cm.handleMessage({ type: 'stream_start', mode: '', conversation_id: 'c1' });
+        return cm;
+    }
+
+    it('renders a blockquote instead of a literal > while typing', async () => {
+        const cm = startStream();
+        cm.handleMessage({ type: 'chunk', content: '> quoted line' });
+        await nextFrame();
+
+        expect(streamText()!.querySelector('blockquote')).not.toBeNull();
+        expect(streamText()!.textContent).not.toContain('>');
+    });
+
+    it('renders list items as a real list mid-stream', async () => {
+        const cm = startStream();
+        cm.handleMessage({ type: 'chunk', content: '- first\n- second' });
+        await nextFrame();
+
+        expect(streamText()!.querySelectorAll('li').length).toBe(2);
+    });
+
+    it('renders a half-written code fence as a code block', async () => {
+        // The formatter's unclosed-fence guard is what makes partial input safe:
+        // without it the user stares at three literal backticks until the
+        // closing fence arrives.
+        const cm = startStream();
+        cm.handleMessage({ type: 'chunk', content: '```py\nprint(1)' });
+        await nextFrame();
+
+        expect(streamText()!.querySelector('pre, code')).not.toBeNull();
+        expect(streamText()!.textContent).not.toContain('```');
+    });
+
+    it('coalesces many chunks into one render per frame', async () => {
+        const cm = startStream();
+        for (const part of ['**bo', 'ld** and ', 'more']) {
+            cm.handleMessage({ type: 'chunk', content: part });
+        }
+        await nextFrame();
+
+        // All three chunks are present, and the completed marker rendered.
+        expect(streamText()!.querySelector('strong')?.textContent).toBe('bold');
+        expect(streamText()!.textContent).toContain('and more');
+    });
+
+    it('the finished message replaces the partial, not appends to it', async () => {
+        const cm = startStream();
+        cm.handleMessage({ type: 'chunk', content: '> partial' });
+        await nextFrame();
+        cm.handleMessage({ type: 'stream_end', full_response: '> partial and done' });
+
+        expect(document.getElementById('streaming-message')).toBeNull();
+        const last = document.querySelectorAll('#chat-messages .message-content');
+        const text = last[last.length - 1]?.textContent || '';
+        expect(text).toContain('partial and done');
+        // A queued frame firing after stream_end must not repaint the shorter
+        // buffered partial over the finished answer.
+        await nextFrame();
+        expect(document.getElementById('streaming-message')).toBeNull();
+    });
+});
