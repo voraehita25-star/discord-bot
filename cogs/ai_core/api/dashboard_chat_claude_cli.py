@@ -2922,8 +2922,10 @@ async def handle_chat_message_claude_cli(
     # Match the SDK backend's mode-label format so the badge always tells
     # the user what's actually active (model, thinking, unrestricted, images).
     mode_info: list[str] = [f"🟣 Claude Code CLI ({CLAUDE_MODEL})"]
-    if thinking_enabled:
-        mode_info.append("🧠 Thinking")
+    # Name the effort tier rather than claiming thinking is on/off: `claude -p`
+    # has no switch for that, so "off" buys a shallower tier, not silence. The
+    # badge said nothing when off, which read as "thinking disabled" — it isn't.
+    mode_info.append("🧠 Thinking (xhigh)" if thinking_enabled else "🧠 Reasoning (high)")
     if unrestricted_requested:
         mode_info.append("🔓 Unrestricted")
     if write_enabled:
@@ -3626,8 +3628,8 @@ async def handle_ai_edit_message_claude_cli(
     )
 
     edit_mode_info: list[str] = [f"🟣 Claude Code CLI ({CLAUDE_MODEL})", "✏️ AI Edit"]
-    if thinking_enabled:
-        edit_mode_info.append("🧠 Thinking")
+    # Effort tier, not an on/off claim — see the chat handler above.
+    edit_mode_info.append("🧠 Thinking (xhigh)" if thinking_enabled else "🧠 Reasoning (high)")
     mode_label = " • ".join(edit_mode_info)
     await ws.send_json(
         {

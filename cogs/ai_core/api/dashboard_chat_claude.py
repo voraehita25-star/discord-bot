@@ -33,6 +33,7 @@ from ..claude_payloads import (
 )
 from ..data.model_caps import (
     effort_with_thinking_off,
+    thinking_can_be_disabled,
     thinking_off_config,
     uses_adaptive_thinking,
 )
@@ -789,6 +790,11 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
 
     if thinking_enabled:
         mode_info.append("🧠 Thinking")
+    elif not thinking_can_be_disabled(_SDK_MODEL):
+        # Toggle is off but the model refuses to stop (Fable/Mythos reject an
+        # explicit disable at any effort). Say so rather than showing nothing,
+        # which would read as "thinking is off" when it isn't.
+        mode_info.append("🧠 Thinking (always on for this model)")
     # Gate the badge on the SAME composite condition as the actual injection
     # above (``if unrestricted_mode and allow_unrestricted:``) so the UI
     # doesn't show "🔓 Unrestricted" when the env flag is unset and no
@@ -1620,6 +1626,9 @@ async def handle_ai_edit_message_claude(
     mode_info.append("✏️ AI Edit")
     if thinking_enabled:
         mode_info.append("🧠 Thinking")
+    elif not thinking_can_be_disabled(_SDK_MODEL):
+        # See the chat handler: some models can't be told to stop thinking.
+        mode_info.append("🧠 Thinking (always on for this model)")
     mode_str = " • ".join(mode_info)
 
     # Build API kwargs (Hybrid prompt caching: explicit system + auto history).

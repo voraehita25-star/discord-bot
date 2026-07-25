@@ -323,6 +323,56 @@ class TestStreamingSuccessPath:
         assert "interleaved-thinking" not in captured_argv
 
     @pytest.mark.asyncio
+    async def test_thinking_off_drops_to_high_effort(self) -> None:
+        """`!thinking off` must reach the CLI argv.
+
+        The channel's toggle used to be dropped on the floor here —
+        ``enable_thinking=True`` was hardcoded, so every Discord reply reasoned
+        at xhigh no matter what the operator set. `claude -p` has no flag to
+        stop the model reasoning, so "off" selects the shallower `high` tier;
+        what matters is that the setting is no longer ignored.
+        """
+        captured_argv: list[str] = []
+        placeholder = MagicMock()
+        placeholder.edit = AsyncMock()
+        placeholder.delete = AsyncMock()
+        send_channel = MagicMock()
+        send_channel.send = AsyncMock(return_value=placeholder)
+
+        async def fake_subprocess(
+            argv: list[str],
+            stdin_payload: str,
+            *,
+            on_text_delta: Any,
+            on_thinking_delta: Any,
+            on_thinking_block_start: Any = None,
+            on_thinking_block_stop: Any = None,
+            timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
+        ) -> tuple[str, dict[str, Any] | None]:
+            captured_argv.extend(argv)
+            await on_text_delta("ok")
+            return "sess-nothink", None
+
+        with (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_run_claude_subprocess", side_effect=fake_subprocess),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="/usr/bin/claude",
+            ),
+        ):
+            await call_claude_cli_streaming(
+                contents=[{"role": "user", "parts": ["hi"]}],
+                config_params={"system_instruction": "be brief", "thinking_enabled": False},
+                send_channel=send_channel,
+                channel_id=102,
+            )
+        effort = captured_argv[captured_argv.index("--effort") + 1]
+        assert effort == "high", captured_argv
+
+    @pytest.mark.asyncio
     async def test_cancellation_returns_empty_even_with_partial_text(self) -> None:
         send_channel = MagicMock()
         placeholder = MagicMock()

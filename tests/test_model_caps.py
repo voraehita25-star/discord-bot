@@ -22,6 +22,7 @@ import pytest
 from cogs.ai_core.data.model_caps import (
     DISABLED_THINKING_MAX_EFFORT,
     effort_with_thinking_off,
+    thinking_can_be_disabled,
     thinking_off_config,
     uses_adaptive_thinking,
 )
@@ -76,6 +77,23 @@ class TestThinkingOffConfig:
         assert thinking_off_config(model) is None
 
 
+class TestThinkingCanBeDisabled:
+    """Drives the user-facing "this toggle can't apply here" warnings."""
+
+    @pytest.mark.parametrize("model", ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5"])
+    def test_normal_models_can_be_disabled(self, model: str) -> None:
+        assert thinking_can_be_disabled(model) is True
+
+    @pytest.mark.parametrize("model", ["claude-fable-5", "claude-mythos-5"])
+    def test_always_on_models_cannot(self, model: str) -> None:
+        assert thinking_can_be_disabled(model) is False
+
+    def test_agrees_with_thinking_off_config(self) -> None:
+        # A model that can't be disabled must never get a disable payload.
+        for model in ("claude-fable-5", "claude-mythos-5"):
+            assert thinking_off_config(model) is None
+
+
 class TestEffortWithThinkingOff:
     """Opus 5 rejects disabled thinking above ``high``."""
 
@@ -113,6 +131,27 @@ class TestBuildApiConfigThinkingOff:
     def test_opus_4_8_leaves_thinking_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         result = self._config(monkeypatch, "claude-opus-4-8")
         assert "thinking" not in result
+
+    def test_exposes_the_raw_toggle_for_the_cli_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The CLI path can't read intent back out of the `thinking` payload
+        # (it has effort tiers, not an on/off switch), so the raw flag rides
+        # along. Without it `!thinking off` was silently dropped.
+        from cogs.ai_core.api import api_handler
+
+        monkeypatch.setattr(api_handler, "CLAUDE_MODEL", "claude-opus-5")
+        on = api_handler.build_api_config({"system_instruction": "x", "thinking_enabled": True})
+        off = api_handler.build_api_config({"system_instruction": "x", "thinking_enabled": False})
+        assert on["thinking_enabled"] is True
+        assert off["thinking_enabled"] is False
+
+    def test_thinking_enabled_defaults_to_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from cogs.ai_core.api import api_handler
+
+        monkeypatch.setattr(api_handler, "CLAUDE_MODEL", "claude-opus-5")
+        result = api_handler.build_api_config({"system_instruction": "x"})
+        assert result["thinking_enabled"] is True
 
     def test_rp_mode_still_thinks_adaptively(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from cogs.ai_core.api import api_handler

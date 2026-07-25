@@ -125,6 +125,13 @@ def build_api_config(
     config_params: dict[str, Any] = {
         "system_instruction": system_instruction,
         "max_tokens": CLAUDE_MAX_TOKENS,
+        # The raw toggle state, forwarded for backends that cannot recover it
+        # from the ``thinking`` payload below. The CLI backend is the reason
+        # it exists: ``claude -p`` has no "don't think" flag, only ``--effort``,
+        # so it needs the user's intent rather than an API-shaped config.
+        # Nothing splats this dict into an SDK call — every consumer reads
+        # named keys — so the extra entry is safe.
+        "thinking_enabled": thinking_enabled,
     }
 
     # Enable adaptive thinking for RP/Faust modes when thinking is enabled.

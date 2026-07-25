@@ -66,6 +66,21 @@ def uses_adaptive_thinking(model: str) -> bool:
     return _matches(model, ADAPTIVE_THINKING_MODELS)
 
 
+def thinking_can_be_disabled(model: str) -> bool:
+    """False when the model refuses to stop thinking at any effort.
+
+    Fable/Mythos 400 on an explicit ``{"type": "disabled"}`` and think anyway
+    when the field is omitted, so a "thinking off" toggle cannot be honoured on
+    them at all. Callers use this to tell the user instead of failing silently.
+
+    Note this is a *model* property. The Claude Code CLI backend has its own
+    limitation — it exposes reasoning depth only through ``--effort``, with no
+    way to switch thinking off — which is a property of that backend, not of
+    the model, and is handled at those call sites.
+    """
+    return not _matches(model, THINKING_ALWAYS_ON_MODELS)
+
+
 def thinking_off_config(model: str) -> dict[str, str] | None:
     """The ``thinking`` payload needed to actually turn thinking OFF.
 

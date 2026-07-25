@@ -28,12 +28,14 @@ from .data.constants import (
     CHANNEL_ID_ALLOWED,
     CHANNEL_ID_RP_COMMAND,
     CHANNEL_ID_RP_OUTPUT,
+    CLAUDE_MODEL,
     CREATOR_ID,
     GUILD_ID_COMMAND_ONLY,
     GUILD_ID_MAIN,
     GUILD_ID_RESTRICTED,
     GUILD_ID_RP,
 )
+from .data.model_caps import thinking_can_be_disabled
 
 # Centralized optional dependencies.
 # Some of the re-exports below are not referenced inside this module but ARE
@@ -1209,6 +1211,30 @@ class AI(commands.Cog):
                 user_message_id=message.id,
             )
 
+    def _thinking_off_caveat(self) -> str | None:
+        """Why "thinking off" may not fully apply, or None when it does.
+
+        The CLI backend is checked first because it is the default and its
+        limitation is absolute: ``claude -p`` exposes reasoning depth only via
+        ``--effort``, so the toggle picks a tier (``xhigh`` -> ``high``) and the
+        model still reasons. On the SDK backend the toggle genuinely disables
+        thinking, except on models that refuse to stop (Fable/Mythos).
+        """
+        if getattr(self.chat_manager, "cli_mode", False):
+            return (
+                "แบ็กเอนด์ `cli` (ค่าเริ่มต้น) ปิดการคิดไม่ได้จริง — `claude -p` "
+                "มีแต่ระดับ `--effort` ให้ปรับ ปุ่มนี้จึงลดจาก `xhigh` เป็น `high` "
+                "(ตอบเร็วขึ้น คิดตื้นลง) แทนการปิด\n"
+                "ถ้าต้องการปิดจริง ตั้ง `CLAUDE_BACKEND=api`"
+            )
+        if not thinking_can_be_disabled(CLAUDE_MODEL):
+            return (
+                f"โมเดล `{CLAUDE_MODEL}` คิดตลอดเวลาและปิดไม่ได้ตาม API "
+                "(ส่ง `thinking: disabled` แล้วจะได้ 400) — การตั้งค่านี้ถูกบันทึกไว้ "
+                "แต่จะมีผลก็ต่อเมื่อสลับไปใช้โมเดลที่รองรับ"
+            )
+        return None
+
     @commands.command(name="thinking", aliases=["think"])
     @commands.has_permissions(manage_guild=True)
     async def toggle_thinking_cmd(self, ctx, mode: str | None = None):
@@ -1250,6 +1276,14 @@ class AI(commands.Cog):
                 description=f"ตั้งค่าโหมดการคิดวิเคราะห์เป็น: **{status_str}**",
                 color=Colors.SUCCESS if enable_thinking else Colors.WARNING,
             )
+            # Be honest when "off" cannot mean off. Two independent reasons:
+            # the CLI backend has no flag to stop the model reasoning (only
+            # --effort tiers), and Fable/Mythos reject a disable at any effort.
+            # Silence here is what made the toggle feel broken.
+            if not enable_thinking:
+                caveat = self._thinking_off_caveat()
+                if caveat:
+                    embed.add_field(name="⚠️ ข้อจำกัด", value=caveat, inline=False)
             await ctx.send(embed=embed)
         else:
             # toggle_thinking returns False both when no session exists AND
