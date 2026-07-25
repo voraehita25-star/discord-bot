@@ -31,7 +31,7 @@ git add version.txt pyproject.toml docs/release-notes/vX.Y.Z.md
 git commit -F -   # release(vX.Y.Z): bump version + notes
 ```
 - **NEVER commit `.claude/settings.local.json`** (machine-specific). The dashboard `.exe` is gitignored.
-- End commit messages with the `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer.
+- End commit messages with the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer.
 
 ## 4. Merge → main, push, tag (the repo releases from `main`)
 ```

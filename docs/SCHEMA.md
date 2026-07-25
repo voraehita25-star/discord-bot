@@ -177,6 +177,10 @@ Append-only: triggers `audit_log_no_update` / `audit_log_no_delete` block UPDATE
 
 ### ai_analytics
 
+> **Removed.** The analytics subsystem that wrote this table was dead-wired and
+> deleted; migration 017 drops the table on existing databases and fresh DBs
+> never create it. The shape below is kept for reading historical exports.
+
 | Column | Type | Constraints |
 | -------- | ------ | ------------- |
 | id | INTEGER | PRIMARY KEY AUTOINCREMENT |
@@ -205,7 +209,7 @@ Indexes: `idx_ai_analytics_user(user_id, created_at DESC)`, `idx_ai_analytics_gu
 | guild_id | INTEGER | |
 | input_tokens | INTEGER | NOT NULL |
 | output_tokens | INTEGER | NOT NULL |
-| model | TEXT | DEFAULT 'claude-opus-4-8' |
+| model | TEXT | DEFAULT 'claude-opus-5' |
 | cached | BOOLEAN | DEFAULT 0 |
 | created_at | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
@@ -355,3 +359,5 @@ File extension is `.sqlite.sql` (not `.sql`) — the VS Code mssql extension fla
 | 014_dashboard_tags_and_likes.sqlite.sql | Add `liked` column to dashboard_messages + new `dashboard_conversation_tags` table |
 | 015_ai_history_summarized_at.sqlite.sql | Add nullable `summarized_at` column + partial index to ai_history (consolidator dedup — `WHERE summarized_at IS NULL`) |
 | 016_bump_default_model_opus_4_8.sqlite.sql | Bump default model to claude-opus-4-8 on token_usage + ai_analytics (historical rows preserved via COALESCE) |
+| 017_drop_ai_analytics.sqlite.sql | Drop the ai_analytics table (its analytics subsystem was removed) |
+| 018_bump_default_model_opus_5.sqlite.sql | Bump default model to claude-opus-5 on token_usage (historical rows preserved via COALESCE; ai_analytics is gone by 017) |

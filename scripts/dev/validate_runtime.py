@@ -180,7 +180,7 @@ def check_sdk() -> bool:
     try:
         client = anthropic.Anthropic()
         resp = client.messages.create(
-            model="claude-opus-4-8",
+            model="claude-opus-5",
             max_tokens=20,
             messages=[{"role": "user", "content": "Reply with exactly: SDK_OK_99"}],
         )

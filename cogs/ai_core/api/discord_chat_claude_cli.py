@@ -131,7 +131,7 @@ _DISCORD_STREAM_TIMEOUT = 1800.0
 _DISCORD_PROMPT_MAX_CHARS = _prompt_max_chars_from_env()
 
 # Discord-side model + system-prompt overrides. The global ``CLAUDE_MODEL``
-# default tracks Opus 4.8's 1M-token variant (``claude-opus-4-8[1m]``), so the
+# default tracks Opus 5's 1M-token variant (``claude-opus-5[1m]``), so the
 # explicit ``model=`` pin here is defensive: the Discord RP path stays on the
 # 1M variant even if an operator overrides ``CLAUDE_MODEL`` in env for the
 # dashboard. The system-prompt path is resolved per turn via
@@ -142,7 +142,7 @@ _DISCORD_PROMPT_MAX_CHARS = _prompt_max_chars_from_env()
 # ``always`` applies it to every channel). Both are fed to ``_build_claude_argv``
 # — dashboard callers that omit them keep their existing behaviour.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_DISCORD_CLI_MODEL = "claude-opus-4-8[1m]"
+_DISCORD_CLI_MODEL = "claude-opus-5[1m]"
 _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY = _REPO_ROOT / "CLAUDE2.md"
 _DISCORD_CLI_SYSTEM_PROMPT_FALLBACK = _REPO_ROOT / "CLAUDE.md"
 
@@ -825,7 +825,7 @@ async def call_claude_cli_streaming(
                 # run server-side at Anthropic.
                 enable_web=_CLI_WEB_TOOLS_ENABLED,
                 ai_tool_names=ai_tools,
-                # Discord path pins Opus 4.8's 1M-context variant and the
+                # Discord path pins Opus 5's 1M-context variant and the
                 # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the
                 # module-level constants for the rationale.
                 model=_DISCORD_CLI_MODEL,
@@ -1152,7 +1152,7 @@ async def call_claude_cli(
                 # run server-side at Anthropic.
                 enable_web=_CLI_WEB_TOOLS_ENABLED,
                 ai_tool_names=ai_tools,
-                # Discord path pins Opus 4.8's 1M-context variant and the
+                # Discord path pins Opus 5's 1M-context variant and the
                 # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the
                 # module-level constants for the rationale.
                 model=_DISCORD_CLI_MODEL,

@@ -16,7 +16,7 @@ Discord Bot ที่รวม AI Chat (Claude เป็นหลัก + Gemini
 
 ### Key Features
 
-- **AI Chat** - Claude (opus-4-8, 1M context, Max thinking) เป็นโมเดลหลัก พร้อม Anthropic prompt caching (hybrid: explicit system + automatic history) ลดต้นทุน input ราว 70-90%; Gemini ใช้ทำ embeddings/RAG
+- **AI Chat** - Claude (opus-5, 1M context, Max thinking) เป็นโมเดลหลัก พร้อม Anthropic prompt caching (hybrid: explicit system + automatic history) ลดต้นทุน input ราว 70-90%; Gemini ใช้ทำ embeddings/RAG
 - **Music Player** - YouTube/Spotify support with queue, loop, and premium UI
 - **Multi-Character Roleplay** - Character state tracking และ entity memory
 - **Unrestricted Mode** - Creative writing mode สำหรับ channels ที่เลือก

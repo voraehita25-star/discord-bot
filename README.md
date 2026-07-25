@@ -12,7 +12,7 @@ Production-ready Discord bot with Claude AI chat, music player, and advanced mem
 
 | Feature | Description |
 | ------- | ----------- |
-| 🤖 **AI Chat** | Claude (claude-opus-4-8, 1M context, Max thinking) powered conversations with memory + Anthropic prompt caching for ~70-90% input-cost savings on long conversations |
+| 🤖 **AI Chat** | Claude (claude-opus-5, 1M context, Max thinking) powered conversations with memory + Anthropic prompt caching for ~70-90% input-cost savings on long conversations |
 | 🎵 **Music** | YouTube/Spotify playback with queue management |
 | 🧠 **Long-term Memory** | RAG-based memory using FAISS for persistent context |
 | 📎 **Document Attachments (Dashboard)** | Drag-drop PDF / DOCX / text / code (20+ types, 32 MB cap). Extracted text persists in SQLite per-conversation — no need to re-upload RP material |

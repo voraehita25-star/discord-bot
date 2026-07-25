@@ -238,7 +238,7 @@ class DashboardWebSocketServer:
     )
     # Raised from 50K → 200K: matches the direct-API backend ceiling and lets
     # users paste large RP context (character sheets / world bibles / full
-    # scenes) in a single message. Claude Opus 4.8 1M context window has
+    # scenes) in a single message. Claude Opus 5's 1M context window has
     # plenty of headroom — 200K chars ≈ 50-80K tokens, ~8% of the window.
     MAX_CONTENT_LENGTH = 200_000  # characters
     # Env-driven (DASHBOARD_HISTORY_MESSAGES, default 500): how many prior

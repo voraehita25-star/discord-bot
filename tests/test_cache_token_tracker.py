@@ -84,7 +84,7 @@ class TestTokenUsageDataclass:
             channel_id=456,
         )
 
-        assert usage.model == "claude-opus-4-8"
+        assert usage.model == "claude-opus-5"
 
     def test_token_usage_cached_default(self):
         """Test default cached value."""

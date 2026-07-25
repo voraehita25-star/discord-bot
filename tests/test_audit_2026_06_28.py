@@ -10,8 +10,8 @@ Covers two confirmed findings:
   (``dashboard_chat_claude.py``), which already guarded this exact case.
 
 * py-ai-api — ``_format_model_display`` strips a trailing context-window tag
-  (e.g. ``[1m]``) so the repo-default model id renders as ``Claude Opus 4.8``
-  rather than the garbled ``Claude Opus 8[1M] 4`` (the ``8[1m]`` token is not
+  (e.g. ``[1m]``) so the repo-default model id renders as ``Claude Opus 5``
+  rather than the garbled ``Claude Opus 5[1M]`` (the ``5[1m]`` token is not
   all-digits, so the numeric/word split mis-filed it).
 """
 
@@ -72,6 +72,9 @@ class TestFormatModelDisplay:
     """_format_model_display drops the ``[1m]`` tag and rejoins the version."""
 
     def test_strips_context_window_tag(self) -> None:
+        assert _format_model_display("claude-opus-5[1m]") == "Claude Opus 5"
+
+    def test_strips_context_window_tag_dotted_version(self) -> None:
         assert _format_model_display("claude-opus-4-8[1m]") == "Claude Opus 4.8"
 
     def test_strips_tag_for_sonnet(self) -> None:

@@ -342,7 +342,14 @@ class TestBuildApiConfig:
 
         # Claude has no built-in search tool; use_search only logs
         assert "system_instruction" in result
-        assert "thinking" not in result
+        # Thinking is off for this chat_data. On generations that think by
+        # default (Opus 5, Sonnet 5) "off" is an explicit disabled payload;
+        # on Opus 4.8 and earlier the key is simply absent. Compare against the
+        # capability helper so the assertion holds under either CLAUDE_MODEL.
+        from cogs.ai_core.data.constants import CLAUDE_MODEL
+        from cogs.ai_core.data.model_caps import thinking_off_config
+
+        assert result.get("thinking") == thinking_off_config(CLAUDE_MODEL)
 
     def test_build_api_config_default_thinking(self):
         """Test API config defaults to thinking enabled."""

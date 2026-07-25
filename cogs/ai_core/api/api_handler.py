@@ -34,9 +34,11 @@ from ..data import (
 from ..data.constants import (
     CLAUDE_EFFORT,
     CLAUDE_MAX_TOKENS,
+    CLAUDE_MODEL,
     STREAMING_TIMEOUT_CHUNK,
     STREAMING_TIMEOUT_INITIAL,
 )
+from ..data.model_caps import effort_with_thinking_off, thinking_off_config
 
 # Import circuit breaker for API protection
 try:
@@ -126,12 +128,20 @@ def build_api_config(
     }
 
     # Enable adaptive thinking for RP/Faust modes when thinking is enabled.
-    # Opus 4.x adaptive-thinking models use thinking type:"adaptive" instead
+    # Opus 4.x+ adaptive-thinking models use thinking type:"adaptive" instead
     # of a manual budget_tokens (removed on these models — sending it 400s).
     if (is_faust_mode or is_faust_dm_mode or is_rp_mode) and thinking_enabled:
         config_params["thinking"] = {"type": "adaptive"}
         logger.info("🧠 Adaptive Thinking Mode: ENABLED")
     else:
+        # Standard mode is NOT the same as omitting the field on Opus 5 /
+        # Sonnet 5: those think by default, so leaving `thinking` unset would
+        # quietly spend reasoning tokens on every non-RP turn. Send the explicit
+        # "disabled" where the generation needs it (call_claude_api clamps
+        # effort to `high` alongside it — Opus 5 400s on disabled + xhigh/max).
+        thinking_off = thinking_off_config(CLAUDE_MODEL)
+        if thinking_off is not None:
+            config_params["thinking"] = thinking_off
         logger.info("💬 Standard Mode (no extended thinking)")
 
     if use_search:
@@ -783,13 +793,18 @@ async def call_claude_api_streaming(
         max_tokens = config_params.get("max_tokens", CLAUDE_MAX_TOKENS)
 
         # Streaming forwards EFFORT (xhigh by default) for reasoning depth, but
-        # omits extended THINKING: thinking blocks delay the first visible chunk,
-        # which defeats real-time streaming. effort=xhigh closes most of the
-        # quality gap with the non-streaming path without that first-token delay.
-        # The non-streaming path (call_claude_api) additionally applies thinking.
+        # suppresses extended THINKING: thinking blocks delay the first visible
+        # chunk, which defeats real-time streaming. The non-streaming path
+        # (call_claude_api) additionally applies thinking.
+        #
+        # "Suppress" used to mean "omit the field", which stopped being enough on
+        # Opus 5 / Sonnet 5 — they think by default — so the disable is now sent
+        # explicitly for those generations. Opus 5 rejects disabled thinking above
+        # `high`, so effort is clamped to match; on Opus 4.8 and earlier nothing
+        # is sent and the configured effort is forwarded untouched.
         if "thinking" in config_params:
             logger.info(
-                "🌊 Streaming mode: forwarding effort=%s; thinking omitted for real-time first-token latency",
+                "🌊 Streaming mode: forwarding effort=%s; thinking suppressed for real-time first-token latency",
                 CLAUDE_EFFORT,
             )
     except Exception as e:
@@ -845,10 +860,16 @@ async def call_claude_api_streaming(
                 "messages": messages,
             }
             # Forward effort for depth (xhigh by default). Adaptive-thinking
-            # models read this from output_config; omitted thinking keeps the
-            # first token fast.
-            if CLAUDE_EFFORT:
-                stream_kwargs["output_config"] = {"effort": CLAUDE_EFFORT}
+            # models read this from output_config; suppressed thinking keeps the
+            # first token fast — see the note above for why the disable has to be
+            # explicit (and the effort clamped) on Opus 5 / Sonnet 5.
+            stream_effort = CLAUDE_EFFORT
+            stream_thinking_off = thinking_off_config(target_model)
+            if stream_thinking_off is not None:
+                stream_kwargs["thinking"] = stream_thinking_off
+                stream_effort = effort_with_thinking_off(stream_effort)
+            if stream_effort:
+                stream_kwargs["output_config"] = {"effort": stream_effort}
             stream = client.messages.stream(**stream_kwargs)
 
             _stream_final_message = None
@@ -1168,16 +1189,23 @@ async def call_claude_api(
                 "messages": messages,
             }
 
-            # Add extended thinking if configured
+            # Add extended thinking if configured (may be the explicit
+            # {"type": "disabled"} that build_api_config sets for generations
+            # which would otherwise think by default).
             thinking_config = config_params.get("thinking")
             if thinking_config:
                 api_kwargs["thinking"] = thinking_config
 
             # Forward effort (Opus-tier reasoning depth, defaults to "xhigh"). On
-            # adaptive-thinking models (Opus 4.7+/4.8) effort governs how deeply
-            # the model reasons; only sent when configured to a valid tier.
-            if CLAUDE_EFFORT:
-                api_kwargs["output_config"] = {"effort": CLAUDE_EFFORT}
+            # adaptive-thinking models (Opus 4.7+, incl. Opus 5) effort governs how
+            # deeply the model reasons; only sent when configured to a valid tier.
+            # Opus 5 rejects disabled thinking above "high", so clamp when the
+            # turn explicitly disabled it.
+            effort = CLAUDE_EFFORT
+            if thinking_config and thinking_config.get("type") == "disabled":
+                effort = effort_with_thinking_off(effort)
+            if effort:
+                api_kwargs["output_config"] = {"effort": effort}
 
             api_timeout = 120.0
             try:

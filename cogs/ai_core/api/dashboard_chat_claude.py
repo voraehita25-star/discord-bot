@@ -31,6 +31,11 @@ from ..claude_payloads import (
     build_claude_text_document_block,
     build_split_cached_system_prompt,
 )
+from ..data.model_caps import (
+    effort_with_thinking_off,
+    thinking_off_config,
+    uses_adaptive_thinking,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -306,39 +311,20 @@ from .dashboard_config import (
     resolve_unrestricted_system_text,
 )
 
-# Models that use adaptive thinking (``thinking: {type: "adaptive"}``) rather than
-# the deprecated manual ``budget_tokens`` form. Opus 4.7+ (incl. 4.8), Sonnet 5,
-# and the Fable/Mythos 5 family REJECT ``budget_tokens`` with a 400, so matching
-# them here is essential. Older extended-thinking-only models (Opus 4.5/4.1,
-# Sonnet 4.5) fall through to the budget_tokens branch for backward
-# compatibility. NOTE: this is a hardcoded generation allowlist — extend it
-# whenever a new Claude generation ships (same failure mode as the
-# context-meter DEFAULT_1M_MODELS table).
-_ADAPTIVE_THINKING_MODELS: tuple[str, ...] = (
-    "opus-4-8",
-    "opus-4-7",
-    "opus-4-6",
-    "sonnet-4-6",
-    "sonnet-5",
-    "fable",
-    "mythos",
-)
-
-
-def _uses_adaptive_thinking(model: str) -> bool:
-    """True if the model uses adaptive thinking instead of manual budget_tokens."""
-    model_lower = model.lower()
-    return any(tag in model_lower for tag in _ADAPTIVE_THINKING_MODELS)
+# Adaptive-thinking / thinking-default rules live in ``data/model_caps.py`` so the
+# Discord SDK path and both dashboard SDK paths read the same generation tables.
+# Re-exported under the module-private name the handlers below already use.
+_uses_adaptive_thinking = uses_adaptive_thinking
 
 
 def _sdk_model_id(model_id: str) -> str:
     """Strip a trailing Claude Code context-window tag (e.g. ``[1m]``).
 
-    ``claude-opus-4-8[1m]`` is Claude Code ``/model`` selection syntax only —
+    ``claude-opus-5[1m]`` is Claude Code ``/model`` selection syntax only —
     the Messages API model registry has no bracket-suffixed ids and returns a
     non-retryable 404 for them (which api_failover also refuses to fail over
     on, while its health probe uses the bare id and reports healthy — masking
-    the misconfiguration). Opus 4.8 is natively 1M-context on the API, so the
+    the misconfiguration). Opus 5 is natively 1M-context on the API, so the
     bare id is behavior-identical. The CLI backends keep the suffixed form.
     """
     return model_id.split("[", 1)[0].strip()
@@ -350,14 +336,15 @@ _SDK_MODEL = _sdk_model_id(CLAUDE_MODEL)
 
 
 def _format_model_display(model_id: str) -> str:
-    """Render a model id like ``claude-opus-4-8[1m]`` as ``Claude Opus 4.8``.
+    """Render a model id like ``claude-opus-5[1m]`` as ``Claude Opus 5``.
 
-    The naive ``replace("-", " ").title()`` produces ``Claude Opus 4 8`` (the two
+    Dotted versions round-trip too (``claude-opus-4-8`` → ``Claude Opus 4.8``):
+    the naive ``replace("-", " ").title()`` produces ``Claude Opus 4 8`` (the two
     version tokens read as separate words), so the numeric trailer is split out
     and rejoined with a dot. A trailing context-window tag (e.g. ``[1m]``) is
     stripped first: it is not part of the human-readable name and would otherwise
-    leave a non-digit token (``8[1m]``) that the numeric/word split mis-files,
-    garbling the badge to ``Claude Opus 8[1M] 4``.
+    leave a non-digit token (``5[1m]``) that the numeric/word split mis-files,
+    garbling the badge to ``Claude Opus 5[1M]``.
     """
     base = model_id.split("[", 1)[0]
     parts = base.replace("claude-", "").split("-")
@@ -795,7 +782,7 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     # Build mode info for display
     mode_info: list[str] = []
 
-    # Format model id like `claude-opus-4-8[1m]` → `Claude Opus 4.8` (shared
+    # Format model id like `claude-opus-5[1m]` → `Claude Opus 5` (shared
     # helper, also used by the AI-edit handler below).
     _model_display = _format_model_display(CLAUDE_MODEL)
     mode_info.insert(0, f"🟣 {_model_display}")
@@ -833,20 +820,22 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
         "messages": messages,
     }
 
-    # Opus 4.7 effort level (low/medium/high/xhigh/max). Must be nested under
+    # Effort level (low/medium/high/xhigh/max). Must be nested under
     # `output_config` per Anthropic API (per /build-with-claude/effort docs).
     # Only forwarded when explicitly configured so older models are unaffected.
-    if CLAUDE_EFFORT:
-        api_kwargs["output_config"] = {"effort": CLAUDE_EFFORT}
+    _effort = CLAUDE_EFFORT
 
     # Thinking config:
-    # - Opus 4.7+ (incl. 4.8) REJECT `type: "enabled"` with budget_tokens. Use
-    #   adaptive thinking instead; effort (above) controls thinking depth.
+    # - Opus 4.7+ (incl. 4.8 and Opus 5) REJECT `type: "enabled"` with
+    #   budget_tokens. Use adaptive thinking instead; effort controls depth.
     #   display: "summarized" is REQUIRED to surface thinking text — the API
-    #   default on Opus 4.7/4.8/Sonnet 5 is "omitted", which streams thinking
+    #   default on Opus 4.7+/Sonnet 5 is "omitted", which streams thinking
     #   blocks with EMPTY text, leaving the dashboard's thinking panel blank.
     # - Older models (Opus 4.5, Sonnet 4.5) still accept the enabled+budget_tokens
     #   form, kept for backward compatibility.
+    # - Turning thinking OFF is not the same as omitting the field on Opus 5 /
+    #   Sonnet 5, which think by default — those need an explicit "disabled",
+    #   and Opus 5 rejects that above `high` effort, hence the clamp.
     if thinking_enabled:
         if _uses_adaptive_thinking(_SDK_MODEL):
             api_kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
@@ -860,6 +849,14 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             _think_budget = max(1024, min(32000, CLAUDE_MAX_TOKENS - 1024))
             _think_budget = min(_think_budget, CLAUDE_MAX_TOKENS - 1)
             api_kwargs["thinking"] = {"type": "enabled", "budget_tokens": _think_budget}
+    else:
+        _thinking_off = thinking_off_config(_SDK_MODEL)
+        if _thinking_off is not None:
+            api_kwargs["thinking"] = _thinking_off
+            _effort = effort_with_thinking_off(_effort)
+
+    if _effort:
+        api_kwargs["output_config"] = {"effort": _effort}
 
     # Stream response
     try:
@@ -1636,8 +1633,7 @@ async def handle_ai_edit_message_claude(
         "messages": messages,
     }
 
-    if CLAUDE_EFFORT:
-        api_kwargs["output_config"] = {"effort": CLAUDE_EFFORT}
+    _effort = CLAUDE_EFFORT
 
     if thinking_enabled:
         if _uses_adaptive_thinking(_SDK_MODEL):
@@ -1650,6 +1646,15 @@ async def handle_ai_edit_message_claude(
             _think_budget = max(1024, min(32000, CLAUDE_MAX_TOKENS - 1024))
             _think_budget = min(_think_budget, CLAUDE_MAX_TOKENS - 1)
             api_kwargs["thinking"] = {"type": "enabled", "budget_tokens": _think_budget}
+    else:
+        # Opus 5 / Sonnet 5 think unless told not to — see the primary handler.
+        _thinking_off = thinking_off_config(_SDK_MODEL)
+        if _thinking_off is not None:
+            api_kwargs["thinking"] = _thinking_off
+            _effort = effort_with_thinking_off(_effort)
+
+    if _effort:
+        api_kwargs["output_config"] = {"effort": _effort}
 
     logger.info("📍 AI Edit via Claude model: %s", CLAUDE_MODEL)
 

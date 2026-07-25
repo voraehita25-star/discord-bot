@@ -1735,7 +1735,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # 6. Build contents with history (limit to recent messages for better context)
                     history = chat_data.get("history", [])
 
-                    # Limit history — Claude Opus 4.8 has a 1M token context window.
+                    # Limit history — Claude Opus 5 has a 1M token context window.
                     # Using maximum context for all contexts (RP, DM, normal servers)
                     # to preserve AI personality and conversation continuity.
                     # Note: MAX_HISTORY_ITEMS constant defined in data/constants.py.

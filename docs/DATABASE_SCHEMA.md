@@ -326,7 +326,7 @@ Index: `idx_music_queue_guild(guild_id, position)`
 | guild_id      | INTEGER  |                                  |
 | input_tokens  | INTEGER  | NOT NULL                         |
 | output_tokens | INTEGER  | NOT NULL                         |
-| model         | TEXT     | DEFAULT 'claude-opus-4-8'        |
+| model         | TEXT     | DEFAULT 'claude-opus-5'          |
 | cached        | BOOLEAN  | DEFAULT 0                        |
 | created_at    | DATETIME | DEFAULT CURRENT_TIMESTAMP        |
 

@@ -1733,7 +1733,7 @@ def _build_claude_argv(
     """Construct the argv for the `claude -p` invocation.
 
     When ``enable_thinking`` is True we pass ``--effort xhigh``. This makes
-    Opus 4.8 actually reason internally; the *content* of that reasoning is
+    Opus 5 actually reason internally; the *content* of that reasoning is
     still redacted by Anthropic in subscription mode (only the start/stop
     markers reach us), but the model spends real reasoning effort which
     improves answer quality on hard questions.
@@ -1746,7 +1746,7 @@ def _build_claude_argv(
     betas." to stderr and ignores the flag. That warning is pure noise: because
     it is the only thing on stderr, it used to *mask* the real failure (which
     claude reports on stdout as the stream-json ``result`` event) whenever the
-    process exited non-zero. ``--effort xhigh`` alone already drives Opus 4.8's
+    process exited non-zero. ``--effort xhigh`` alone already drives Opus 5's
     deep thinking in subscription mode, so dropping the beta costs nothing.
     """
     # MCP config: our own AI-tools server when custom tools are requested,
@@ -2654,7 +2654,7 @@ async def handle_chat_message_claude_cli(
             is_regeneration = False
 
     # Thinking-mode requests legitimately spend minutes on the Anthropic
-    # side (Opus 4.8 reasoning silently before any stdout event), so the
+    # side (Opus 5 reasoning silently before any stdout event), so the
     # caller's 300s default fires mid-call. Override here where we know
     # thinking_enabled, leaving non-thinking turns on the tighter budget.
     if thinking_enabled and stream_timeout < _THINKING_STREAM_TIMEOUT:

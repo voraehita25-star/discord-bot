@@ -45,7 +45,7 @@ DB_CONNECTION_TIMEOUT = _env_float("DB_CONNECTION_TIMEOUT", 30.0)
 DB_DIR = Path("data")
 DB_FILE = DB_DIR / "bot_database.db"
 EXPORT_DIR = DB_DIR / "db_export"
-DEFAULT_ANALYTICS_MODEL = "claude-opus-4-8"
+DEFAULT_ANALYTICS_MODEL = "claude-opus-5"
 DEFAULT_DASHBOARD_AI_PROVIDER = "claude"
 
 
@@ -753,7 +753,7 @@ class Database:
                     guild_id INTEGER,
                     input_tokens INTEGER NOT NULL,
                     output_tokens INTEGER NOT NULL,
-                    model TEXT DEFAULT 'claude-opus-4-8',
+                    model TEXT DEFAULT 'claude-opus-5',
                     cached BOOLEAN DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )

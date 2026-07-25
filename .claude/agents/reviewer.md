@@ -2,7 +2,7 @@
 name: reviewer
 description: คนรีวิว — Use LAST, as the final gate, to review the diff for correctness, security, and convention adherence in this repo. Read-only on source (runs lint/checks but does not edit). Produces an approve / changes-needed verdict.
 tools: Read, Grep, Glob, Bash
-model: claude-opus-4-8
+model: claude-opus-5
 effort: max
 color: magenta
 ---

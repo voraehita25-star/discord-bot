@@ -3,7 +3,7 @@
 > Last Updated: June 16, 2026
 > Version: 3.5.0
 
-ระบบ AI หลักของ Discord Bot — ใช้ Claude Opus 4.8 (1M context, Max thinking; ช่องทาง SDK หรือ Claude Code CLI) + Gemini สำหรับ embeddings/RAG
+ระบบ AI หลักของ Discord Bot — ใช้ Claude Opus 5 (1M context, Max thinking; ช่องทาง SDK หรือ Claude Code CLI) + Gemini สำหรับ embeddings/RAG
 
 ## Structure (Reorganized v3.3.7, deeper subdir split v3.3.8)
 

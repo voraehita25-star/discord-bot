@@ -35,7 +35,7 @@ CREATOR_ID = _safe_int_env("CREATOR_ID")
 
 # API Configuration — Claude (primary AI for chat)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5")
 CLAUDE_MAX_TOKENS = _safe_int_env("CLAUDE_MAX_TOKENS", 128000)
 
 # Claude effort level (low | medium | high | xhigh | max). Defaults to ``xhigh``

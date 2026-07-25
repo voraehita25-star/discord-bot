@@ -2,7 +2,7 @@
 name: opposition
 description: ฝ่ายค้าน — Adversarial counter-reviewer. Use alongside or right after the reviewer as the final correctness gate. Its job is to REFUTE the change and challenge the reviewer's verdict — find what breaks, not what works. Read-only.
 tools: Read, Grep, Glob, Bash
-model: claude-opus-4-8
+model: claude-opus-5
 effort: max
 color: red
 ---

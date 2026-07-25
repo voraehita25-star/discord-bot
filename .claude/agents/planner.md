@@ -2,7 +2,7 @@
 name: planner
 description: นักวางแผน — Use FIRST, before any code is written, to turn a request into a detailed, step-by-step implementation plan for this polyglot repo. Read-only — it investigates and plans, it does not edit. Hands off to the coder.
 tools: Read, Grep, Glob
-model: claude-opus-4-8
+model: claude-opus-5
 effort: xhigh
 color: cyan
 ---

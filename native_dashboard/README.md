@@ -6,7 +6,7 @@
 
 | Feature | Description |
 |---------|-------------|
-| 💬 **AI Chat** | Streaming WebSocket chat (Gemini + Claude). Claude runs via SDK (per-token) or `claude -p` subprocess (Claude Code Max subscription). Opus 4.8 provides a 1M-token context window natively on both backends. 200K chars/message cap (raised from 50K). |
+| 💬 **AI Chat** | Streaming WebSocket chat (Gemini + Claude). Claude runs via SDK (per-token) or `claude -p` subprocess (Claude Code Max subscription). Opus 5 provides a 1M-token context window natively on both backends. 200K chars/message cap (raised from 50K). |
 | 📎 **Document Attachments** | Drag-drop or attach **PDF / DOCX / text / code files** (20+ extensions supported). 32 MB per file, 5 files/message. PDFs read natively by Claude — text + embedded images. |
 | 📂 **Persistent Document Memory** | Extracted text from uploaded files is saved to SQLite and auto-injected into every future AI turn **in the same conversation**. Survives bot restarts. Per-conversation scope so RP threads stay isolated. |
 | ✏️ **File Editor** | 📎 button in chat header opens a per-conversation file list. Edit filename + extracted text inline (big roomy editor, char counter, Ctrl+S). Delete individual files. |

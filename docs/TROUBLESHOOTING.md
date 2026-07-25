@@ -202,13 +202,13 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
-| `CLAUDE_MODEL` | `claude-opus-4-8` | Claude model name |
+| `CLAUDE_MODEL` | `claude-opus-5` | Claude model name |
 | `CLAUDE_MAX_TOKENS` | `128000` | Max output tokens per response |
-| `CLAUDE_CONTEXT_WINDOW` | `1000000` | Input context window in tokens — Opus 4.8 supports 1M natively (no beta header, no long-context premium) on both the CLI subscription path and the direct API |
+| `CLAUDE_CONTEXT_WINDOW` | `1000000` | Input context window in tokens — Opus 5 supports 1M natively (no beta header, no long-context premium) on both the CLI subscription path and the direct API |
 | `CLAUDE_BACKEND` | `cli` | Claude path for BOTH Discord chat and dashboard chat: `cli` (`claude -p` subprocess, Max subscription quota — default, no `ANTHROPIC_API_KEY` required) or `api` (Anthropic SDK, per-token billing — needs `ANTHROPIC_API_KEY`) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | `""` | Only needed when `CLAUDE_BACKEND=cli` and bot runs as a different OS user than the one logged into Claude Code. Generate with `claude setup-token`. |
-| `CLAUDE_SUMMARIZATION_MODEL` | inherits `CLAUDE_MODEL` (`claude-opus-4-8` by default) | History summarisation model. Override with a cheaper model like `claude-haiku-4-5` if you want to trade quality for cost. |
-| `CLAUDE_EFFORT` | `xhigh` | Effort level: `low` / `medium` / `high` / `xhigh` / `max`. Defaults to `xhigh` (deep Opus-tier reasoning, one tier below `max`); set `max` for the deepest reasoning, or a lower tier to reduce cost/latency. |
+| `CLAUDE_SUMMARIZATION_MODEL` | inherits `CLAUDE_MODEL` (`claude-opus-5` by default) | History summarisation model. Override with a cheaper model like `claude-haiku-4-5` if you want to trade quality for cost. |
+| `CLAUDE_EFFORT` | `xhigh` | Effort level: `low` / `medium` / `high` / `xhigh` / `max`. Defaults to `xhigh` (deep Opus-tier reasoning, one tier below `max`); set `max` for the deepest reasoning, or a lower tier to reduce cost/latency. Turns that explicitly disable thinking are clamped to `high` — Opus 5 rejects disabled thinking above that tier. |
 | `GEMINI_API_KEY` | `""` | Gemini API key |
 | `GEMINI_MODEL` | `gemini-3.1-pro-preview` | Gemini model name |
 | `ANTHROPIC_BASE_URL` | `""` | Custom API base URL |

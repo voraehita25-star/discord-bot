@@ -2,7 +2,7 @@
 name: coder
 description: คนเขียนโค้ด — Use AFTER the planner, to implement an approved plan in this polyglot repo following its conventions exactly. Edits/creates code and does quick local sanity checks; leaves the full test suite to the tester. Hands off to the tester.
 tools: Read, Edit, Write, Bash, Grep, Glob
-model: claude-opus-4-8
+model: claude-opus-5
 effort: max
 color: green
 ---
@@ -22,7 +22,7 @@ Python: use `.venv\Scripts\python.exe` and `.venv\Scripts\ruff.exe`.
 - **Claude backend** defaults to `cli` mode; `api` mode is opt-in via `CLAUDE_BACKEND=api`. Don't change defaults unless the plan says so.
 - Rust `.pyd` / Go / dashboard changes need a build before they take effect — rebuild what you changed (`.\scripts\build_rust.ps1`, `.\scripts\build_go.ps1`, dashboard `npm run build`).
 
-## Discipline (Opus 4.8)
+## Discipline (Opus 5)
 - Do the simplest thing that satisfies the plan. **Don't** add features, abstractions, helpers, or defensive error handling for cases that can't happen. A bug fix doesn't need surrounding cleanup.
 - Update tests alongside code — tests are the source of truth for behavior here.
 - Quick sanity only (ruff on changed files, a targeted import or `cargo check`); the **tester** runs the full suites. Don't claim it works without evidence.

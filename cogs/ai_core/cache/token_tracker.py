@@ -57,17 +57,18 @@ class TokenUsage:
     cached: bool = False
 
     # Explicit per-model rates checked by *prefix* so dated suffixes
-    # (e.g. ``claude-opus-4-8-20260515``) match the canonical id
-    # (``claude-opus-4-8``). Order matters: longer/more-specific
+    # (e.g. ``claude-opus-5-20260515``) match the canonical id
+    # (``claude-opus-5``). Order matters: longer/more-specific
     # prefixes must come first.
     # (input_rate_per_M, output_rate_per_M) in USD per 1M tokens.
-    # Rates verified against https://www.anthropic.com/pricing (June 2026):
-    # Opus 4.5/4.6/4.7/4.8 are $5/$25 (no long-context premium on the 1M
-    # window); Fable 5 / Mythos 5 are the most-capable tier at $10/$50.
-    # Class-level constant so it's interned once at import time rather
+    # Rates verified against https://www.anthropic.com/pricing (July 2026):
+    # Opus 5 and Opus 4.5/4.6/4.7/4.8 are all $5/$25 (no long-context premium
+    # on the 1M window); Fable 5 / Mythos 5 are the most-capable tier at
+    # $10/$50. Class-level constant so it's interned once at import time rather
     # than rebuilt on every ``estimated_cost`` access. ``ClassVar`` keeps
     # the dataclass machinery from treating it as an instance field.
     _CLAUDE_PRICING: ClassVar[tuple[tuple[str, tuple[float, float]], ...]] = (
+        ("claude-opus-5", (5.0, 25.0)),
         ("claude-opus-4-8", (5.0, 25.0)),
         ("claude-opus-4-7", (5.0, 25.0)),
         ("claude-opus-4-6", (5.0, 25.0)),

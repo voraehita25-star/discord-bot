@@ -212,9 +212,9 @@ class TestClaudeConfig:
 
     def test_defaults(self):
         m = _reload({"CLAUDE_BACKEND": "cli"})
-        # Default tracks Opus 4.8's 1M-token variant (the [1m] suffix selects
+        # Default tracks Opus 5's 1M-token variant (the [1m] suffix selects
         # the 1,000,000-token context window matched by CLAUDE_CONTEXT_WINDOW).
-        assert m.CLAUDE_MODEL == "claude-opus-4-8[1m]"
+        assert m.CLAUDE_MODEL == "claude-opus-5[1m]"
         assert m.CLAUDE_MAX_TOKENS == 128000
         assert m.CLAUDE_CONTEXT_WINDOW == 1000000
 
