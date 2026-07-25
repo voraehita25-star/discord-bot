@@ -274,11 +274,12 @@ class TestStreamingSuccessPath:
         assert _CHANNEL_SESSIONS[100] == "new-session-xyz"
 
     @pytest.mark.asyncio
-    async def test_streaming_runs_with_xhigh_effort_thinking(self) -> None:
-        """Regression: Discord CLI replies must build argv with `--effort xhigh`
-        (enable_thinking=True), so the bot reasons at xhigh effort like a
-        dashboard conversation with thinking on. We must NOT pass custom betas:
-        the subscription-mode CLI rejects them with a stderr warning that masks
+    async def test_streaming_pins_the_configured_effort(self) -> None:
+        """Regression: Discord CLI replies must build argv with an explicit
+        `--effort` at the configured tier (`_CLI_EFFORT`, i.e. CLAUDE_EFFORT),
+        so the bot reasons deeply and never inherits the operator's
+        ~/.claude/settings.json effortLevel. We must NOT pass custom betas: the
+        subscription-mode CLI rejects them with a stderr warning that masks
         real stdout errors."""
         captured_argv: list[str] = []
         placeholder = MagicMock()
@@ -317,20 +318,21 @@ class TestStreamingSuccessPath:
                 send_channel=send_channel,
                 channel_id=101,
             )
+        from cogs.ai_core.api.dashboard_chat_claude_cli import _CLI_EFFORT
+
         assert "--effort" in captured_argv
-        assert "xhigh" in captured_argv
+        assert _CLI_EFFORT in captured_argv
         assert "--betas" not in captured_argv
         assert "interleaved-thinking" not in captured_argv
 
     @pytest.mark.asyncio
-    async def test_thinking_off_drops_to_high_effort(self) -> None:
-        """`!thinking off` must reach the CLI argv.
+    async def test_thinking_flag_does_not_change_the_effort_tier(self) -> None:
+        """A stale ``thinking_enabled`` in config_params must not alter argv.
 
-        The channel's toggle used to be dropped on the floor here —
-        ``enable_thinking=True`` was hardcoded, so every Discord reply reasoned
-        at xhigh no matter what the operator set. `claude -p` has no flag to
-        stop the model reasoning, so "off" selects the shallower `high` tier;
-        what matters is that the setting is no longer ignored.
+        `claude -p` cannot switch thinking off, so this backend pins the tier to
+        ``_CLI_EFFORT`` and `!thinking` is refused outright rather than storing a
+        preference that does nothing. Honouring the flag here would quietly
+        re-introduce the half-working control.
         """
         captured_argv: list[str] = []
         placeholder = MagicMock()
@@ -369,8 +371,10 @@ class TestStreamingSuccessPath:
                 send_channel=send_channel,
                 channel_id=102,
             )
+        from cogs.ai_core.api.dashboard_chat_claude_cli import _CLI_EFFORT
+
         effort = captured_argv[captured_argv.index("--effort") + 1]
-        assert effort == "high", captured_argv
+        assert effort == _CLI_EFFORT, captured_argv
 
     @pytest.mark.asyncio
     async def test_cancellation_returns_empty_even_with_partial_text(self) -> None:

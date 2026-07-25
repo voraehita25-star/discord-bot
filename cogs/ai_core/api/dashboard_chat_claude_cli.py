@@ -77,6 +77,7 @@ from .dashboard_common import (
 )
 from .dashboard_config import (
     CLAUDE_CONTEXT_WINDOW,
+    CLAUDE_EFFORT,
     CLAUDE_MODEL,
     DASHBOARD_ROLE_PRESETS,
     DB_AVAILABLE,
@@ -163,13 +164,28 @@ _MAX_TRACKED_SESSIONS = 500
 # prompts (the exact large-history/fresh-session case the early pump protects).
 MAX_STDOUT_LINE_BYTES = 16 * 1024 * 1024
 
-# Stream timeout used when ``thinking_enabled`` is set on the request. Opus
-# 4.8 with ``--effort xhigh`` legitimately spends
-# minutes reasoning on the Anthropic side before emitting any stdout, so the
-# non-thinking 300s default fires while the API call is still in flight and
-# surfaces as a spurious "Claude CLI timed out" toast. 1800s (30 min) covers
-# the long tail of hard reasoning prompts; override via env if needed.
+# Stream timeout for every CLI turn. Opus 5 at ``--effort xhigh`` legitimately
+# spends minutes reasoning on the Anthropic side before emitting any stdout, so
+# the 300s default fires while the API call is still in flight and surfaces as a
+# spurious "Claude CLI timed out" toast. 1800s (30 min) covers the long tail of
+# hard reasoning prompts; override via env if needed.
+#
+# This used to be conditional on the request's thinking flag. It no longer is:
+# reasoning cannot be switched off on this backend (see ``_CLI_EFFORT``), so
+# every turn can hit the slow path and every turn needs the wide budget.
 _THINKING_STREAM_TIMEOUT = max(300, _env_int("DASHBOARD_STREAM_TIMEOUT_THINKING", 1800))
+
+# Reasoning depth for `claude -p`. There is no flag to turn thinking OFF — the
+# CLI exposes depth only through ``--effort`` — so the chat UI's thinking toggle
+# has nothing to control here and is reported as unsupported to the dashboard
+# (see ``ws_dashboard`` handshake) rather than pretending to work. Depth is an
+# operator setting instead: ``CLAUDE_EFFORT``, defaulting to ``xhigh``.
+#
+# Pinned explicitly so the subprocess never inherits the OPERATOR's
+# ~/.claude/settings.json ``effortLevel`` — same philosophy as the pinned
+# ``--permission-mode``: the bot's behaviour must not track someone's
+# interactive Claude Code preference.
+_CLI_EFFORT = CLAUDE_EFFORT or "xhigh"
 
 # Strong refs to in-flight sidecar-persistence tasks. Without this set the
 # tasks scheduled by ``_save_persisted_sessions`` are only weakly referenced
@@ -1723,7 +1739,6 @@ def _build_claude_argv(
     session_id: str | None,
     allow_read_for_images: bool,
     allow_edit_tools: bool = False,
-    enable_thinking: bool = False,
     enable_write: bool = False,
     system_prompt_file: Path | None = None,
     enable_web: bool = False,
@@ -1732,10 +1747,11 @@ def _build_claude_argv(
 ) -> list[str]:
     """Construct the argv for the `claude -p` invocation.
 
-    When ``enable_thinking`` is True we pass ``--effort xhigh``. This makes
-    Opus 5 actually reason internally; the *content* of that reasoning is
-    still redacted by Anthropic in subscription mode (only the start/stop
-    markers reach us), but the model spends real reasoning effort which
+    Reasoning depth is always pinned to ``_CLI_EFFORT`` (``CLAUDE_EFFORT``,
+    default ``xhigh``). The CLI has no way to disable thinking, so there is no
+    per-turn thinking switch here — the model always reasons internally. The
+    *content* of that reasoning is still redacted by Anthropic in subscription
+    mode (only the start/stop markers reach us), but the effort is real and
     improves answer quality on hard questions.
 
     We do NOT pass ``--betas interleaved-thinking`` here. This subprocess only
@@ -1807,20 +1823,11 @@ def _build_claude_argv(
         )
     argv.extend(["--permission-mode", "acceptEdits" if write_mode else "default"])
 
-    if enable_thinking:
-        # Only --effort xhigh — NOT --betas interleaved-thinking. See the
-        # docstring: custom betas are ignored (and noisily warned about) in
-        # subscription mode, and that warning used to mask real stdout errors.
-        argv.extend(["--effort", "xhigh"])
-    else:
-        # Pin a non-thinking tier EXPLICITLY. Without a flag the subprocess
-        # inherits the OPERATOR's ~/.claude/settings.json `effortLevel`
-        # (e.g. "max"), silently coupling the bot's reasoning spend to the
-        # operator's interactive Claude Code preference — same philosophy as
-        # the pinned --permission-mode above. "high" keeps thinking-OFF
-        # conversations on a fast non-deep tier per the toggle's contract;
-        # the bot's reasoning ceiling stays xhigh (operator decision).
-        argv.extend(["--effort", "high"])
+    # Effort only — NOT --betas interleaved-thinking. See the docstring: custom
+    # betas are ignored (and noisily warned about) in subscription mode, and
+    # that warning used to mask real stdout errors. Always pinned; see
+    # ``_CLI_EFFORT`` for why there is no per-turn thinking branch.
+    argv.extend(["--effort", _CLI_EFFORT])
     if session_id and _SESSION_ID_PATTERN.match(session_id):
         argv.extend(["--resume", session_id])
     elif session_id:
@@ -2618,7 +2625,10 @@ async def handle_chat_message_claude_cli(
     # on the RESOLVED state, not the raw flag, or the UI advertises write mode
     # that this turn does not actually have.
     write_enabled = _dashboard_cli_write_enabled() and bool(_dashboard_cli_write_dirs())
-    thinking_enabled = bool(data.get("thinking_enabled"))
+    # ``data["thinking_enabled"]`` is deliberately NOT read: this backend cannot
+    # turn thinking off (see ``_CLI_EFFORT``), so honouring the flag would only
+    # produce a control that appears to work. The dashboard is told the toggle
+    # is unsupported at handshake time and disables it in the UI.
     images_raw = data.get("images") or []
     documents_raw = data.get("documents") or []
 
@@ -2653,12 +2663,11 @@ async def handle_chat_message_claude_cli(
             )
             is_regeneration = False
 
-    # Thinking-mode requests legitimately spend minutes on the Anthropic
-    # side (Opus 5 reasoning silently before any stdout event), so the
-    # caller's 300s default fires mid-call. Override here where we know
-    # thinking_enabled, leaving non-thinking turns on the tighter budget.
-    if thinking_enabled and stream_timeout < _THINKING_STREAM_TIMEOUT:
-        stream_timeout = _THINKING_STREAM_TIMEOUT
+    # Every turn can spend minutes on the Anthropic side (Opus 5 reasoning
+    # silently before any stdout event), so the caller's 300s default fires
+    # mid-call. This used to be conditional on the thinking flag; reasoning is
+    # unconditional on this backend, so the wide budget is too.
+    stream_timeout = max(stream_timeout, _THINKING_STREAM_TIMEOUT)
 
     # Mirror the SDK backend (``dashboard_chat_claude.py``) which accepts
     # empty content as long as there are images or documents to look
@@ -2702,9 +2711,9 @@ async def handle_chat_message_claude_cli(
     # the client and don't reach the subprocess.
     start_ts = time.monotonic()
     logger.info(
-        "💬 chat-cli start conv=%s thinking=%s content_len=%d images=%d docs=%d",
+        "💬 chat-cli start conv=%s effort=%s content_len=%d images=%d docs=%d",
         conversation_id,
-        thinking_enabled,
+        _CLI_EFFORT,
         len(content),
         len(capped_images),
         # Log the capped doc count (mirrors the capped_images line above) so the
@@ -2922,10 +2931,10 @@ async def handle_chat_message_claude_cli(
     # Match the SDK backend's mode-label format so the badge always tells
     # the user what's actually active (model, thinking, unrestricted, images).
     mode_info: list[str] = [f"🟣 Claude Code CLI ({CLAUDE_MODEL})"]
-    # Name the effort tier rather than claiming thinking is on/off: `claude -p`
-    # has no switch for that, so "off" buys a shallower tier, not silence. The
-    # badge said nothing when off, which read as "thinking disabled" — it isn't.
-    mode_info.append("🧠 Thinking (xhigh)" if thinking_enabled else "🧠 Reasoning (high)")
+    # Always present, and naming the tier rather than claiming an on/off state:
+    # this backend always reasons, so a conditional badge would imply a control
+    # the user does not have.
+    mode_info.append(f"🧠 Thinking ({_CLI_EFFORT})")
     if unrestricted_requested:
         mode_info.append("🔓 Unrestricted")
     if write_enabled:
@@ -2978,8 +2987,6 @@ async def handle_chat_message_claude_cli(
         # Only fires when Anthropic actually sends thinking content, which
         # is API-key mode only. In subscription mode this stays dormant.
         nonlocal full_thinking, thinking_started
-        if not thinking_enabled:
-            return
         if not thinking_started:
             thinking_started = True
             await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
@@ -2997,7 +3004,7 @@ async def handle_chat_message_claude_cli(
         # mode where the content itself is hidden. Use this to surface the
         # "💭 Thinking…" panel so the user sees that reasoning is happening.
         nonlocal thinking_started
-        if not thinking_enabled or thinking_started:
+        if thinking_started:
             return
         thinking_started = True
         await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
@@ -3044,7 +3051,6 @@ async def handle_chat_message_claude_cli(
         claude_exe,
         session_id=session_id,
         allow_read_for_images=need_read,
-        enable_thinking=thinking_enabled,
         enable_write=write_enabled,
         system_prompt_file=system_prompt_file,
         enable_web=_CLI_WEB_TOOLS_ENABLED,
@@ -3092,7 +3098,6 @@ async def handle_chat_message_claude_cli(
                         claude_exe,
                         session_id=session_id,
                         allow_read_for_images=need_read,
-                        enable_thinking=thinking_enabled,
                         enable_write=write_enabled,
                         system_prompt_file=system_prompt_file,
                         enable_web=_CLI_WEB_TOOLS_ENABLED,
@@ -3169,7 +3174,6 @@ async def handle_chat_message_claude_cli(
                         claude_exe,
                         session_id=None,
                         allow_read_for_images=need_read,
-                        enable_thinking=thinking_enabled,
                         enable_write=write_enabled,
                         system_prompt_file=system_prompt_file,
                         enable_web=_CLI_WEB_TOOLS_ENABLED,
@@ -3304,7 +3308,6 @@ async def handle_chat_message_claude_cli(
                     claude_exe,
                     session_id=new_session_id,
                     allow_read_for_images=False,
-                    enable_thinking=thinking_enabled,
                     enable_write=write_enabled,
                     system_prompt_file=system_prompt_file,
                     enable_web=_CLI_WEB_TOOLS_ENABLED,
@@ -3493,12 +3496,11 @@ async def handle_ai_edit_message_claude_cli(
     if not isinstance(role_preset, str):
         role_preset = "general"
     user_name = data.get("user_name", "User")
-    thinking_enabled = bool(data.get("thinking_enabled"))
 
-    # Match the chat handler: thinking-mode edits also need the longer
-    # budget so the API has time to actually reason before responding.
-    if thinking_enabled and stream_timeout < _THINKING_STREAM_TIMEOUT:
-        stream_timeout = _THINKING_STREAM_TIMEOUT
+    # Match the chat handler: every edit reasons (the flag is not read here —
+    # this backend can't disable thinking), so all of them get the longer
+    # budget rather than only the ones that asked for it.
+    stream_timeout = max(stream_timeout, _THINKING_STREAM_TIMEOUT)
 
     # Same alphanumeric/-/_ allowlist that the chat handler enforces (above).
     # Without this, a malformed id from the AI-edit path would land in the
@@ -3629,7 +3631,7 @@ async def handle_ai_edit_message_claude_cli(
 
     edit_mode_info: list[str] = [f"🟣 Claude Code CLI ({CLAUDE_MODEL})", "✏️ AI Edit"]
     # Effort tier, not an on/off claim — see the chat handler above.
-    edit_mode_info.append("🧠 Thinking (xhigh)" if thinking_enabled else "🧠 Reasoning (high)")
+    edit_mode_info.append(f"🧠 Thinking ({_CLI_EFFORT})")
     mode_label = " • ".join(edit_mode_info)
     await ws.send_json(
         {
@@ -3659,8 +3661,6 @@ async def handle_ai_edit_message_claude_cli(
 
     async def on_thinking_text(text: str) -> None:
         nonlocal edit_thinking, thinking_started
-        if not thinking_enabled:
-            return
         if not thinking_started:
             thinking_started = True
             await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
@@ -3675,7 +3675,7 @@ async def handle_ai_edit_message_claude_cli(
 
     async def on_thinking_block_start() -> None:
         nonlocal thinking_started
-        if not thinking_enabled or thinking_started:
+        if thinking_started:
             return
         thinking_started = True
         await ws.send_json({"type": "thinking_start", "conversation_id": conversation_id})
@@ -3715,7 +3715,6 @@ async def handle_ai_edit_message_claude_cli(
         session_id=None,
         allow_read_for_images=False,
         allow_edit_tools=True,
-        enable_thinking=thinking_enabled,
     )
 
     # Serialize against concurrent chat sends in the same conversation: an

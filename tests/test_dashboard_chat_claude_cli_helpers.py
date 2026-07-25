@@ -499,15 +499,14 @@ class TestBuildClaudeArgv:
         assert "--resume" in argv
         assert "sess-abc" in argv
 
-    def test_thinking_flag(self):
+    def test_effort_flag(self):
         argv = cli._build_claude_argv(
             "/usr/bin/claude",
             session_id=None,
             allow_read_for_images=False,
-            enable_thinking=True,
         )
         assert "--effort" in argv
-        assert "xhigh" in argv
+        assert cli._CLI_EFFORT in argv
         # Regression guard: we must NOT pass --betas interleaved-thinking. This
         # subprocess always authenticates with the Max subscription (no
         # ANTHROPIC_API_KEY in the env allowlist), so the CLI rejects custom
@@ -515,21 +514,31 @@ class TestBuildClaudeArgv:
         assert "--betas" not in argv
         assert "interleaved-thinking" not in argv
 
-    def test_no_thinking_pins_explicit_non_deep_effort(self):
-        """Thinking-off turns must still pass an EXPLICIT effort tier: with no
-        flag the subprocess inherits the operator's ~/.claude/settings.json
-        effortLevel (e.g. "max"), coupling bot reasoning spend to the
-        operator's interactive preference. Pinned to "high" (non-deep), while
-        the bot's deep-reasoning tier stays "xhigh" (thinking-on branch)."""
+    def test_effort_is_pinned_not_inherited(self):
+        """Every turn must pass an EXPLICIT effort tier: with no flag the
+        subprocess inherits the operator's ~/.claude/settings.json effortLevel
+        (e.g. "max"), coupling bot reasoning spend to the operator's
+        interactive preference. There is no per-turn thinking branch — the CLI
+        can't switch thinking off — so the tier is CLAUDE_EFFORT for all turns.
+        """
         argv = cli._build_claude_argv(
             "/usr/bin/claude",
             session_id=None,
             allow_read_for_images=False,
         )
         idx = argv.index("--effort")
-        assert argv[idx + 1] == "high"
-        assert "xhigh" not in argv
-        assert "max" not in argv
+        assert argv[idx + 1] == cli._CLI_EFFORT
+        # Exactly one --effort; a second would let the last one silently win.
+        assert argv.count("--effort") == 1
+
+    def test_build_argv_has_no_thinking_switch(self):
+        """The toggle is reported unsupported to the dashboard and refused by
+        `!thinking` on this backend, so accepting a per-turn flag here would
+        re-introduce the control that silently did nothing."""
+        import inspect
+
+        params = inspect.signature(cli._build_claude_argv).parameters
+        assert "enable_thinking" not in params
 
     def test_system_prompt_file_flag(self, tmp_path):
         spf = tmp_path / "sp.txt"

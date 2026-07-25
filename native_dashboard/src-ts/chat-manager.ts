@@ -466,6 +466,13 @@ export class ChatManager {
                     }
                     this.updateProviderSelects();
                 }
+                // The Thinking toggle only controls something on the SDK
+                // backend with a model that can be told to stop thinking. When
+                // the server says otherwise, disable the control instead of
+                // leaving a switch that silently does nothing.
+                this.applyThinkingToggleSupport(
+                    data.thinking_toggle as { supported?: boolean; reason?: string } | undefined,
+                );
                 this.listConversations();
                 // Re-fetch the OPEN conversation after a (re)connect. A reconnect
                 // that interrupts a response stream drops the in-flight assistant
@@ -3430,6 +3437,53 @@ export class ChatManager {
             card.setAttribute('aria-checked', String(isSelected));
             (card as HTMLElement).tabIndex = isSelected ? 0 : -1;
         });
+    }
+
+    /**
+     * Enable or disable the Thinking checkboxes from the server's handshake.
+     *
+     * The toggle is only meaningful on the SDK backend with a model that can be
+     * told to stop thinking; on the CLI backend (the default) the model reasons
+     * on every turn regardless. Rather than leave a switch that does nothing, we
+     * disable it and surface the server's explanation as the tooltip.
+     *
+     * Missing/!== false support is treated as supported so an older server —
+     * which never sends this field — keeps the control usable.
+     */
+    applyThinkingToggleSupport(info?: { supported?: boolean; reason?: string }): void {
+        const supported = info?.supported !== false;
+        const reason = info?.reason || '';
+        const targets: Array<[HTMLInputElement | null, HTMLElement | null, string]> = [
+            [
+                document.getElementById('thinking-toggle') as HTMLInputElement | null,
+                document.querySelector('.thinking-toggle'),
+                'Enable Thinking Mode',
+            ],
+            [
+                document.getElementById('modal-thinking') as HTMLInputElement | null,
+                (document.getElementById('modal-thinking') as HTMLElement | null)?.closest(
+                    '.option-row',
+                ) as HTMLElement | null,
+                '',
+            ],
+        ];
+        for (const [input, label, defaultTitle] of targets) {
+            if (!input) continue;
+            input.disabled = !supported;
+            if (!supported) {
+                // Uncheck as well: a checked-but-disabled box reads as "thinking
+                // is on and locked", which is the opposite of what the user is
+                // being told on the SDK-model case.
+                input.checked = false;
+            }
+            if (label) {
+                label.classList.toggle('is-unavailable', !supported);
+                const title = supported ? defaultTitle : reason;
+                if (title) label.setAttribute('title', title);
+                else label.removeAttribute('title');
+            }
+        }
+        if (!supported) this.thinkingEnabled = false;
     }
 
     updateProviderSelects(): void {

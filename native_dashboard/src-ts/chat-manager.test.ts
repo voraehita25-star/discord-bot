@@ -1159,3 +1159,58 @@ describe('sendMessage — failed send keeps the bubble (INT-04)', () => {
         expect(cm.messages[0].failed).toBe(true);
     });
 });
+
+describe('applyThinkingToggleSupport — dead controls are disabled, not left lying', () => {
+    // The CLI backend (the default) always reasons: `claude -p` exposes only
+    // effort tiers and cannot switch thinking off. The server says so in the
+    // `connected` handshake; leaving the checkbox live would let the user flip
+    // a switch with no effect, which is what made the toggle look broken.
+    function toggle(): HTMLInputElement {
+        return document.getElementById('thinking-toggle') as HTMLInputElement;
+    }
+
+    it('disables and unchecks the toggle when the server reports it unsupported', () => {
+        const cm = mountDomAndChat();
+        toggle().checked = true;
+        cm.thinkingEnabled = true;
+
+        cm.applyThinkingToggleSupport({ supported: false, reason: 'CLI always reasons' });
+
+        expect(toggle().disabled).toBe(true);
+        expect(toggle().checked).toBe(false);
+        expect(cm.thinkingEnabled).toBe(false);
+    });
+
+    it('surfaces the server reason as the tooltip so the user learns why', () => {
+        const cm = mountDomAndChat();
+        cm.applyThinkingToggleSupport({ supported: false, reason: 'CLI always reasons' });
+        const label = document.querySelector('.thinking-toggle');
+        // The fixture has no wrapping label; the checkbox itself must still be
+        // disabled, and when a label exists it carries the reason.
+        if (label) expect(label.getAttribute('title')).toBe('CLI always reasons');
+        expect(toggle().disabled).toBe(true);
+    });
+
+    it('leaves the toggle usable when supported', () => {
+        const cm = mountDomAndChat();
+        cm.applyThinkingToggleSupport({ supported: true, reason: '' });
+        expect(toggle().disabled).toBe(false);
+    });
+
+    it('treats a missing field as supported so an older server still works', () => {
+        const cm = mountDomAndChat();
+        toggle().disabled = true;
+        cm.applyThinkingToggleSupport(undefined);
+        expect(toggle().disabled).toBe(false);
+    });
+
+    it('applies the handshake through handleMessage', () => {
+        const cm = mountDomAndChat();
+        cm.handleMessage({
+            type: 'connected',
+            presets: {},
+            thinking_toggle: { supported: false, reason: 'nope' },
+        });
+        expect(toggle().disabled).toBe(true);
+    });
+});

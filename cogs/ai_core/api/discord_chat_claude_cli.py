@@ -665,11 +665,6 @@ async def call_claude_cli_streaming(
         return "", "", []
 
     system_instruction = config_params.get("system_instruction", "") or ""
-    # Honour the channel's `!thinking` toggle. `claude -p` has no "don't think"
-    # flag, so this selects the reasoning TIER (`--effort xhigh` vs `high`)
-    # rather than switching thinking off — see `_build_claude_argv`. Defaults to
-    # True so channels that never touched the toggle keep the deep tier.
-    thinking_enabled = bool(config_params.get("thinking_enabled", True))
 
     placeholder_msg = None
     last_edit_time = 0.0
@@ -820,13 +815,11 @@ async def call_claude_cli_streaming(
                 session_id=session_id,
                 allow_read_for_images=False,
                 allow_edit_tools=False,
-                # Follows the channel's `!thinking` toggle: xhigh effort when on
-                # (same as a dashboard conversation with thinking enabled), high
-                # when off. Subscription mode redacts the reasoning content (only
-                # start/stop markers reach us — see on_thinking), but the model
-                # still spends real reasoning effort either way; the CLI cannot
-                # turn thinking off, only make it shallower.
-                enable_thinking=thinking_enabled,
+                # Reasoning depth is pinned by `_CLI_EFFORT` (CLAUDE_EFFORT,
+                # default xhigh) — the CLI has no thinking switch, so there is
+                # nothing per-turn to pass here. Subscription mode redacts the
+                # reasoning content (only start/stop markers reach us — see
+                # on_thinking), but the effort is real.
                 # Give the Discord AI web access (WebSearch + WebFetch). There's
                 # no Read tool on this path, so no local-file exfil risk; both
                 # run server-side at Anthropic.
@@ -1082,11 +1075,6 @@ async def call_claude_cli(
         return "", "", []
 
     system_instruction = config_params.get("system_instruction", "") or ""
-    # Honour the channel's `!thinking` toggle. `claude -p` has no "don't think"
-    # flag, so this selects the reasoning TIER (`--effort xhigh` vs `high`)
-    # rather than switching thinking off — see `_build_claude_argv`. Defaults to
-    # True so channels that never touched the toggle keep the deep tier.
-    thinking_enabled = bool(config_params.get("thinking_enabled", True))
 
     accumulated_text = ""
     aborted = False
@@ -1154,13 +1142,11 @@ async def call_claude_cli(
                 session_id=session_id,
                 allow_read_for_images=False,
                 allow_edit_tools=False,
-                # Follows the channel's `!thinking` toggle: xhigh effort when on
-                # (same as a dashboard conversation with thinking enabled), high
-                # when off. Subscription mode redacts the reasoning content (only
-                # start/stop markers reach us — see on_thinking), but the model
-                # still spends real reasoning effort either way; the CLI cannot
-                # turn thinking off, only make it shallower.
-                enable_thinking=thinking_enabled,
+                # Reasoning depth is pinned by `_CLI_EFFORT` (CLAUDE_EFFORT,
+                # default xhigh) — the CLI has no thinking switch, so there is
+                # nothing per-turn to pass here. Subscription mode redacts the
+                # reasoning content (only start/stop markers reach us — see
+                # on_thinking), but the effort is real.
                 # Give the Discord AI web access (WebSearch + WebFetch). There's
                 # no Read tool on this path, so no local-file exfil risk; both
                 # run server-side at Anthropic.

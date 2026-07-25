@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 
 # Import from extracted modules
 from ..data.constants import DASHBOARD_HISTORY_MESSAGES
+from ..data.model_caps import thinking_can_be_disabled
 from .dashboard_chat import (
     handle_ai_edit_message as _handle_ai_edit_message,
     handle_chat_message as _handle_chat_message,
@@ -58,6 +59,7 @@ from .dashboard_config import (
     API_FAILOVER_AVAILABLE,
     AVAILABLE_PROVIDERS,
     CLAUDE_API_KEY,
+    CLAUDE_MODEL,
     DASHBOARD_ROLE_PRESETS,
     DB_AVAILABLE,
     DEFAULT_AI_PROVIDER,
@@ -112,6 +114,41 @@ from .dashboard_handlers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _thinking_toggle_support() -> dict[str, Any]:
+    """Whether the chat UI's Thinking toggle controls anything on this server.
+
+    Two independent ways it can be dead, both reported the same way so the
+    client only has to check ``supported``:
+
+    * ``CLAUDE_BACKEND=cli`` (the default) — ``claude -p`` exposes reasoning
+      depth only through ``--effort`` and cannot switch thinking off, so the
+      model reasons on every turn no matter what the toggle says.
+    * The configured model refuses to stop thinking at any effort
+      (Fable/Mythos return a 400 for an explicit disable).
+
+    ``reason`` is UI copy — the dashboard shows it as the disabled control's
+    tooltip, so it explains the limitation rather than naming an internal flag.
+    """
+    if _CLAUDE_BACKEND == "cli":
+        return {
+            "supported": False,
+            "reason": (
+                "The Claude Code CLI backend always reasons — it exposes only "
+                "effort tiers, with no way to turn thinking off. Set "
+                "CLAUDE_BACKEND=api to control this per conversation."
+            ),
+        }
+    if not thinking_can_be_disabled(CLAUDE_MODEL):
+        return {
+            "supported": False,
+            "reason": (
+                f"{CLAUDE_MODEL} thinks on every request and cannot be told to "
+                "stop, so this toggle has no effect on it."
+            ),
+        }
+    return {"supported": True, "reason": ""}
 
 
 class _ScopedErrorWs:
@@ -935,6 +972,11 @@ class DashboardWebSocketServer:
                 },
                 "available_providers": AVAILABLE_PROVIDERS,
                 "default_provider": DEFAULT_AI_PROVIDER,
+                # Whether the chat UI's Thinking toggle actually controls
+                # anything, so the client can disable a dead control instead of
+                # letting the user flip a switch with no effect. Safe pre-auth:
+                # it names a capability, not an endpoint, key, or usage figure.
+                "thinking_toggle": _thinking_toggle_support(),
             }
             # ``api_failover.get_status()`` exposes endpoint URLs, total
             # request counts, and the last error message — none of which

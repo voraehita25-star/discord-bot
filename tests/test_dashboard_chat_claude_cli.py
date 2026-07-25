@@ -590,5 +590,8 @@ class TestHandlerPrewarmThinking:
 
         prewarm_mock.assert_called_once()
         warm_argv = prewarm_mock.call_args[0][1]
-        assert "--effort" in warm_argv and "xhigh" in warm_argv
+        # Effort follows CLAUDE_EFFORT (``_CLI_EFFORT``) rather than a
+        # hardcoded tier — asserting the literal made this test depend on the
+        # developer's .env once the CLI stopped pinning xhigh itself.
+        assert "--effort" in warm_argv and cli_mod._CLI_EFFORT in warm_argv
         assert "--resume" in warm_argv and "sess-think" in warm_argv

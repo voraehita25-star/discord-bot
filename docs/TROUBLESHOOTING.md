@@ -216,23 +216,34 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 | `ANTHROPIC_API_ENDPOINT` | `direct` | Failover endpoint selector (a sentinel, not a URL): valid values are exactly `direct` (default) or `proxy`; any other value (including a URL) is invalid and silently falls back to `direct`. The failover layer flips between direct and `ANTHROPIC_PROXY_BASE_URL` automatically based on error rate. |
 | `DEFAULT_AI_PROVIDER` | `claude` | Dashboard default provider (`gemini`/`claude`); unset resolves to `claude` |
 
-#### What the thinking toggle actually does
+#### Where the thinking toggle applies
 
-`!thinking` in Discord and the dashboard's thinking switch mean different things
-per backend, because the two backends expose different controls:
+The toggle only exists on the `api` backend. `claude -p` exposes reasoning depth
+through `--effort` alone and has no way to switch thinking off, so on the `cli`
+backend there is nothing for it to control:
 
 | Backend | Toggle ON | Toggle OFF |
 | ------- | --------- | ---------- |
 | `api` (Anthropic SDK) | `thinking: {"type": "adaptive"}` at `CLAUDE_EFFORT` | Thinking genuinely off — an explicit `thinking: {"type": "disabled"}`, with effort clamped to `high` (Opus 5 returns a 400 for disabled thinking at `xhigh`/`max`) |
-| `cli` (`claude -p`, **default**) | `--effort xhigh` | `--effort high` — **thinking is not switched off.** Claude Code exposes reasoning depth only through `--effort`, so "off" buys a shallower, faster tier |
+| `cli` (`claude -p`, **default**) | *n/a — the toggle is disabled* | *n/a* — every turn reasons at `CLAUDE_EFFORT` (default `xhigh`) |
 
-The dashboard badge names the tier on the CLI backend (`🧠 Thinking (xhigh)` vs
-`🧠 Reasoning (high)`) so the running state is never implied by an absent label,
-and `!thinking off` replies with the matching caveat.
+Rather than leave a control that silently does nothing, the CLI backend turns it
+off end to end:
 
-One model-level exception: Fable/Mythos reject a disable at any effort and think
-unconditionally. On those, the toggle is stored but cannot apply — the SDK badge
-shows `🧠 Thinking (always on for this model)` and `!thinking off` says so.
+- The WS `connected` handshake carries `thinking_toggle: {supported, reason}`,
+  and the dashboard greys out both Thinking checkboxes with `reason` as the
+  tooltip.
+- `!thinking` in Discord refuses with an explanation instead of storing a
+  preference that never applies.
+- The chat badge always reads `🧠 Thinking (<effort>)`, naming the tier rather
+  than implying an on/off state the user doesn't control.
+
+To get a real switch, set `CLAUDE_BACKEND=api` and restart.
+
+One model-level exception on the `api` backend: Fable/Mythos reject a disable at
+any effort and think unconditionally. The handshake reports the toggle
+unsupported for them too, the SDK badge shows
+`🧠 Thinking (always on for this model)`, and `!thinking off` says so.
 
 ### Discord IDs
 

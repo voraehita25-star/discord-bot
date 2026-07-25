@@ -8,10 +8,10 @@ A **polyglot monorepo** for a production Discord AI bot (v3.5.0). One repo, four
 
 | Area | Path | Stack | Tests |
 | --- | --- | --- | --- |
-| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-5`), Gemini, FAISS RAG, yt-dlp/spotipy | ~5,352 pytest |
+| Bot core | `bot.py`, `cogs/`, `utils/`, `config.py` | Python 3.14+ — discord.py, Anthropic Claude (`claude-opus-5`), Gemini, FAISS RAG, yt-dlp/spotipy | ~5,354 pytest |
 | Rust extensions | `rust_extensions/` | Rust 2021 + PyO3 — `rag_engine` (SIMD vector search), `media_processor`; compiled to `.pyd` | `cargo test` |
 | Go services | `go_services/` | Go 1.26 — `url_fetcher` (:8081), `health_api` (:8082, Prometheus) | `go test` |
-| Native dashboard | `native_dashboard/` | Tauri 2 + TypeScript 6 — English UI, Korean product name/branding | 491 vitest + 108 Playwright |
+| Native dashboard | `native_dashboard/` | Tauri 2 + TypeScript 6 — English UI, Korean product name/branding | 496 vitest + 108 Playwright |
 
 The AI core (`cogs/ai_core/`) is deeply nested: `api/ core/ response/ commands/ tools/ memory/ processing/ cache/ data/`.
 

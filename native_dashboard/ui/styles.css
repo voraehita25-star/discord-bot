@@ -2069,6 +2069,24 @@ html[data-theme="light"] .log-line.info {
     accent-color: var(--accent-purple);
 }
 
+/* Backend/model can't honour the toggle (e.g. the CLI backend always reasons).
+   Dimmed and non-interactive, but still readable and still hoverable so the
+   title attribute explaining WHY can be reached with the pointer. */
+.thinking-toggle.is-unavailable,
+.option-row.is-unavailable {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.thinking-toggle.is-unavailable:hover {
+    background: var(--surface-2);
+}
+
+.thinking-toggle.is-unavailable input,
+.option-row.is-unavailable input {
+    cursor: not-allowed;
+}
+
 .thinking-label {
     color: var(--text-secondary);
     font-size: 14px;

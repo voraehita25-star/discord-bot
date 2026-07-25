@@ -132,27 +132,6 @@ class TestBuildApiConfigThinkingOff:
         result = self._config(monkeypatch, "claude-opus-4-8")
         assert "thinking" not in result
 
-    def test_exposes_the_raw_toggle_for_the_cli_backend(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The CLI path can't read intent back out of the `thinking` payload
-        # (it has effort tiers, not an on/off switch), so the raw flag rides
-        # along. Without it `!thinking off` was silently dropped.
-        from cogs.ai_core.api import api_handler
-
-        monkeypatch.setattr(api_handler, "CLAUDE_MODEL", "claude-opus-5")
-        on = api_handler.build_api_config({"system_instruction": "x", "thinking_enabled": True})
-        off = api_handler.build_api_config({"system_instruction": "x", "thinking_enabled": False})
-        assert on["thinking_enabled"] is True
-        assert off["thinking_enabled"] is False
-
-    def test_thinking_enabled_defaults_to_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from cogs.ai_core.api import api_handler
-
-        monkeypatch.setattr(api_handler, "CLAUDE_MODEL", "claude-opus-5")
-        result = api_handler.build_api_config({"system_instruction": "x"})
-        assert result["thinking_enabled"] is True
-
     def test_rp_mode_still_thinks_adaptively(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from cogs.ai_core.api import api_handler
 
@@ -164,6 +143,39 @@ class TestBuildApiConfigThinkingOff:
             }
         )
         assert result["thinking"] == {"type": "adaptive"}
+
+
+class TestThinkingToggleHandshake:
+    """The dashboard is told up front whether the toggle controls anything.
+
+    Without this the UI showed a live checkbox on the CLI backend that could
+    never take effect — the whole reason the toggle read as broken.
+    """
+
+    def _support(self, monkeypatch: pytest.MonkeyPatch, backend: str, model: str) -> dict:
+        from cogs.ai_core.api import ws_dashboard
+
+        monkeypatch.setattr(ws_dashboard, "_CLAUDE_BACKEND", backend)
+        monkeypatch.setattr(ws_dashboard, "CLAUDE_MODEL", model)
+        return ws_dashboard._thinking_toggle_support()
+
+    def test_cli_backend_reports_unsupported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        result = self._support(monkeypatch, "cli", "claude-opus-5")
+        assert result["supported"] is False
+        assert result["reason"]
+
+    def test_sdk_backend_with_a_disableable_model_is_supported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._support(monkeypatch, "api", "claude-opus-5")
+        assert result["supported"] is True
+
+    def test_sdk_backend_with_always_on_model_reports_unsupported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._support(monkeypatch, "api", "claude-fable-5")
+        assert result["supported"] is False
+        assert "claude-fable-5" in result["reason"]
 
 
 class TestOpus5Pricing:
