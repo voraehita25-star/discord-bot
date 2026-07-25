@@ -245,6 +245,28 @@ test.describe('Theme + CSS sanity', () => {
         });
         expect(found).toBe(true);
     });
+
+    test('streaming text preserves newlines while the reply arrives', async ({ page }) => {
+        // Chunks land as raw text nodes in .streaming-text and are only rendered
+        // as markdown at stream_end. Under the default `white-space: normal`
+        // every newline collapsed to a space, so a live reply read as one
+        // run-on paragraph and then visibly re-flowed into paragraphs/lists the
+        // instant it finished. Asserted on the real cascade (jsdom doesn't
+        // apply the stylesheet) against a node built the same way the app does.
+        const whiteSpace = await page.evaluate(() => {
+            const host = document.createElement('div');
+            host.className = 'message-content';
+            const span = document.createElement('span');
+            span.className = 'streaming-text';
+            span.appendChild(document.createTextNode('line one\nline two'));
+            host.appendChild(span);
+            document.body.appendChild(host);
+            const value = getComputedStyle(span).whiteSpace;
+            host.remove();
+            return value;
+        });
+        expect(whiteSpace).toBe('pre-wrap');
+    });
 });
 
 test.describe('Send race guard (C3 fix)', () => {

@@ -2543,6 +2543,17 @@ margin-bottom: 8px;
     word-break: break-word;
 }
 
+/* While a reply streams, chunks land as raw text nodes in this span — markdown
+   is only rendered once at stream_end (appending text nodes keeps the growing
+   answer O(n) instead of re-parsing the whole string every chunk). With the
+   default `white-space: normal` every newline collapsed to a space, so the live
+   text arrived as one run-on paragraph and then visibly re-flowed into
+   paragraphs, lists, and code blocks the moment it finished. pre-wrap keeps the
+   line structure during the stream so the layout no longer jumps. */
+.streaming-text {
+    white-space: pre-wrap;
+}
+
 .chat-message.user .message-content {
     background: linear-gradient(135deg, rgba(34, 211, 238, 0.15), rgba(74, 222, 128, 0.1));
     border-color: rgba(34, 211, 238, 0.3);
