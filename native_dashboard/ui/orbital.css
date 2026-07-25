@@ -2520,3 +2520,918 @@ a:focus:not(:focus-visible), button:focus:not(:focus-visible),
     flex: 0 0 auto;
     color: var(--accent-red, #ff5d78);
 }
+
+/* ============================================================================
+   v6 "LANTERN" — light ONE thing per page.
+   ----------------------------------------------------------------------------
+   v4 gave the deck its Sakura Midnight identity; v5 fixed how it used its
+   space. What both left standing was the habit of decorating EVERY surface the
+   same way: a sakura-tinted border, a corner-tick bracket, a hover lift, and a
+   gradient poured into the headline, the metric numerals AND the wordmark.
+   Uniform emphasis is no emphasis — the eye lands nowhere and the accent stops
+   reading as an accent. A full-page audit of all six views found the same five
+   causes behind every complaint:
+
+     · FRAME — 14 bracketed boxes on one screen, several nested inside each
+               other (chart cards inside the charts panel, the icon chip inside
+               an empty state). Corner ticks are now a badge worn by exactly two
+               elements in the whole app: the Bot Control card and the log
+               terminal — the two live instruments. Everything else takes a
+               plain hairline, and nested panels lose their frame entirely.
+     · INK   — three gradient-filled texts (h1, .stat-value, .logo-text). Text
+               painted through background-clip is invisible to contrast tooling
+               (axe silently skips it) and cost the numerals real legibility.
+               All three go solid.
+     · EDGE  — every border carried a pink tint, so "pink" meant nothing. Panel
+               borders move to a neutral plum hairline (--edge) and sakura is
+               reserved for STATE: active nav, primary action, focus, live
+               indicators, the chart line, the one hero metric.
+     · GROUP — five floating metric cards become one divided instrument bar;
+               the two chart cards become two cells of one panel. Same DOM,
+               1px gaps doing the dividing, so it survives any wrap.
+     · BIND  — settings put a caption at the far left and its control at the far
+               right of a 940px card. Rows go two-column and cap their measure.
+
+   Same contract rule as v4/v5: no id, class, data-* or custom property is
+   renamed or deleted — this section changes VALUES and LAYOUT only.
+   ============================================================================ */
+
+/* ---- TOKENS — the neutral edge + the opaque tile fill ---------------------- */
+:root {
+    /* Frame ink. Deliberately near-neutral (a whisper of blossom, no hue you
+       can name) so the sakura tokens above are the only pink on the page. */
+    --edge: rgba(238, 216, 240, 0.085);
+    --edge-strong: rgba(238, 216, 240, 0.17);
+    /* Opaque cell fill for the divided bars. MUST be opaque: the divider is the
+       container's own background showing through a 1px gap, so a translucent
+       cell would tint every tile with the hairline colour. */
+    --tile: #1a1327;
+    --tile-hi: #221a30;
+}
+html[data-theme="light"],
+:root[data-theme="light"] {
+    --edge: rgba(74, 30, 58, 0.14);
+    --edge-strong: rgba(74, 30, 58, 0.24);
+    --tile: #fffdfe;
+    --tile-hi: #fdf5f8;
+}
+
+/* ---- MEASURE — stop the deck stretching to 2560px ------------------------- */
+.content > .page {
+    width: 100%;
+    max-width: 1520px;
+    margin-inline: auto;
+}
+
+/* ============================================================================
+   PAGE HEADER — two devices, not four.
+   Was: a mono eyebrow, a 38px gradient-filled uppercase h1, a glowing 64px
+   underline AND a corner bracket on the wrapper. v6 keeps the eyebrow and adds
+   a single lantern post down the left edge — the same 2px brand gradient the
+   active nav item uses, so the page title and the nav agree on what "you are
+   here" looks like.
+   ============================================================================ */
+.page-title-bar {
+    padding: 2px 0 2px var(--space-4);
+    margin-bottom: var(--space-5);
+    gap: 6px;
+    /* the post: one 2px column of brand gradient, full height of the block */
+    background-image: var(--brand-grad);
+    background-repeat: no-repeat;
+    background-size: 2px 100%;
+    background-position: 0 0;
+    border-radius: 1px;
+}
+.page-eyebrow {
+    letter-spacing: 0.22em;
+    color: var(--text-muted);
+}
+.page-title-bar h1,
+.page-header h1,
+.page > h1:first-child {
+    /* solid ink — the gradient fill is gone, and with it the -webkit-text-fill
+       trick that hid these headings from every contrast checker. */
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    color: var(--text-primary);
+    text-shadow: none;
+    font-size: var(--step-3);
+    font-weight: 700;
+    letter-spacing: 0.045em;
+    padding-bottom: 0;
+    margin: 0;
+}
+/* the glowing underline retires — the post carries the accent now */
+.page-title-bar h1::after,
+.page-header h1::after,
+.page > h1:first-child::after { content: none; }
+
+/* ============================================================================
+   FRAME DISCIPLINE — the corner ticks become a uniform, not a decoration.
+   Kept: .control-card (the bot you are controlling) and .log-container (the
+   stream you are watching). Dropped everywhere else. `background` shorthand,
+   not background-image, so the tick sizes/positions/repeats reset with it.
+   ============================================================================ */
+.chart-card,
+.settings-card,
+.api-failover-card,
+.data-section,
+.charts-section,
+.quick-actions {
+    background: var(--card-bg);
+    border: 1px solid var(--edge);
+    border-top-color: var(--edge);
+    box-shadow: var(--shadow-sm);
+}
+/* …and with the brackets gone, the hover lift has nothing left to say. A
+   dashboard is read, not browsed; panels that bob under the pointer are noise. */
+.chart-card:hover,
+.data-section:hover,
+.settings-card:hover,
+.charts-section:hover,
+.quick-actions:hover,
+.api-failover-card:hover {
+    transform: none;
+    box-shadow: var(--shadow-sm);
+    border-color: var(--edge-strong);
+}
+/* The two instruments keep their brackets, and only they get a real elevation. */
+.control-card {
+    --hud-tick: var(--cyan-400);
+    border: 1px solid var(--edge-strong);
+    box-shadow: var(--shadow-md), var(--glass-hi);
+}
+.control-card:hover {
+    transform: none;
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-md), var(--glass-hi);
+}
+
+/* ============================================================================
+   STATUS — the Bot Control card is the lantern.
+   The one panel on the page that is an ACTION surface gets the room, the
+   brackets and the only real shadow. Its status line stops being a sentence
+   ("Status: Offline") and becomes a state pill you can read at a glance;
+   app.ts toggles .is-online on it.
+   ============================================================================ */
+.control-card {
+    padding: calc(var(--space-5) * var(--density)) calc(var(--space-6) * var(--density));
+    border-radius: var(--radius-lg);
+    gap: var(--space-5);
+    flex-wrap: wrap;
+}
+.control-info { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.control-card h2 { margin: 0; font-size: var(--step-2); letter-spacing: 0.01em; }
+#bot-status-text {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    align-self: flex-start;
+    padding: 4px 12px 4px 10px;
+    border-radius: var(--r-pill);
+    border: 1px solid var(--edge-strong);
+    background: var(--surface-2);
+    color: var(--text-secondary);
+    font-size: var(--step--1);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+#bot-status-text::before {
+    content: '';
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+#bot-status-text.is-online {
+    border-color: color-mix(in srgb, var(--accent-green) 42%, transparent);
+    background: color-mix(in srgb, var(--accent-green) 10%, transparent);
+    color: var(--accent-green);
+}
+#bot-status-text.is-online::before {
+    background: var(--accent-green);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-green) 24%, transparent);
+}
+html[data-theme="light"] #bot-status-text.is-online { color: var(--accent-green); }
+.control-buttons { gap: var(--space-2); flex-wrap: wrap; }
+
+/* ============================================================================
+   INSTRUMENT BAR — five floating cards become one panel with hairline cells.
+   The dividers are the container's background showing through a 1px grid gap,
+   so they land correctly at every breakpoint and every wrap without a single
+   :nth-child rule. The tiles drop their icon chips: a bordered 40px box behind
+   each glyph was five more frames on a page that already had too many.
+   ============================================================================ */
+.stats-grid {
+    gap: 1px;
+    background: var(--edge);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+}
+.stat-card {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+        "icon label"
+        "value value";
+    align-content: center;
+    column-gap: 8px;
+    row-gap: 5px;
+    padding: calc(var(--space-4) * var(--density)) calc(var(--space-4) * var(--density));
+    background: var(--tile);
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+}
+.stat-card:hover {
+    transform: none;
+    background: var(--tile-hi);
+    box-shadow: none;
+}
+.stat-card .stat-icon {
+    grid-area: icon;
+    width: 17px; height: 17px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+}
+.stat-card .stat-icon .ic { width: 17px; height: 17px; }
+.stat-card .stat-label { align-self: center; color: var(--text-tertiary); }
+.stat-card .stat-value {
+    grid-area: value;
+    /* solid ink, not a pink-to-pink gradient: these are the numbers the page
+       exists to report. */
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    color: var(--text-primary);
+    /* Sized to the widest real reading, not the shortest. A five-across bar at
+       the 1280px design width gives each tile ~155px of ink, and "17d 04:23:51"
+       / "PRODUCTION" both overran a fixed --step-3 and ellipsised — a metric
+       tile that hides its metric. The vw term tracks the column as the window
+       grows; the clamp keeps it legible at the 800px floor. */
+    font-size: clamp(15px, 1.3vw, 22px);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+}
+/* The hero tile earns its emphasis from ONE lit edge, not a wash + a rail + an
+   oversized numeral + a thicker bloom bar. */
+.stat-card--hero {
+    background: var(--tile-hi);
+    box-shadow: none;
+}
+.stat-card--hero .stat-icon .ic { color: var(--accent-sakura); }
+.stat-card--hero .stat-value { font-size: clamp(17px, 1.55vw, 26px); }
+.stat-card--hero .stat-label { color: var(--text-secondary); }
+.stat-card--hero::after { transform: scaleX(1); height: 2px; opacity: 1; }
+
+/* ============================================================================
+   CHARTS — one panel, two cells.
+   Was: a bracketed panel containing two more bracketed panels, each with its
+   own border, radius, shadow and hover lift. Now the section is a single card
+   with a titled header band and a hairline between the plots.
+   ============================================================================ */
+.charts-section {
+    padding: 0;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+}
+.charts-section > h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 12px calc(var(--space-5) * var(--density));
+    border-bottom: 1px solid var(--edge);
+    background: var(--surface-2);
+}
+.charts-grid {
+    gap: 1px;
+    background: var(--edge);
+}
+.chart-card {
+    background: var(--tile);
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    padding: calc(var(--space-4) * var(--density)) calc(var(--space-5) * var(--density)) var(--space-3);
+}
+.chart-card:hover { background: var(--tile); }
+.chart-card h3 { display: flex; align-items: baseline; gap: 10px; margin-bottom: var(--space-2); }
+.chart-readout { margin-left: 0; color: var(--text-secondary); }
+
+/* Quick Actions is two buttons in a bracketed box the size of a chart panel —
+   let it be a strip. */
+.quick-actions { padding: calc(var(--space-4) * var(--density)) calc(var(--space-5) * var(--density)); }
+.quick-actions > h2 { margin-bottom: var(--space-3); }
+
+/* ============================================================================
+   SIDEBAR — a rail, not a stack of boxes.
+   The logo lost its bordered pill (it was competing with the active nav item),
+   the SYSTEM footer lost its eight corner ticks and its bracketed two-part
+   frame, and the status badge moves ABOVE the theme toggle: state first,
+   preference second.
+   ============================================================================ */
+.sidebar .logo {
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--edge);
+    border-radius: 0;
+    padding: var(--space-2) var(--space-2) var(--space-4);
+    margin-bottom: var(--space-4);
+    gap: 10px;
+}
+.sidebar .logo-icon .ic { width: 22px; height: 22px; }
+.sidebar .logo-icon {
+    width: 34px; height: 34px;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    background: var(--brand-soft);
+    box-shadow: inset 0 0 0 1px var(--edge-strong);
+    filter: none;
+}
+.sidebar .logo-text {
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    color: var(--text-primary);
+    font-size: var(--step-1);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+/* Nav: quieter at rest so the active item is unmistakable. */
+.nav-item { color: var(--text-secondary); }
+.nav-item .shortcut {
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-muted);
+    opacity: 0.75;
+}
+.nav-item:hover { background: var(--cyan-50); }
+.nav-item.active {
+    background: var(--brand-soft);
+    color: var(--text-primary);
+    /* the ring goes: the lantern rail + the wash already say "you are here",
+       and a pink outline on top made the rail unreadable. */
+    border-color: transparent;
+    box-shadow: none;
+}
+.nav-item.active .shortcut { color: var(--text-tertiary); opacity: 1; }
+html[data-theme="light"] .nav-item { color: var(--text-secondary); }
+html[data-theme="light"] .nav-item.active { color: var(--text-primary); border-color: transparent; }
+html[data-theme="light"] .nav-item .shortcut {
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-muted);
+}
+html[data-theme="light"] .nav-item.active .shortcut { color: var(--text-tertiary); }
+html[data-theme="light"] .sidebar .logo { background: none; border: 0; border-bottom: 1px solid var(--edge); }
+
+/* the sprig becomes texture: bigger, fainter, bleeding off the rail's edge */
+.nav-items::after {
+    height: 190px;
+    opacity: 0.09;
+    -webkit-mask-size: 178px auto;
+    mask-size: 178px auto;
+    -webkit-mask-position: 60% bottom;
+    mask-position: 60% bottom;
+}
+html[data-theme="light"] .nav-items::after { opacity: 0.10; }
+
+/* Footer — status pill on top, theme toggle as a quiet ghost row under it. */
+.sidebar .status-badge {
+    order: 0;
+    margin-top: var(--space-4);
+    padding: 10px var(--space-3);
+    border: 1px solid var(--edge-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text-secondary);
+}
+.sidebar .status-badge.online {
+    border-color: color-mix(in srgb, var(--accent-green) 40%, transparent);
+    background: color-mix(in srgb, var(--accent-green) 9%, transparent);
+    color: var(--accent-green);
+}
+html[data-theme="light"] .sidebar .status-badge.online {
+    border-color: color-mix(in srgb, var(--accent-green) 45%, transparent);
+    background: color-mix(in srgb, var(--accent-green) 9%, transparent);
+    color: var(--accent-green);
+}
+.sidebar .theme-toggle {
+    order: 1;
+    margin-top: var(--space-2);
+    padding: 9px var(--space-3);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--text-tertiary);
+    font-size: var(--step--1);
+}
+.sidebar .theme-toggle:hover {
+    background: var(--cyan-50);
+    border-color: var(--edge);
+    color: var(--text-primary);
+}
+/* the "SYSTEM" eyebrow tag retires with the frame it labelled */
+.sidebar .theme-toggle::after { content: none; }
+
+/* ============================================================================
+   EMPTY STATES — this app is empty most of the time, so the empty state is a
+   first-class view, not a fallback. One shape: a soft bloom behind the glyph
+   (the bracketed square was the corner-tick motif leaking into content), a
+   tighter block, and a measure that stops the copy sprawling.
+   ============================================================================ */
+.empty-state { gap: var(--space-2); padding-block: calc(var(--space-6) * var(--density)); }
+.empty-state .ic,
+.chat-files-empty-icon .ic {
+    width: 30px; height: 30px;
+    padding: 17px;
+    margin-bottom: var(--space-2);
+    border-radius: 50%;
+    background:
+        radial-gradient(circle at 50% 45%, var(--cyan-100), transparent 70%),
+        var(--cyan-50);
+    background-image:
+        radial-gradient(circle at 50% 45%, var(--cyan-100), transparent 70%);
+    background-repeat: no-repeat;
+    background-size: auto;
+    background-position: center;
+    box-shadow: inset 0 0 0 1px var(--edge);
+    color: var(--accent-cyan);
+}
+.empty-state h3, .empty-state h2 { font-size: var(--step-1); }
+.empty-state p { max-width: 38ch; color: var(--text-muted); }
+/* The logs empty state is injected INTO #log-content, a <pre>. It inherited
+   pre-wrap + break-word and hyphenated itself mid-word ("once the bot st /
+   arts running"). Prose inside the terminal wraps like prose. */
+.log-container .empty-state,
+.log-container .empty-state * {
+    white-space: normal;
+    word-break: normal;
+    overflow-wrap: break-word;
+}
+.no-data,
+.no-conversations {
+    padding: var(--space-4) var(--space-3);
+    border-color: var(--edge);
+    background: transparent;
+}
+
+/* ============================================================================
+   DATA LISTS — the row brackets go too. A list of 20 channels was a list of 20
+   bracketed frames; at that count the motif is texture, not signal.
+   ============================================================================ */
+.data-item {
+    background: var(--surface-2);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-sm);
+}
+.data-item:hover { border-color: var(--edge-strong); background: var(--surface-3); }
+/* The row's count was bold sakura on every row of a twelve-row list, which is
+   the "everything is accented" habit in miniature. It is data: set it like the
+   telemetry numerals and let the row's own weight rank it. */
+.data-item-value {
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum" 1, "zero" 1;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+.data-item-id { font-family: var(--font-mono); color: var(--text-primary); }
+.data-section > h2,
+.data-section-header { margin-bottom: var(--space-3); }
+.danger-zone { border-radius: var(--radius-lg); }
+
+/* Log lines wrap — a hanging indent keeps the timestamp column readable so a
+   400-line stream still scans as a list instead of a wall. */
+.log-line {
+    padding-left: 26px;
+    text-indent: -12px;
+}
+
+/* ============================================================================
+   LOG VIEWER — a plum-black terminal, not a green one.
+   The phosphor bed was mixed from green-black (#070d0b), which read as a
+   different application pasted into the window. The GREEN is the text's job
+   (the severity tokens); the bed joins the night. The corner brackets move
+   here — this is the page's live instrument.
+   ============================================================================ */
+.log-container {
+    border: 1px solid var(--edge-strong);
+    border-radius: var(--radius-lg);
+    background:
+        radial-gradient(140% 120% at 50% 50%, transparent 62%, rgba(6, 2, 10, 0.5) 100%),
+        repeating-linear-gradient(to bottom, transparent 0, transparent 2px, rgba(0, 0, 0, 0.16) 3px),
+        linear-gradient(180deg, #100b18, #0a0611);
+    box-shadow: var(--shadow-md);
+}
+html[data-theme="light"] .log-container {
+    background: linear-gradient(180deg, #fbf7f1, #f5efe6);
+    border-color: var(--edge-strong);
+}
+.log-container::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    --hud-tick: var(--cyan-400);
+    background-image:
+        linear-gradient(var(--hud-tick), var(--hud-tick)), linear-gradient(var(--hud-tick), var(--hud-tick)),
+        linear-gradient(var(--hud-tick), var(--hud-tick)), linear-gradient(var(--hud-tick), var(--hud-tick)),
+        linear-gradient(var(--hud-tick), var(--hud-tick)), linear-gradient(var(--hud-tick), var(--hud-tick)),
+        linear-gradient(var(--hud-tick), var(--hud-tick)), linear-gradient(var(--hud-tick), var(--hud-tick));
+    background-repeat: no-repeat;
+    background-size:
+        14px 2px, 2px 14px, 14px 2px, 2px 14px,
+        14px 2px, 2px 14px, 14px 2px, 2px 14px;
+    background-position:
+        8px 8px, 8px 8px, calc(100% - 8px) 8px, calc(100% - 8px) 8px,
+        8px calc(100% - 8px), 8px calc(100% - 8px), calc(100% - 8px) calc(100% - 8px), calc(100% - 8px) calc(100% - 8px);
+}
+/* The log page's header is a toolbar, not a sticky shelf: the log body owns its
+   own scroll, so the header never moves and the opaque band it painted was a
+   seam across the page for nothing. */
+#page-logs .page-header {
+    background: none;
+    border-bottom: 0;
+    box-shadow: none;
+    align-items: flex-end;
+    gap: var(--space-4);
+    margin-bottom: var(--space-4);
+    padding-bottom: 0;
+}
+#page-logs .page-title-bar { margin-bottom: 0; }
+#page-logs .log-controls { margin-left: auto; }
+.live-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    vertical-align: 0.14em;
+    padding: 3px 9px;
+    border-radius: var(--r-pill);
+    border: 1px solid color-mix(in srgb, var(--accent-red) 38%, transparent);
+    background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+    color: var(--accent-red);
+}
+
+/* ============================================================================
+   INPUTS — one select, one look. The native chevron is OS chrome and looked
+   pasted in next to hand-built controls; swap it for the icon set's own.
+   ============================================================================ */
+select,
+.setting-select,
+#log-filter,
+.select-provider-inline {
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: var(--surface-2);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23c9b7cd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    background-size: 13px;
+    padding-right: 30px;
+}
+/* Restate the whole background triplet, not just the image: a light-theme rule
+   further up uses the `background` SHORTHAND on these controls, which resets
+   background-size to `auto` — and an SVG data-URI with no intrinsic size then
+   paints the chevron across the entire control. */
+html[data-theme="light"] select,
+html[data-theme="light"] .setting-select,
+html[data-theme="light"] #log-filter,
+html[data-theme="light"] .select-provider-inline {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234d3550' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    background-size: 13px;
+}
+
+/* Toggle knob (dawn): the track went light but the knob kept --text-secondary,
+   so "off" rendered as a dark plum blob on pale paper and read as "on". */
+html[data-theme="light"] .toggle-slider {
+    background: #e6d8de;
+    border-color: var(--edge-strong);
+}
+html[data-theme="light"] .toggle-slider::before {
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(75, 30, 55, 0.28);
+}
+
+/* ============================================================================
+   SETTINGS — bind the caption to its control.
+   v5 lit the whole row on hover, which helped, but a label at x=320 and its
+   input at x=1020 are still two unrelated objects. Two columns, capped measure,
+   controls left-aligned in their column so every input, toggle and button on
+   the page shares one edge.
+   ============================================================================ */
+.setting-row {
+    display: grid;
+    grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
+    align-items: center;
+    column-gap: var(--space-5);
+    padding: 12px var(--space-3);
+    border-bottom-color: var(--edge);
+}
+.setting-row > label:first-child,
+.setting-row > .setting-label { justify-self: start; }
+.setting-row .setting-control,
+.setting-row > .toggle-switch { justify-self: start; }
+.setting-row .setting-control { width: 100%; max-width: 420px; }
+.setting-row .avatar-control { width: auto; }
+/* a row holding only an action (Save Profile) spans both columns */
+.setting-row > .btn:only-child { grid-column: 1 / -1; justify-self: start; }
+.setting-hint-inline {
+    display: block;
+    margin-top: 2px;
+    font-family: var(--font-ui);
+    font-size: var(--step--1);
+    font-weight: 400;
+    color: var(--text-muted);
+}
+.settings-card > h2 {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding-bottom: var(--space-3);
+    border-bottom: 1px solid var(--edge);
+}
+.settings-hint { max-width: 62ch; color: var(--text-tertiary); }
+
+/* ============================================================================
+   CHAT — one control language.
+   The header mixed a raw OS <select>, a bare-text toggle and five icon buttons
+   at three different visual weights; the composer mixed three text chips with a
+   boxed icon button. Everything below is the same 30px pill.
+   ============================================================================ */
+.chat-header {
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--edge);
+}
+.chat-header-actions { gap: 6px; align-items: center; }
+.select-provider-inline {
+    height: 30px;
+    padding: 0 28px 0 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--edge-strong);
+    font-size: var(--step--1);
+    color: var(--text-secondary);
+}
+.thinking-toggle .thinking-label,
+.chat-input-options .checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 11px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--edge);
+    background: var(--surface-2);
+    color: var(--text-tertiary);
+    font-size: var(--step--1);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.thinking-toggle .thinking-label:hover,
+.chat-input-options .checkbox-label:hover {
+    border-color: var(--edge-strong);
+    color: var(--text-primary);
+}
+/* The Thinking toggle shipped its raw <input type=checkbox> visible next to the
+   styled label — an OS checkbox parked in the middle of a hand-built toolbar.
+   (The composer's own checkboxes were already clipped to 0px.) */
+.thinking-toggle input[type="checkbox"] {
+    position: absolute;
+    width: 1px; height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+/* checked = the accent means "this run is different" */
+.thinking-toggle input:checked + .thinking-label,
+.chat-input-options .checkbox-label:has(input:checked) {
+    border-color: color-mix(in srgb, var(--accent-cyan) 46%, transparent);
+    background: var(--cyan-100);
+    color: var(--text-primary);
+}
+.chat-input-options .checkbox-label:has(input:checked) .ic { color: var(--accent-cyan); }
+.chat-header-actions .btn-icon,
+.chat-input-options .btn-attach {
+    width: 30px; height: 30px;
+    min-width: 30px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--edge);
+    background: var(--surface-2);
+    color: var(--text-tertiary);
+}
+.chat-header-actions .btn-icon:hover:not(:disabled),
+.chat-input-options .btn-attach:hover {
+    border-color: var(--edge-strong);
+    background: var(--surface-3);
+    color: var(--text-primary);
+}
+/* Ghost-danger, finally applied. orbital.css has declared since v4 that icon and
+   small destructive buttons "read as a tinted outline", but the light theme's
+   own `.btn-danger { background: var(--danger-grad) }` outranked that rule — so
+   Delete Conversation and Remove Avatar shipped as solid red blocks with a
+   dark-red glyph invisible inside them. Restate at a specificity the theme
+   rule cannot beat, in both themes. */
+.btn-icon.btn-danger,
+.btn-small.btn-danger,
+html[data-theme="light"] .btn-icon.btn-danger,
+html[data-theme="light"] .btn-small.btn-danger {
+    background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-red) 36%, transparent);
+    color: var(--accent-red);
+    box-shadow: none;
+}
+.btn-icon.btn-danger:hover:not(:disabled),
+.btn-small.btn-danger:hover:not(:disabled),
+html[data-theme="light"] .btn-icon.btn-danger:hover:not(:disabled),
+html[data-theme="light"] .btn-small.btn-danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent-red) 20%, transparent);
+    border-color: color-mix(in srgb, var(--accent-red) 55%, transparent);
+    color: var(--accent-red);
+}
+/* a hair of air between "what the model is" and "what to do with the chat" */
+#btn-chat-files { margin-left: var(--space-2); }
+#btn-chat-files::before {
+    content: '';
+    position: absolute;
+    left: calc(var(--space-2) * -1 + 3px);
+    top: 5px; bottom: 5px;
+    width: 1px;
+    background: var(--edge-strong);
+}
+#btn-chat-files { position: relative; }
+
+.chat-connection-status {
+    padding: 3px 10px;
+    border-radius: var(--r-pill);
+    font-family: var(--font-mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.12em;
+}
+.chat-header-text h3 { font-size: var(--step-1); margin: 0; }
+.chat-role-name { color: var(--text-muted); font-size: var(--step--1); }
+
+/* Composer — the shell keeps v5's single-object framing; the chips inside it
+   now line up on one 30px baseline with the attach button and the send key. */
+.chat-input-options {
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-3) var(--space-2);
+    background: var(--surface-2);
+    border-color: var(--edge);
+}
+.chat-input-container { background: var(--surface-2); border-color: var(--edge); }
+.chat-input-hint { color: var(--text-muted); }
+.chat-input-hint kbd { background: var(--surface-3); border: 1px solid var(--edge); }
+
+/* Code blocks were painted with `rgba(0,0,0,.3)` / `rgba(0,0,0,.5)` — a black
+   wash, which on dawn paper is a dark-grey slab holding near-black text. Route
+   both through theme tokens so a snippet is readable in either theme. */
+:root { --code-bg: rgba(0, 0, 0, 0.32); --code-head: rgba(0, 0, 0, 0.5); }
+html[data-theme="light"],
+:root[data-theme="light"] { --code-bg: #f5eff2; --code-head: #ece0e6; }
+.message-content pre { background: var(--code-bg); }
+.message-content .code-block-wrapper { border-color: var(--edge-strong); }
+.message-content .code-block-header {
+    background: var(--code-head);
+    border-bottom: 1px solid var(--edge);
+    color: var(--text-tertiary);
+}
+.message-content pre code { color: var(--text-primary); }
+
+/* Messages — a legible name/time line and roomier avatars. The bubbles were
+   fine; the metadata around them was 11px grey mush. */
+.message-avatar {
+    width: 30px; height: 30px;
+    border-radius: 9px;
+    border: 1px solid var(--edge-strong);
+}
+.message-header { gap: 8px; align-items: baseline; }
+.message-name {
+    font-family: var(--font-mono);
+    font-size: var(--step--1);
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+.message-time { color: var(--text-muted); }
+
+/* ---- the split views become ONE panel ------------------------------------
+   Chat and History are both "rail + reading column", but the rail was a card
+   and the column was bare page — so on the light theme the dawn lattice ruled
+   horizontal lines straight through the message text. One surface under both,
+   divided by a hairline: the transcript gets a page to sit on. */
+.chat-layout,
+.history-layout {
+    gap: 0;
+    background: var(--card-bg);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+}
+.chat-sidebar,
+.history-sidebar { background: var(--surface-2); }
+
+/* Conversation rail — quieter chrome, and Export All stops shouting from the
+   footer of an empty list. */
+.chat-sidebar { border-right: 1px solid var(--edge); }
+.chat-sidebar-footer { border-top: 1px solid var(--edge); }
+#btn-export-all {
+    background: none;
+    border-color: transparent;
+    color: var(--text-tertiary);
+    font-size: var(--step--1);
+}
+#btn-export-all:hover:not(:disabled) {
+    background: var(--cyan-50);
+    border-color: var(--edge);
+    color: var(--text-primary);
+}
+
+/* ============================================================================
+   AI HISTORY — match the chat page's split, so the two archive views read as
+   one pattern: a hairline rail on the left, a bare reading column on the right.
+   ============================================================================ */
+.history-sidebar {
+    border: 0;
+    border-right: 1px solid var(--edge);
+    border-radius: 0;
+    background: var(--bg-secondary);
+    box-shadow: none;
+}
+.history-sidebar-header {
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--edge);
+}
+.history-header {
+    padding: var(--space-3) var(--space-4);
+    margin-bottom: 0;
+    /* clears the v4 2px sakura-gradient underline painted as a background */
+    background-image: none;
+    border-bottom: 1px solid var(--edge);
+}
+.history-header h2 { margin: 0; font-size: var(--step-1); }
+.history-undo {
+    display: flex;
+    justify-content: flex-end;
+    padding: var(--space-2) var(--space-4);
+    border-top: 1px solid var(--edge);
+}
+
+/* ============================================================================
+   MODALS — a hairline shell. The dialog already has the overlay to separate it
+   from the page; the bracket frame on top of that was belt and braces.
+   ============================================================================ */
+.modal-content { border: 1px solid var(--edge-strong); box-shadow: var(--shadow-lg); }
+.modal-header { border-bottom: 1px solid var(--edge); }
+.modal-header h2, .modal-header h3 { font-size: var(--step-1); }
+.modal-footer { border-top: 1px solid var(--edge); }
+.modal-body .form-input,
+.modal-body textarea,
+.modal-body select { border-color: var(--edge-strong); }
+
+/* ============================================================================
+   CONTRAST — the light rail was reading as disabled.
+   Idle nav labels sat on --text-tertiary over near-white paper; upgrade-guards
+   [B2b] only asserts a floor, and the rail was sitting on it. Secondary ink
+   (#4d3550 ≈ 9:1) is where a primary navigation belongs.
+   ============================================================================ */
+html[data-theme="light"] .page-eyebrow { color: var(--text-tertiary); }
+html[data-theme="light"] .stat-card .stat-label { color: var(--text-tertiary); }
+html[data-theme="light"] .empty-state p { color: var(--text-tertiary); }
+html[data-theme="light"] .chat-role-name,
+html[data-theme="light"] .message-time,
+html[data-theme="light"] .chat-input-hint { color: var(--text-tertiary); }
+
+/* ============================================================================
+   SHORT WINDOWS — the v6 shapes have to compact too.
+   The Tauri window floor is 800x600, where the rail's content (logo + six nav
+   items + watermark + footer) is taller than the viewport. The watermark is the
+   only decorative item in that stack, so it is the one that yields. The v6
+   empty-state bloom also re-states padding/size that the existing
+   max-height:720px block was compacting, so restate the compaction here (a
+   media query adds no specificity — source order alone decides, and this
+   section is last).
+   ============================================================================ */
+@media (max-height: 720px) {
+    .nav-items::after { height: 0; margin-top: auto; }
+    .empty-state { padding: var(--space-3) var(--space-3); }
+    .empty-state .ic,
+    .chat-files-empty-icon .ic {
+        width: 22px; height: 22px;
+        padding: 11px;
+        margin-bottom: 0;
+    }
+}

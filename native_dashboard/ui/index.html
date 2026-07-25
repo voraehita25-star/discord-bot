@@ -510,7 +510,7 @@
                 <div class="control-card">
                     <div class="control-info">
                         <h2>Discord Bot</h2>
-                        <p id="bot-status-text">Status: Checking...</p>
+                        <p id="bot-status-text">Checking…</p>
                     </div>
                     <div class="control-buttons">
                         <button id="btn-start" class="btn btn-primary"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg> Start</button>
@@ -612,8 +612,22 @@
                                    placeholder="Filter conversations…"
                                    aria-label="Filter conversations by title">
                         </div>
-                        <div class="conversation-list" id="conversation-list">
-                            <!-- Conversations will be loaded here -->
+                        <!-- tabindex=0 + role/label: this is an overflow:auto scroll
+                             container once there are more conversations than fit the
+                             rail, so keyboard-only users must be able to focus and
+                             scroll it (axe: serious scrollable-region-focusable).
+                             Same treatment as #ai-channel-list and #log-container. -->
+                        <div class="conversation-list" id="conversation-list" tabindex="0"
+                             role="group" aria-label="Conversations">
+                            <!-- Static default so the rail is never a blank void:
+                                 renderConversations() replaces this wholesale on the
+                                 first render, and until then (bot stopped, socket not
+                                 yet up) the panel still explains itself. Same markup
+                                 the empty branch of conversation-list.ts emits. -->
+                            <div class="no-conversations">
+                                <p>No conversations yet</p>
+                                <p>Start a new chat!</p>
+                            </div>
                         </div>
                         <div class="chat-sidebar-footer">
                             <button class="btn" id="btn-export-all" title="Export All Conversations">

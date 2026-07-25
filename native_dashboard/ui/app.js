@@ -820,19 +820,25 @@ export function drawChart(canvasId, data, color, spec) {
     const width = rect.width;
     const height = rect.height;
     ctx.clearRect(0, 0, width, height);
-    if (data.length < 2) {
+    const values = data.map(d => d.value);
+    // Use reduce instead of spread to prevent stack overflow with large arrays
+    const rawMin = values.reduce((a, b) => Math.min(a, b), Infinity);
+    const rawMax = values.reduce((a, b) => Math.max(a, b), -Infinity);
+    // A flat-zero series has nothing to plot, and plotting it anyway is worse
+    // than plotting nothing: niceChartScale invents a 0.0–0.6 axis for a value
+    // that is exactly 0, and a window only seconds wide stamps the same
+    // timestamp on all three x-axis labels. The result reads as a broken chart
+    // rather than an idle one — which is what the Status page shows for as
+    // long as the bot is stopped, i.e. most of the time.
+    if (data.length < 2 || (rawMin === 0 && rawMax === 0)) {
         chartDrawParams.set(canvasId, { data, color, spec, xs: [] });
         ctx.fillStyle = inkMuted;
         ctx.font = `12px ${monoFont}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText('Collecting data...', width / 2, height / 2);
+        ctx.fillText(data.length < 2 ? 'Collecting data...' : 'No activity yet', width / 2, height / 2);
         return;
     }
-    const values = data.map(d => d.value);
-    // Use reduce instead of spread to prevent stack overflow with large arrays
-    const rawMin = values.reduce((a, b) => Math.min(a, b), Infinity);
-    const rawMax = values.reduce((a, b) => Math.max(a, b), -Infinity);
     const { lo, hi, ticks, step } = niceChartScale(rawMin, rawMax, spec.decimals === 0);
     // Layout — the left gutter is sized to the widest tick label so 4-digit
     // message counts never collide with the plot, then quantized to 8px steps
@@ -890,14 +896,22 @@ export function drawChart(canvasId, data, color, spec) {
     // it moving between samples) instead of jumping only when a sample lands.
     // All three labels sit at fixed x positions; the midpoint shows the
     // window's true temporal center.
+    // Skip any label that would repeat one already drawn: a window narrower
+    // than the clock's resolution printed the SAME time three times across the
+    // axis, which reads as a rendering fault.
     ctx.textBaseline = 'alphabetic';
-    ctx.textAlign = 'left';
-    ctx.fillText(formatChartTime(tStart), plotLeft, height - 7);
+    const tLabelStart = formatChartTime(tStart);
+    const tLabelNow = formatChartTime(tNow);
+    const tLabelMid = formatChartTime(tStart + tSpan / 2);
     ctx.textAlign = 'right';
-    ctx.fillText(formatChartTime(tNow), plotRight, height - 7);
-    if (plotW > 320) {
-        ctx.textAlign = 'center';
-        ctx.fillText(formatChartTime(tStart + tSpan / 2), plotLeft + plotW / 2, height - 7);
+    ctx.fillText(tLabelNow, plotRight, height - 7);
+    if (tLabelStart !== tLabelNow) {
+        ctx.textAlign = 'left';
+        ctx.fillText(tLabelStart, plotLeft, height - 7);
+        if (plotW > 320 && tLabelMid !== tLabelStart && tLabelMid !== tLabelNow) {
+            ctx.textAlign = 'center';
+            ctx.fillText(tLabelMid, plotLeft + plotW / 2, height - 7);
+        }
     }
     // Area wash from the theme fill tokens (top → bottom). The polygon closes
     // straight down from the drawn line's endpoints (the hold segment carries
@@ -1734,7 +1748,11 @@ function updateStatusBadge(status) {
 function updateStatusText(status) {
     const botStatusText = document.getElementById('bot-status-text');
     if (botStatusText) {
-        botStatusText.textContent = status.is_running ? 'Status: Online' : 'Status: Offline';
+        // The readout is a state pill now (v6), so it carries the state as a
+        // class too — CSS can't branch on textContent, and "Status: Offline"
+        // inside a pill labelled by its own dot said the word twice.
+        botStatusText.textContent = status.is_running ? 'Online' : 'Offline';
+        botStatusText.classList.toggle('is-online', status.is_running);
     }
 }
 function updateButtons(status) {
