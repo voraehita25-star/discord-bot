@@ -42,6 +42,21 @@ declare global {
         chatManager: unknown;
         showPage: (page: string) => void;
         startBot: () => Promise<void>;
+        /**
+         * Bootstrap-complete signal. Set to `true` synchronously at the very end
+         * of app.ts's DOMContentLoaded handler, once every init*() has run and
+         * every listener is bound.
+         *
+         * Exists so the Playwright suite can await readiness instead of guessing
+         * with a fixed `waitForTimeout(250)`. Those fixed waits were the sole
+         * source of the suite's flakiness: files run concurrently (fullyParallel
+         * only serializes WITHIN a file), so under CPU load the deferred
+         * ES-module bootstrap regularly took longer than the wait and a click
+         * landed before initNavigation() had bound its handler — the click did
+         * nothing and the assertion failed with a misleading "page never became
+         * active".
+         */
+        __dashboardReady?: true;
     }
 }
 

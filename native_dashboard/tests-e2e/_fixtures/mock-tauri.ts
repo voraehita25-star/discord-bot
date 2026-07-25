@@ -254,6 +254,94 @@ export async function installDashboardMocks(page: Page): Promise<void> {
     });
 }
 
+/**
+ * Await the app's bootstrap-complete signal.
+ *
+ * Use this after `page.goto()` INSTEAD of a fixed `waitForTimeout(250)`. Those
+ * fixed waits were the entire source of this suite's flakiness: Playwright's
+ * `fullyParallel: false` only serializes cases WITHIN a file, so spec files
+ * still run concurrently. Under that CPU load the deferred ES-module bootstrap
+ * routinely took longer than 250ms, a click landed before initNavigation() had
+ * bound its handler, and the case failed with a misleading "page never became
+ * active" (or an axe run scored a half-rendered DOM).
+ *
+ * `window.__dashboardReady` is set synchronously as the last statement of
+ * app.ts's DOMContentLoaded handler, so observing it guarantees every init*()
+ * has run and every listener is bound.
+ *
+ * NOTE: cast rather than typed — tsconfig.e2e.json includes only src-ts/types.ts,
+ * so the Window augmentation in shared.ts is not in this program.
+ */
+export async function waitForDashboardReady(page: Page, timeout = 20_000): Promise<void> {
+    await page.waitForFunction(
+        () => (window as unknown as { __dashboardReady?: boolean }).__dashboardReady === true,
+        undefined,
+        { timeout },
+    );
+}
+
+/**
+ * Realistic, NON-empty backend payloads layered over `installDashboardMocks`.
+ *
+ * The base fixture answers every command with zero/[] — a deliberate choice that
+ * keeps the visual baselines and empty-state assertions stable, but it also means
+ * the whole suite only ever saw empty states. A UI audit found three real a11y
+ * defects that were structurally invisible that way (unnamed channel checkboxes
+ * on populated rows, unlabelled scroll containers that only overflow once they
+ * have content, and rows whose long ids shoved the message count off-window).
+ *
+ * So this is OPT-IN: call it instead of installDashboardMocks() in specs that
+ * should exercise populated UI. It deliberately includes one adversarially long
+ * id — real Discord snowflakes are 17-19 digits and fit, but the id is whatever
+ * the DB holds, and unbounded flex text is exactly what broke the row layout.
+ */
+export async function installPopulatedMocks(page: Page): Promise<void> {
+    await installDashboardMocks(page);
+    await page.addInitScript(() => {
+        const LONG = 'aVeryLongUnbrokenChannelIdentifier1234567890'.repeat(3);
+        const logs: string[] = [];
+        for (let i = 0; i < 400; i++) {
+            const lvl = ['INFO', 'WARNING', 'ERROR', 'DEBUG'][i % 4];
+            logs.push(
+                `2026-07-25 09:${String(i % 60).padStart(2, '0')}:12,345 - discord.client - ${lvl} - ` +
+                `Heartbeat ack, latency 42.1ms shard=0 guild=1234567890123456789`,
+            );
+        }
+        const overrides: Record<string, unknown> = {
+            get_status: {
+                is_running: true, pid: 31337, uptime: '17d 04:23:51',
+                mode: 'PRODUCTION', memory_mb: 512.75,
+            },
+            get_logs: logs,
+            get_db_stats: {
+                total_messages: 1234567, active_channels: 89,
+                total_entities: 4321, rag_memories: 98765,
+            },
+            get_recent_channels: Array.from({ length: 12 }, (_, i) => ({
+                channel_id: i === 0 ? LONG : `12345678901234567${i}`,
+                message_count: [1, 42, 1337, 99999, 1234567][i % 5],
+                last_active: '2026-07-25 09:41:02',
+            })),
+            get_top_users: Array.from({ length: 10 }, (_, i) => ({
+                user_id: i === 0 ? LONG : `98765432109876543${i}`,
+                message_count: [7, 250, 8421, 654321][i % 4],
+            })),
+        };
+        // Wrap (not replace) the base invoke so unlisted commands keep their
+        // correctly-shaped defaults.
+        const t = (window as unknown as {
+            __TAURI__: { core: { invoke: (c: string, a?: Record<string, unknown>) => Promise<unknown> } };
+            __TAURI_INTERNALS__: { invoke: unknown };
+        }).__TAURI__;
+        const base = t.core.invoke;
+        const wrapped = async (cmd: string, args?: Record<string, unknown>): Promise<unknown> =>
+            cmd in overrides ? overrides[cmd] : base(cmd, args);
+        t.core.invoke = wrapped;
+        (window as unknown as { __TAURI_INTERNALS__: { invoke: unknown } })
+            .__TAURI_INTERNALS__.invoke = wrapped;
+    });
+}
+
 /** Read accumulated page errors. Empty array on a clean run. */
 export async function getPageErrors(page: import('@playwright/test').Page): Promise<string[]> {
     return page.evaluate(

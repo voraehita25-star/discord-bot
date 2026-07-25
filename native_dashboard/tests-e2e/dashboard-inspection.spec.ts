@@ -15,7 +15,7 @@
  * out of layout overflow checks (intentional off-viewport drift).
  */
 import { test, expect, type Page, type ConsoleMessage } from '@playwright/test';
-import { installDashboardMocks } from './_fixtures/mock-tauri';
+import { installDashboardMocks, waitForDashboardReady } from './_fixtures/mock-tauri';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -92,6 +92,10 @@ test.describe('Dashboard UI deep inspection', () => {
         attachLogging(page, '<bootstrap>');
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
+        // networkidle says the fetches settled, NOT that the deferred ES-module
+        // bootstrap finished binding listeners — clicking the nav before that
+        // silently does nothing. Await the real signal.
+        await waitForDashboardReady(page);
 
         for (const navPage of PAGES) {
             await page.click(`[data-page="${navPage}"]`);
@@ -122,6 +126,27 @@ test.describe('Dashboard UI deep inspection', () => {
         attachLogging(page, 'chat');
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
+        // networkidle says the fetches settled, NOT that the deferred ES-module
+        // bootstrap finished binding listeners — clicking the nav before that
+        // silently does nothing. Await the real signal.
+        await waitForDashboardReady(page);
+        // Report the bot as RUNNING for the rest of this test. Dropping the
+        // overlay's .visible class (below) lifts the inert it puts on
+        // .chat-layout, but the 2s status poll calls updateStatusBadge() ->
+        // syncChatOverlayInert() again and re-inerts everything, so whether
+        // #chat-input was fillable depended on poll timing. shared.ts resolves
+        // window.__TAURI__.core.invoke at CALL time, so this override governs
+        // every later poll too.
+        await page.evaluate(() => {
+            const bridge = (window as unknown as {
+                __TAURI__: { core: { invoke: (c: string, a?: Record<string, unknown>) => Promise<unknown> } };
+            }).__TAURI__;
+            const base = bridge.core.invoke;
+            bridge.core.invoke = async (cmd: string, args?: Record<string, unknown>) =>
+                cmd === 'get_status'
+                    ? { is_running: true, pid: 4242, uptime: '0:05:00', mode: 'PRODUCTION', memory_mb: 128 }
+                    : base(cmd, args);
+        });
         await page.click('[data-page="chat"]');
         await page.waitForTimeout(500);  // wait for page transition + render
 
@@ -200,6 +225,10 @@ test.describe('Dashboard UI deep inspection', () => {
         });
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
+        // networkidle says the fetches settled, NOT that the deferred ES-module
+        // bootstrap finished binding listeners — clicking the nav before that
+        // silently does nothing. Await the real signal.
+        await waitForDashboardReady(page);
 
         // Modals in this app are opened by adding `.active` (CSS rule
         // `.modal.active { display: flex }`). The previous attempt removed
@@ -245,6 +274,10 @@ test.describe('Dashboard UI deep inspection', () => {
         attachLogging(page, 'responsive');
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
+        // networkidle says the fetches settled, NOT that the deferred ES-module
+        // bootstrap finished binding listeners — clicking the nav before that
+        // silently does nothing. Await the real signal.
+        await waitForDashboardReady(page);
 
         const layoutFindings: string[] = [];
         for (const w of [1280, 1024, 800]) {
@@ -313,6 +346,10 @@ test.describe('Dashboard UI deep inspection', () => {
         attachLogging(page, 'broken-images');
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
+        // networkidle says the fetches settled, NOT that the deferred ES-module
+        // bootstrap finished binding listeners — clicking the nav before that
+        // silently does nothing. Await the real signal.
+        await waitForDashboardReady(page);
 
         const brokenImages: string[] = [];
         for (const navPage of PAGES) {
@@ -344,6 +381,10 @@ test.describe('Dashboard UI deep inspection', () => {
         attachLogging(page, 'focus-visible');
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
+        // networkidle says the fetches settled, NOT that the deferred ES-module
+        // bootstrap finished binding listeners — clicking the nav before that
+        // silently does nothing. Await the real signal.
+        await waitForDashboardReady(page);
 
         // Tab a few times and check :focus-visible has an outline
         for (let i = 0; i < 3; i++) {
@@ -374,6 +415,10 @@ test.describe('Dashboard UI deep inspection', () => {
         attachLogging(page, 'nav-aria');
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
+        // networkidle says the fetches settled, NOT that the deferred ES-module
+        // bootstrap finished binding listeners — clicking the nav before that
+        // silently does nothing. Await the real signal.
+        await waitForDashboardReady(page);
 
         const navIssues = await page.$$eval('[data-page]', (btns) =>
             btns
@@ -401,6 +446,10 @@ test.describe('Dashboard UI deep inspection', () => {
         attachLogging(page, 'z-index');
         await page.goto('/index.html');
         await page.waitForLoadState('networkidle');
+        // networkidle says the fetches settled, NOT that the deferred ES-module
+        // bootstrap finished binding listeners — clicking the nav before that
+        // silently does nothing. Await the real signal.
+        await waitForDashboardReady(page);
 
         const ok = await page.evaluate(() => {
             const toast = document.getElementById('toast-container');

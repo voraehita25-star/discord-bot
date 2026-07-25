@@ -1,5 +1,5 @@
 import { test } from '@playwright/test';
-import { installDashboardMocks } from './_fixtures/mock-tauri';
+import { installDashboardMocks, waitForDashboardReady } from './_fixtures/mock-tauri';
 
 /**
  * Capture screenshots of every dashboard state we care about.
@@ -12,7 +12,11 @@ test.beforeEach(async ({ page }) => {
     await installDashboardMocks(page);
     await page.goto('/index.html');
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(300);
+    // Await the real bootstrap-complete signal rather than a fixed timeout:
+    // spec FILES run concurrently, so under load the deferred ES-module
+    // bootstrap regularly outran the old wait and a click landed before
+    // initNavigation() had bound its handler.
+    await waitForDashboardReady(page);
 });
 
 // Mirror VALID_PAGES in src-ts/app.ts (the real nav set). The old list had

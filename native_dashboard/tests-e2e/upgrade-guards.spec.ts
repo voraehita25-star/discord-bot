@@ -13,7 +13,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
-import { installDashboardMocks } from './_fixtures/mock-tauri';
+import { installDashboardMocks, waitForDashboardReady } from './_fixtures/mock-tauri';
 
 // WCAG relative luminance + contrast for an "rgb(r, g, b[, a])" string vs white.
 function contrastVsWhite(rgb: string): number {
@@ -31,7 +31,11 @@ test.beforeEach(async ({ page }) => {
     await installDashboardMocks(page);
     await page.goto('/index.html');
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(150);
+    // Await the real bootstrap-complete signal rather than a fixed timeout:
+    // spec FILES run concurrently, so under load the deferred ES-module
+    // bootstrap regularly outran the old wait and a click landed before
+    // initNavigation() had bound its handler.
+    await waitForDashboardReady(page);
 });
 
 test('[B1] danger buttons: white label clears AA (>=4.5:1) on resting AND hover gradient stops', async ({ page }) => {
@@ -108,6 +112,31 @@ test('[B2] light theme: NO anime-purple/indigo in any light-theme CSS rule', asy
     expect(offenders, `light-theme purple/indigo leak:\n${offenders.join('\n')}`).toEqual([]);
 });
 
+/**
+ * Settle CSS colour transitions before sampling computed colour.
+ *
+ * The theme flip below happens AFTER first paint (initTheme() sets data-theme
+ * during bootstrap), so every colour token animates over --dur-base (220ms).
+ * A contrast assertion that reads getComputedStyle() mid-animation samples an
+ * interpolated colour: this test was failing intermittently on
+ * `rgb(245,237,244)` (the DARK theme's --text-primary) and on in-between values
+ * like `rgb(167,156,166)`. It only ever "passed" because the old fixed
+ * waitForTimeout(200) usually outlasted the transition.
+ *
+ * Kill transitions via a constructed CSSStyleSheet rather than addStyleTag() —
+ * the production CSP is style-src 'self' with no 'unsafe-inline', so an injected
+ * <style> element is blocked, while CSSOM mutation is exempt (same technique as
+ * visual-regression.spec.ts). Scoped to the two tests that flip the theme and
+ * then read colour, so VIS-04's motion-vocabulary assertions are untouched.
+ */
+async function freezeColorTransitions(page: import('@playwright/test').Page): Promise<void> {
+    await page.evaluate(() => {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync('*, *::before, *::after { transition: none !important; animation: none !important; }');
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    });
+}
+
 test('[B2b] light-theme nav hover/active label keeps AA contrast', async ({ page }) => {
     // The teal repoint must not drop nav text below 4.5:1. Proxy: nav text on the
     // light sidebar wash (~white) — assert contrast vs white >= 4.5.
@@ -116,7 +145,10 @@ test('[B2b] light-theme nav hover/active label keeps AA contrast', async ({ page
     await page.evaluate(() => localStorage.setItem('dashboard-settings', JSON.stringify({ theme: 'light' })));
     await page.reload();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(200);
+    // The reload re-runs boot, so await the fresh bootstrap signal — the old
+    // fixed wait could sample the DOM before initTheme() had applied light.
+    await waitForDashboardReady(page);
+    await freezeColorTransitions(page);
     const ratios = await page.evaluate(() => {
         const out: { sel: string; color: string }[] = [];
         const active = document.querySelector('.nav-item.active') as HTMLElement | null;
@@ -186,7 +218,12 @@ test('[a11y-light] no axe color-contrast violations across pages in LIGHT theme'
     await page.evaluate(() => localStorage.setItem('dashboard-settings', JSON.stringify({ theme: 'light' })));
     await page.reload();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(200);
+    // The reload re-runs boot, so await the fresh bootstrap signal — the old
+    // fixed wait could sample the DOM before initTheme() had applied light.
+    await waitForDashboardReady(page);
+    // axe composites real computed colours, so the theme transition must be
+    // settled here too or a mid-animation colour gets scored.
+    await freezeColorTransitions(page);
     // Reveal the chat thread so message text is analyzable.
     await page.evaluate(() => {
         const o = document.getElementById('chat-not-running-overlay'); if (o) o.style.display = 'none';

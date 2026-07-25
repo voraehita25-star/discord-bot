@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { installDashboardMocks } from './_fixtures/mock-tauri';
+import { installDashboardMocks, waitForDashboardReady } from './_fixtures/mock-tauri';
 
 /**
  * Real user-flow tests — type, click, keyboard, focus.
@@ -11,7 +11,11 @@ test.beforeEach(async ({ page }) => {
     await installDashboardMocks(page);
     await page.goto('/index.html');
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(250);
+    // Await the real bootstrap-complete signal rather than a fixed timeout:
+    // spec FILES run concurrently, so under load the deferred ES-module
+    // bootstrap regularly outran the old wait and a click landed before
+    // initNavigation() had bound its handler.
+    await waitForDashboardReady(page);
 });
 
 test.describe('Navigation interactions', () => {
@@ -64,7 +68,9 @@ test.describe('Theme toggle', () => {
         // assertion below would be vacuously satisfied.
         expect(themeAfterToggle).not.toBe(before);
         await page.reload();
-        await page.waitForTimeout(300);
+        // Await boot rather than a fixed wait: initTheme() runs during bootstrap,
+        // so sampling data-theme too early reads the pre-init attribute.
+        await waitForDashboardReady(page);
         const themeAfterReload = await page.locator('html').getAttribute('data-theme');
         // The persisted (toggled) value must survive the reload exactly.
         expect(themeAfterReload).toBe(themeAfterToggle);
@@ -76,9 +82,35 @@ test.describe('Chat input behaviors', () => {
     // is actually interactable (it's nested inside chat-container which stays
     // .hidden until a real conversation loads — the empty state covers it).
     async function openChatWithVisibleInput(page: import('@playwright/test').Page): Promise<void> {
-        await page.click('[data-page="chat"]');
+        // Report the bot as RUNNING before opening the page.
+        //
+        // The fixture's default get_status is is_running:false, which makes
+        // updateStatusBadge() show the "Bot Not Running" overlay AND call
+        // syncChatOverlayInert() — marking every control it covers `inert`, i.e.
+        // removed from the tab order. Merely dropping the overlay's .visible class
+        // (what this helper used to do) left the controls inert, and the 2s status
+        // poll re-applied BOTH on its next tick. So whether #chat-input was
+        // focusable depended on where the poll happened to land: the
+        // "Tab never reached #chat-input" failure was that race, not a real
+        // keyboard regression.
+        //
+        // shared.ts resolves window.__TAURI__.core.invoke at CALL time, so
+        // overriding it here also governs every later poll — the overlay stays
+        // down and the controls stay focusable for the whole test.
         await page.evaluate(() => {
-            document.getElementById('chat-not-running-overlay')?.classList.remove('visible');
+            const bridge = (window as unknown as {
+                __TAURI__: { core: { invoke: (c: string, a?: Record<string, unknown>) => Promise<unknown> } };
+            }).__TAURI__;
+            const base = bridge.core.invoke;
+            bridge.core.invoke = async (cmd: string, args?: Record<string, unknown>) =>
+                cmd === 'get_status'
+                    ? { is_running: true, pid: 4242, uptime: '0:05:00', mode: 'PRODUCTION', memory_mb: 128 }
+                    : base(cmd, args);
+        });
+        await page.click('[data-page="chat"]');
+        // With no conversations in the fixture the empty placeholder is what the
+        // app shows, so the thread container still has to be revealed by hand.
+        await page.evaluate(() => {
             document.getElementById('chat-empty')?.style.setProperty('display', 'none');
             const c = document.getElementById('chat-container');
             if (c) {
@@ -89,6 +121,14 @@ test.describe('Chat input behaviors', () => {
             }
         });
         await page.locator('#chat-input').waitFor({ state: 'visible', timeout: 3000 });
+        // Assert the precondition the tab-order tests depend on, so a future
+        // regression here fails loudly instead of resurfacing as a Tab flake.
+        await expect
+            .poll(async () => page.locator('#chat-input').evaluate((el) => {
+                const wrap = el.closest('[inert]');
+                return wrap === null && !(el as HTMLElement).hasAttribute('inert');
+            }), { timeout: 3000 })
+            .toBe(true);
     }
 
     test('typing in chat input updates value', async ({ page }) => {

@@ -17,7 +17,7 @@
  */
 import { expect, test } from '@playwright/test';
 
-import { installDashboardMocks } from './_fixtures/mock-tauri';
+import { installDashboardMocks, waitForDashboardReady } from './_fixtures/mock-tauri';
 
 interface DrivableChatManager {
     currentConversation: unknown;
@@ -38,6 +38,9 @@ test('H7: strict style-src; chat thinking + KaTeX math render with no CSP style 
 
     await page.goto('/index.html');
     await page.waitForLoadState('networkidle');
+    // window.chatManager is assigned during init, so this test cannot drive it
+    // until bootstrap has actually finished.
+    await waitForDashboardReady(page);
 
     // (a) The shipped CSP must keep style-src locked to 'self'.
     const csp = await page

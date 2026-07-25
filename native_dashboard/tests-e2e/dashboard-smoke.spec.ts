@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { installDashboardMocks } from './_fixtures/mock-tauri';
+import { installDashboardMocks, waitForDashboardReady } from './_fixtures/mock-tauri';
 
 /**
  * Smoke + regression tests for the dashboard UI.
@@ -13,7 +13,11 @@ test.beforeEach(async ({ page }) => {
     await page.goto('/index.html');
     // Give the app a beat to bootstrap (settings load, WS open, init renders).
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(200);
+    // Await the real bootstrap-complete signal rather than a fixed timeout:
+    // spec FILES run concurrently, so under load the deferred ES-module
+    // bootstrap regularly outran the old wait and a click landed before
+    // initNavigation() had bound its handler.
+    await waitForDashboardReady(page);
 });
 
 test.describe('Dashboard bootstrap', () => {
@@ -24,7 +28,7 @@ test.describe('Dashboard bootstrap', () => {
         });
         // Use a fresh page so all bootstrap errors are captured.
         await page.reload();
-        await page.waitForTimeout(800);
+        await waitForDashboardReady(page);
         // Filter mock-environment noise:
         //   - asset 404s for files we don't ship (e.g. avatar files)
         //   - CSP inline-style probes

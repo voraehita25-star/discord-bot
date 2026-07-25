@@ -18,12 +18,18 @@ export default defineConfig({
     timeout: 30_000,
     fullyParallel: false, // serialize so toast/modal screenshots don't race
     forbidOnly: !!process.env.CI,
-    // The suite serializes (above) and each spec's beforeEach waits a FIXED
-    // ~250ms for the deferred ES-module bootstrap rather than a readiness
-    // signal. Under CPU load that wait is occasionally too short and a
-    // bootstrap-dependent assertion flakes (e.g. nav/CSP/import-map probes that
-    // pass in isolation). A real regression still fails every attempt, so a
-    // small retry budget removes the load-induced noise without masking bugs.
+    // NOTE: `fullyParallel: false` serializes cases WITHIN a file; spec files
+    // still run concurrently across workers. Every spec used to wait a FIXED
+    // ~250ms after goto() for the deferred ES-module bootstrap, and under that
+    // cross-file CPU load the wait was regularly too short — a click landed
+    // before initNavigation() had bound its handler, or axe scored a
+    // half-rendered DOM. Cases that passed in isolation failed in the suite.
+    //
+    // The specs now await `window.__dashboardReady` (see waitForDashboardReady()
+    // in _fixtures/mock-tauri.ts), which app.ts sets synchronously as the last
+    // statement of its DOMContentLoaded handler. That removed the whole class of
+    // load-induced failures. The retry budget is kept as a backstop for genuine
+    // environment noise; a real regression still fails every attempt.
     retries: process.env.CI ? 2 : 1,
     reporter: process.env.CI ? 'list' : [['list'], ['html', { open: 'never' }]],
 
@@ -54,7 +60,15 @@ export default defineConfig({
         // -u flag = unbuffered stdout so Playwright sees ready output instantly.
         // PYTHON env override lets machines whose interpreter is 'py' or a venv
         // path (e.g. when the User PATH is not inherited) run the e2e suite.
-        command: `${process.env.PYTHON ?? 'python'} -u -m http.server 5173 --directory ui --bind 127.0.0.1`,
+        //
+        // scripts/serve-ui.py, NOT a bare `-m http.server`: the stdlib CLI form
+        // listens with a backlog of 5, which 8 Playwright workers each requesting
+        // ~30 assets on page boot overflow instantly — the OS then REFUSES
+        // connections and a page silently comes up missing a vendor script
+        // (net::ERR_CONNECTION_REFUSED), never finishing bootstrap. That was the
+        // true source of this suite's flakiness. The script is still stdlib-only;
+        // it just raises the backlog and quiets the per-request logging.
+        command: `${process.env.PYTHON ?? 'python'} -u scripts/serve-ui.py 5173 ui`,
         url: 'http://127.0.0.1:5173/index.html',
         // Never reuse an already-running server by default: 5173 is the Vite
         // default, so a stale http.server / another project's Vite could be

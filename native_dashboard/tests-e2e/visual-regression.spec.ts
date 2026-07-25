@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { installDashboardMocks } from './_fixtures/mock-tauri';
+import { installDashboardMocks, waitForDashboardReady } from './_fixtures/mock-tauri';
 
 /**
  * Visual regression baselines.
@@ -43,6 +43,9 @@ test.beforeEach(async ({ page }) => {
     await installDashboardMocks(page);
     await page.goto('/index.html');
     await page.waitForLoadState('domcontentloaded');
+    // Await the real bootstrap signal before snapshotting — a fixed timeout let
+    // a half-initialised DOM reach toHaveScreenshot() under parallel load.
+    await waitForDashboardReady(page);
     // Disable transitions globally so pixel diffs don't flake on partial
     // animation states (the modalIn/sakuraFall keyframes etc).
     // page.addStyleTag() injects a <style> element, which the production CSP

@@ -242,6 +242,11 @@ document.addEventListener("DOMContentLoaded", () => {
     // 3D polish: ripple, cursor-tracking tilt, send-button pulse.
     // Called last so it can attach to all elements rendered by the inits above.
     setup3DInteractions();
+    // Bootstrap-complete signal — MUST stay the last statement here. The e2e
+    // suite awaits this instead of a fixed timeout (see the Window declaration
+    // in shared.ts for why). Set synchronously, so by the time it is observable
+    // every listener above is bound and clicking the nav is guaranteed to work.
+    window.__dashboardReady = true;
 });
 // Cleanup on window unload — clear timers and close WebSocket so dev hot-reload
 // (and the rare WebView2 navigation) doesn't leak ghost intervals or duplicate
