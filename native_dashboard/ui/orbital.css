@@ -3416,6 +3416,25 @@ html[data-theme="light"] .message-time,
 html[data-theme="light"] .chat-input-hint { color: var(--text-tertiary); }
 
 /* ============================================================================
+   SAKURA — let the petals be seen.
+   The field was pinned at z-index 0 behind `.app` (z-index 1). That was fine
+   when the page was mostly open background; with an opaque panel layout there
+   was nowhere left for a petal to show, so a full physics simulation was
+   running and rendering nothing.
+   The container must therefore NOT be a stacking context, or its children can
+   never straddle .app: that means no transform (the ±20px cursor parallax is
+   gone — see the note in shared.ts), no will-change, and z-index:auto. app.ts
+   then assigns each petal z-index 0 (far: behind the deck, softened by .app's
+   own backdrop-filter into free depth-of-field) or 2 (near: in front of it).
+   ============================================================================ */
+#sakura-container {
+    transform: none;
+    transition: none;
+    will-change: auto;
+    z-index: auto;
+}
+
+/* ============================================================================
    SHORT WINDOWS — the v6 shapes have to compact too.
    The Tauri window floor is 800x600, where the rail's content (logo + six nav
    items + watermark + footer) is taller than the viewport. The watermark is the

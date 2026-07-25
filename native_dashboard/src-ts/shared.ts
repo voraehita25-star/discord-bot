@@ -552,7 +552,8 @@ const _interactionState: InteractionState = { bound: false };
  * DOMContentLoaded. Idempotent — subsequent calls no-op.
  *
  * Bundled: click ripple, cursor-tracking card tilt, send-button pulse,
- * sakura parallax, optional click sound, optional haptic feedback.
+ * optional click sound, optional haptic feedback. (Sakura parallax used to be
+ * here; see the note further down for why it is gone.)
  */
 export function setup3DInteractions(): void {
     if (_interactionState.bound) return;
@@ -560,7 +561,6 @@ export function setup3DInteractions(): void {
     setupButtonRipple();
     setupCardTilt();
     setupSendButtonPulse();
-    setupSakuraParallax();
 }
 
 /**
@@ -738,47 +738,25 @@ function setupSendButtonPulse(): void {
     refreshSendButtonGlow();
 }
 
-/**
- * Sakura parallax — petals drift slightly opposite to the cursor so the
- * falling animation feels like it's floating in a 3D world. We set CSS
- * custom properties on the container; the container has
- * `transform: translate(var(--parallax-x), var(--parallax-y))` so all
- * petals shift in unison. rAF-throttled; only runs if sakura is enabled.
+/*
+ * Sakura parallax — REMOVED.
+ *
+ * This translated the whole petal field ±20px opposite the cursor. It was
+ * doing three things wrong at once:
+ *
+ *   1. Depth is now per petal (size, fall speed, opacity and which side of the
+ *      UI it renders on all follow from it), so a rigid shift of every layer by
+ *      the same amount is the opposite of parallax — it flattened them.
+ *   2. It desynced the physics. app.ts's cursor force field compares a petal's
+ *      simulated x/y against clientX/clientY; the container transform moved the
+ *      RENDERED petal away from where the simulation thought it was, so petals
+ *      visibly dodged a point next to the pointer rather than the pointer.
+ *   3. A transform (and the will-change that came with it) makes the container
+ *      a stacking context, which trapped every petal behind .app — the reason
+ *      the effect was invisible under an opaque panel layout.
+ *
+ * The per-petal cursor field in initSakuraAnimation() replaces it.
  */
-function setupSakuraParallax(): void {
-    if (window.matchMedia('(hover: none)').matches) return;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const container = document.getElementById('sakura-container');
-    if (!container) return;
-
-    // AbortController so the global pointermove listener can be unbound on
-    // page tear-down. Without it the listener (+ its closure capturing
-    // ``container``) stays alive for the document's whole lifetime even
-    // after navigating away from the chat page, keeping every petal-field
-    // DOM node it referenced reachable.
-    let raf = 0;
-    const STRENGTH = 20;  // max px the whole petal field shifts by
-    const ctrl = new AbortController();
-    window.addEventListener('pointermove', (e) => {
-        const nx = (e.clientX / window.innerWidth) - 0.5;   // -0.5..0.5
-        const ny = (e.clientY / window.innerHeight) - 0.5;
-        cancelAnimationFrame(raf);
-        raf = requestAnimationFrame(() => {
-            // Negative so petals drift OPPOSITE to mouse — feels like parallax layers behind
-            container.style.setProperty('--parallax-x', `${(-nx * STRENGTH).toFixed(2)}px`);
-            container.style.setProperty('--parallax-y', `${(-ny * STRENGTH * 0.5).toFixed(2)}px`);
-        });
-    }, { passive: true, signal: ctrl.signal });
-
-    window.addEventListener(
-        'beforeunload',
-        () => {
-            ctrl.abort();
-            cancelAnimationFrame(raf);
-        },
-        { once: true },
-    );
-}
 
 // ============================================================================
 // Number Counter Animation — smooth count-up/down on value changes

@@ -1042,16 +1042,21 @@ function updateCharts() {
     }
 }
 // ============================================================================
-// Sakura Petals Animation (Optimized with Object Pool)
+// Sakura Petals Animation — thin-plate aerodynamics, integrated per frame.
+// A fixed set of nodes (sized to the window) is recycled in place, so after the
+// first second the effect makes no DOM mutations at all; the sim writes only
+// transform + opacity. See the model notes above the simulation loop.
 // ============================================================================
 let sakuraEnabled = true;
-let sakuraInterval = null;
+/** True between a successful initSakuraAnimation() and the next stopSakura().
+ *  Replaces the old `sakuraInterval !== null` running-check: spawning moved
+ *  into the rAF loop, so there is no interval left to test. Without an explicit
+ *  flag, toggling the setting off and on would start a SECOND simulation loop
+ *  over the same container. */
+let sakuraRunning = false;
 let sakuraDisposers = [];
 function stopSakura() {
-    if (sakuraInterval !== null) {
-        clearInterval(sakuraInterval);
-        sakuraInterval = null;
-    }
+    sakuraRunning = false;
     for (const dispose of sakuraDisposers)
         dispose();
     sakuraDisposers = [];
@@ -1063,7 +1068,7 @@ function stopSakura() {
 export function setSakuraEnabled(enabled) {
     sakuraEnabled = enabled;
     if (enabled) {
-        if (sakuraInterval === null)
+        if (!sakuraRunning)
             initSakuraAnimation();
     }
     else {
@@ -1077,10 +1082,11 @@ function initSakuraAnimation() {
     if (!sakuraEnabled)
         return;
     // Respect prefers-reduced-motion: the CSS zeroes animation durations, but
-    // without this the JS would still churn ~30 DOM nodes/sec for zero visible
+    // without this the JS would still run a physics loop for zero visible
     // payoff. Bail entirely so reduced-motion users pay no animation cost.
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches)
         return;
+    sakuraRunning = true;
     // All five shapes are unmistakably sakura: two full five-petal blossoms and
     // three single petals — every petal carries the signature notched (cleft)
     // outer tip. (The old set mixed in plain ellipses and a diamond sparkle.)
@@ -1103,121 +1109,188 @@ function initSakuraAnimation() {
         // single petal fluttering edge-on (asymmetric)
         `<svg viewBox="0 0 40 40"><path d="M23 35.5 C13 32 7.5 23.5 9.5 15 C11.2 8 16 4.2 19.3 6.4 C20.8 7.5 21.1 10 20.5 12.3 C21.6 10.3 23.6 8.9 25.6 9.8 C29.6 11.6 30.6 17.6 28.6 23.8 C26.9 29.2 25.2 32.8 23 35.5 Z" fill="currentColor"/></svg>`,
     ];
-    const colors = [
-        'rgba(255, 183, 197, 0.9)',
-        'rgba(255, 145, 175, 0.85)',
-        'rgba(255, 107, 157, 0.8)',
-        'rgba(255, 192, 203, 0.9)',
-        'rgba(255, 174, 201, 0.85)',
+    // Opaque colours: the alpha used to be baked into the swatch, which fought
+    // the depth model below for control of how solid a petal looks. Alpha is
+    // now owned entirely by the per-frame opacity write.
+    //
+    // Two palettes, because one never worked: pale blossom reads beautifully on
+    // the midnight canvas and disappears completely on dawn paper. The dawn set
+    // is the same flower at a depth that survives a near-white backdrop.
+    const NIGHT_COLORS = [
+        '#ffd7e4',
+        '#ffc2d6',
+        '#ffb0c9',
+        '#ff9dbd',
+        '#fff1f5', // the near-white one — real sakura is mostly white at the tip
     ];
-    const petalPool = [];
+    const DAWN_COLORS = [
+        '#ef8fb1',
+        '#e5749f',
+        '#f2a6c1',
+        '#d96a94',
+        '#f8c2d5',
+    ];
+    const isLight = () => document.documentElement.getAttribute('data-theme') === 'light';
+    const pickColor = () => {
+        const set = isLight() ? DAWN_COLORS : NIGHT_COLORS;
+        return set[Math.floor(Math.random() * set.length)];
+    };
     const activePetals = new Set();
-    const MAX_PETALS = 30;
+    const TAU = Math.PI * 2;
+    // Density scales with the window: a fixed 30 was a blizzard at the 800x600
+    // floor and a drizzle on a wide monitor. Petals are recycled in place once
+    // the sky is full, so this is also the total DOM node count for the effect.
+    const MAX_PETALS = Math.max(14, Math.min(38, Math.round(((container.clientWidth || window.innerWidth) *
+        (container.clientHeight || window.innerHeight)) / 33000)));
     const physics = new WeakMap();
-    function getPetal() {
-        let petal = petalPool.pop();
-        if (!petal) {
-            petal = document.createElement('div');
-            petal.className = 'sakura-petal';
-        }
+    // No detach/reattach pool any more: a petal that reaches the floor is given
+    // fresh initial conditions IN PLACE (see the sim loop), so after the first
+    // few seconds the effect performs zero DOM mutations — only transform and
+    // opacity writes on a fixed set of composited nodes.
+    function makePetal() {
+        const petal = document.createElement('div');
+        petal.className = 'sakura-petal';
         return petal;
     }
-    function returnPetal(petal) {
-        activePetals.delete(petal);
-        petal.remove();
-        petalPool.push(petal);
+    /**
+     * Give a petal a fresh set of initial conditions.
+     *
+     * `seeded` spreads it over the whole column instead of dropping it in from
+     * above: at start-up the sky used to be empty and took ~15s to fill, so the
+     * first thing anyone saw was the one state the effect should never be in.
+     */
+    function resetPetal(p, width, height, seeded) {
+        // Depth is the whole parallax model: a near petal is bigger, falls
+        // faster, is more solid, and renders in FRONT of the deck rather than
+        // behind it. Very slightly biased near so the front layer is populated.
+        const depth = Math.pow(Math.random(), 0.9);
+        const size = 9 + depth * 17;
+        const speed = 0.72 + depth * 0.55;
+        p.depth = depth;
+        p.size = size;
+        p.x = Math.random() * Math.max(1, width) - size / 2;
+        p.y = seeded
+            ? Math.random() * height
+            : -size - 20 - Math.random() * 90;
+        p.vx = (Math.random() - 0.5) * 20;
+        p.vy = 20 + Math.random() * 25;
+        p.angle = Math.random() * 360;
+        p.life = seeded ? 3 : 0;
+        // A falling plate does one of two things, and which one depends on how
+        // heavy it is for its area (the Föppl–von Kármán regime split): light
+        // plates FLUTTER — they rock about broadside and never turn over —
+        // while heavier ones TUMBLE, rotating continuously and flashing edge-on.
+        // A sky of pure tumblers is what the first cut produced, and it read as
+        // a scatter of thin white slashes rather than blossom. Real petals are
+        // overwhelmingly flutterers, so that is the mix here too.
+        const axis = Math.random() * Math.PI;
+        p.axisX = Math.cos(axis);
+        p.axisY = Math.sin(axis);
+        p.sway = Math.random() * TAU;
+        p.swayBoost = 0;
+        if (Math.random() < 0.76) {
+            // flutterer: rocks up to ~40-72°, so it always reads as a petal
+            p.tumbleAmp = 0.7 + Math.random() * 0.56;
+            p.swayFreq = 0.3 + Math.random() * 0.42;
+            p.tumble = p.tumbleAmp * Math.sin(p.sway);
+            p.tumbleBase = 0;
+            p.tumbleRate = 0;
+        }
+        else {
+            // tumbler: full rotation, either direction
+            p.tumbleAmp = 0;
+            p.swayFreq = 0.1 + Math.random() * 0.16;
+            p.tumble = Math.random() * TAU;
+            p.tumbleBase = (Math.random() < 0.5 ? -1 : 1) * (0.8 + Math.random() * 1.5);
+            p.tumbleRate = p.tumbleBase;
+        }
+        // Fall speeds at the two extremes of the plate's attitude. A real petal
+        // held broadside sinks; turned edge-on it drops nearly three times as
+        // fast. That ratio IS the falling-leaf motion.
+        p.vBroad = (26 + Math.random() * 12) * speed;
+        p.vEdge = (86 + Math.random() * 38) * speed;
+        p.lift = 0.9 + Math.random() * 0.7;
+        p.spin = (Math.random() - 0.5) * 42;
     }
-    function createPetal() {
+    /**
+     * Put the petal on the correct side of the UI.
+     *
+     * The whole field used to sit at z-index 0 behind `.app` (z-index 1), and
+     * once the panels went opaque there was nowhere left for a petal to be
+     * seen — the effect was running perfectly and rendering nothing. Depth now
+     * decides: the far half stays behind the app, where `.app`'s
+     * `backdrop-filter: blur(2px)` softens it into genuine depth-of-field for
+     * free; the near half drifts in FRONT of the deck. Petals are
+     * pointer-events:none, so nothing becomes unclickable. Modals and toasts
+     * live far above both (--z-modal / --z-toast).
+     *
+     * Requires `#sakura-container` to stay stacking-context-free (no transform,
+     * no will-change, z-index:auto) — see the sakura block in orbital.css.
+     */
+    function setPetalLayer(petal, p) {
+        petal.style.zIndex = p.depth > 0.52 ? '2' : '0';
+    }
+    function createPetal(seeded = false) {
         if (activePetals.size >= MAX_PETALS)
             return;
-        const petal = getPetal();
+        const target = document.getElementById('sakura-container');
+        if (!target)
+            return;
+        const petal = makePetal();
         activePetals.add(petal);
-        const size = Math.random() * 15 + 10;
-        const color = colors[Math.floor(Math.random() * colors.length)];
+        const color = pickColor();
         const shape = petalShapes[Math.floor(Math.random() * petalShapes.length)];
+        const p = {
+            x: 0, y: 0, vx: 0, vy: 0, angle: 0, size: 12, life: 0, depth: 0.5,
+            tumble: 0, tumbleAmp: 1, tumbleRate: 0, tumbleBase: 0, axisX: 1, axisY: 0,
+            sway: 0, swayFreq: 0.4, swayBoost: 0, vBroad: 30, vEdge: 90, lift: 1, spin: 0,
+        };
+        resetPetal(p, target.clientWidth || window.innerWidth, target.clientHeight || window.innerHeight, seeded);
+        physics.set(petal, p);
         petal.innerHTML = shape;
         // position:absolute (not fixed) so the container's overflow:hidden
         // actually clips petals — fixed escapes any ancestor clip and would
         // push past the viewport, creating phantom horizontal scroll. The
         // simulation drives position via transform; left/top stay 0.
         petal.style.position = 'absolute';
-        petal.style.width = `${size}px`;
-        petal.style.height = `${size}px`;
+        petal.style.width = `${p.size.toFixed(1)}px`;
+        petal.style.height = `${p.size.toFixed(1)}px`;
         petal.style.left = '0';
         petal.style.top = '0';
         petal.style.color = color;
         petal.style.pointerEvents = 'none';
-        petal.style.zIndex = '1';
         petal.style.opacity = '0';
         petal.style.willChange = 'transform, opacity';
-        // Spawn above the viewport with a touch of initial drift; heavier
-        // (larger) petals get a slightly higher terminal speed, like the real
-        // thing. Lifetime is position-based — the sim recycles at the floor.
-        physics.set(petal, {
-            x: Math.random() * Math.max(0, window.innerWidth - size),
-            y: -40 - Math.random() * 80,
-            vx: (Math.random() - 0.5) * 24,
-            vy: 10 + Math.random() * 20,
-            angle: Math.random() * 360,
-            size,
-            life: 0,
-            flutterPhase: Math.random() * Math.PI * 2,
-            flutterFreq: 0.9 + Math.random() * 1.3,
-            flutterAmp: 26 + Math.random() * 34,
-            terminal: 30 + size * 1.7 + Math.random() * 16,
-            spin: (Math.random() - 0.5) * 50,
-        });
-        // Capture container reference; if the element was removed from the DOM
-        // after init (e.g. page swap), abort instead of throwing in setInterval.
-        const target = document.getElementById('sakura-container');
-        if (!target) {
-            returnPetal(petal);
-            return;
-        }
+        setPetalLayer(petal, p);
         target.appendChild(petal);
     }
-    // Gate the initial burst + interval on visibility so re-enabling sakura
-    // while the window is hidden doesn't churn petals in the background — the
-    // visibilityHandler below restarts the interval on the next show event.
-    if (!document.hidden) {
-        for (let i = 0; i < 15; i++) {
-            setTimeout(createPetal, i * 300);
-        }
-        sakuraInterval = window.setInterval(createPetal, 1000);
-    }
-    // Pause animation when window is hidden to save CPU.
-    const visibilityHandler = () => {
-        if (document.hidden) {
-            if (sakuraInterval !== null) {
-                clearInterval(sakuraInterval);
-                sakuraInterval = null;
-            }
-        }
-        else if (sakuraInterval === null && sakuraEnabled) {
-            sakuraInterval = window.setInterval(createPetal, 1000);
-        }
-    };
-    document.addEventListener('visibilitychange', visibilityHandler);
-    sakuraDisposers.push(() => document.removeEventListener('visibilitychange', visibilityHandler));
     // ---- Physics simulation -------------------------------------------------
-    // Real falling-petal model, integrated per frame (semi-implicit Euler):
-    //   · vertical — velocity relaxes toward each petal's TERMINAL speed (the
-    //     gravity ⇄ air-drag balance); the flutter modulates that target, so
-    //     petals visibly hesitate when they rock flat: the falling-leaf effect
-    //   · horizontal — flutter rocking force + entrainment into a slow
-    //     two-sine breeze + linear air drag
-    //   · rotation — banks into lateral motion, rocks with the flutter, and
-    //     carries a per-petal tumble bias
-    //   · cursor — a radial force field (quadratic falloff) PLUS entrained air
-    //     from the cursor's own velocity: flick the mouse and petals gust
-    //     away, then drag settles them back into a gentle fall. All forces
-    //     feed VELOCITY, so every reaction is a continuous curve.
-    const V_RELAX = 2.1; // 1/s vertical relaxation toward terminal
-    const H_DRAG = 1.5; // 1/s horizontal air drag
-    const BREEZE_PULL = 0.55; // 1/s entrainment into the breeze
-    const CURSOR_RADIUS = 130; // px
-    const CURSOR_FORCE = 1150; // px/s² at the cursor, quadratic falloff
-    const CURSOR_WIND = 0.9; // fraction of cursor velocity entrained
+    // Thin-plate aerodynamics, integrated per frame (semi-implicit Euler). The
+    // one state variable that matters is `tumble` — the petal's attitude to the
+    // airflow — and both force laws are read off it:
+    //
+    //   drag ∝ projected area        area = |cos(tumble)|
+    //        broadside (area 1) → sinks at vBroad; edge-on (area 0) → drops at
+    //        vEdge, ~3x faster. The petal therefore hesitates, slips, hesitates.
+    //   lift ∝ sin(2·tumble)·v
+    //        an inclined plate deflects air sideways, hardest at 45°, zero when
+    //        flat or edge-on, and it REVERSES as the petal flips through. That
+    //        sign change is the zigzag; nothing draws it explicitly.
+    //
+    // On top of that: a two-sine breeze with an occasional gust envelope (and
+    // faster air aloft), linear drag, an in-plane spin, and a cursor field that
+    // both pushes radially and swirls tangentially, so a flick of the mouse
+    // leaves a small vortex instead of a shove. All forces feed VELOCITY, so
+    // every reaction is a continuous curve.
+    const V_RELAX = 2.4; // 1/s vertical relaxation toward the drag target
+    const H_DRAG = 1.35; // 1/s horizontal air drag
+    const BREEZE_PULL = 0.75; // 1/s entrainment into the breeze (at full area)
+    const TUMBLE_RELAX = 0.9; // 1/s return of the flip rate to its baseline
+    const CURSOR_RADIUS = 145; // px
+    const CURSOR_FORCE = 1250; // px/s² at the cursor, quadratic falloff
+    const CURSOR_SWIRL = 560; // px/s² tangential component — the vortex
+    const CURSOR_WIND = 0.85; // fraction of cursor velocity entrained
+    const SPAWN_RATE = 1.4; // petals/s (jittered, see the spawn accumulator)
     let pointerX = -9999;
     let pointerY = -9999;
     let pointerVX = 0;
@@ -1243,6 +1316,8 @@ function initSakuraAnimation() {
         lastPointerT = 0;
     };
     let simTime = 0;
+    let spawnAcc = 0;
+    let lastThemeLight = isLight();
     let lastFrame = performance.now();
     let rafId = requestAnimationFrame(function simTick(now) {
         rafId = requestAnimationFrame(simTick);
@@ -1257,21 +1332,62 @@ function initSakuraAnimation() {
         const gustDecay = Math.exp(-3 * dt);
         pointerVX *= gustDecay;
         pointerVY *= gustDecay;
-        // slow two-sine breeze — smooth, never-quite-repeating lateral drift
-        const breeze = 18 * Math.sin(simTime * 0.31) + 12 * Math.sin(simTime * 0.117 + 1.7);
-        const floor = (container.clientHeight || window.innerHeight) + 60;
+        const height = container.clientHeight || window.innerHeight;
         const width = container.clientWidth || window.innerWidth;
+        const floor = height + 60;
+        // One attribute read per frame (not per petal) catches a theme flip and
+        // re-tints the whole field at once. Without it, blossom mixed for the
+        // midnight canvas would hang around invisibly on dawn paper until every
+        // petal had recycled — up to ~15 seconds of a bare sky.
+        const lightNow = isLight();
+        if (lightNow !== lastThemeLight) {
+            lastThemeLight = lightNow;
+            for (const petal of activePetals)
+                petal.style.color = pickColor();
+        }
+        // Spawning lives in the sim now, not a setInterval: one petal exactly
+        // every 1000ms is a metronome you can hear, and an interval also keeps
+        // firing while the window is hidden. The accumulator is consumed in
+        // uneven bites, so arrivals scatter the way real ones do.
+        spawnAcc += dt * SPAWN_RATE;
+        while (spawnAcc >= 1) {
+            spawnAcc -= 0.55 + Math.random() * 0.9;
+            createPetal();
+        }
+        // Breeze: two slow sines that never quite repeat, times a rare gust
+        // envelope (^6 keeps it near zero most of the time and then surges).
+        const gust = Math.pow(Math.max(0, Math.sin(simTime * 0.079 + 0.9)), 6);
+        const breeze = (15 * Math.sin(simTime * 0.27) + 10 * Math.sin(simTime * 0.101 + 1.7))
+            * (1 + 2.4 * gust);
         for (const petal of Array.from(activePetals)) {
             const p = physics.get(petal);
             if (!p)
                 continue;
             p.life += dt;
-            const flutterArg = simTime * p.flutterFreq * 2 * Math.PI + p.flutterPhase;
-            const flutter = Math.sin(flutterArg);
-            // lateral: rocking force + breeze entrainment
-            let ax = flutter * p.flutterAmp + (breeze - p.vx) * BREEZE_PULL;
+            // --- attitude to the airflow: the source of both force laws ------
+            const cosT = Math.cos(p.tumble);
+            const sinT = Math.sin(p.tumble);
+            const area = Math.abs(cosT); // 1 = broadside, 0 = edge-on
+            // Advance the attitude. Flutterers ride a bounded oscillator;
+            // tumblers integrate a rate that rises with fall speed. Disturbed
+            // air (the cursor, below) kicks swayBoost, which decays back out.
+            p.swayBoost -= p.swayBoost * 1.4 * dt;
+            p.sway += (p.swayFreq * TAU + p.swayBoost) * dt;
+            if (p.tumbleAmp > 0) {
+                p.tumble = p.tumbleAmp * Math.sin(p.sway);
+            }
+            else {
+                p.tumbleRate += (p.tumbleBase - p.tumbleRate) * TUMBLE_RELAX * dt;
+                p.tumble += (p.tumbleRate * (0.5 + 0.5 * (p.vy / p.vEdge))
+                    + 0.35 * Math.sin(p.sway)) * dt;
+            }
+            // Wind is faster aloft, and a broadside petal is pushed by it far
+            // more than an edge-on one.
+            const windHere = breeze * (0.72 + 0.38 * (1 - Math.min(1, Math.max(0, p.y / height))));
+            const lift = p.lift * p.vy * sinT * cosT * 2; // ∝ sin(2·tumble)
+            let ax = lift + (windHere - p.vx) * BREEZE_PULL * (0.35 + 0.65 * area);
             let ay = 0;
-            // cursor force field + entrained air
+            // cursor field: radial push + tangential swirl + entrained air
             if (pointerX > -999) {
                 const dx = p.x + p.size / 2 - pointerX;
                 const dy = p.y + p.size / 2 - pointerY;
@@ -1279,36 +1395,54 @@ function initSakuraAnimation() {
                 if (dist < CURSOR_RADIUS && dist > 0.01) {
                     const fall = 1 - dist / CURSOR_RADIUS;
                     const push = CURSOR_FORCE * fall * fall;
-                    ax += (dx / dist) * push + pointerVX * CURSOR_WIND * fall;
-                    ay += (dy / dist) * push + pointerVY * CURSOR_WIND * fall;
+                    const swirl = CURSOR_SWIRL * fall * fall;
+                    ax += (dx / dist) * push - (dy / dist) * swirl + pointerVX * CURSOR_WIND * fall;
+                    ay += (dy / dist) * push + (dx / dist) * swirl + pointerVY * CURSOR_WIND * fall;
+                    // disturbed air also spins the petal up — a flutterer rocks
+                    // harder, a tumbler turns faster. Both decay back out.
+                    p.swayBoost += fall * fall * 26 * dt;
+                    if (p.tumbleAmp === 0) {
+                        p.tumbleRate += Math.sign(p.tumbleBase) * fall * fall * 9 * dt;
+                    }
                 }
             }
-            // integrate: horizontal drag; vertical relaxes toward a flutter-
-            // modulated terminal speed (petals hesitate when rocking flat)
+            // integrate: horizontal drag; vertical chases the speed the current
+            // projected area allows
             p.vx += ax * dt;
             p.vx -= p.vx * H_DRAG * dt;
-            const vyTarget = p.terminal * (0.82 + 0.28 * Math.cos(flutterArg * 2));
+            const vyTarget = p.vEdge - (p.vEdge - p.vBroad) * area;
             p.vy += ay * dt + (vyTarget - p.vy) * V_RELAX * dt;
             p.x += p.vx * dt;
             p.y += p.vy * dt;
-            // banking into motion + flutter rock + tumble bias
-            p.angle += (p.spin + flutter * 55 + p.vx * 0.55) * dt;
-            // blown off one side → drift in from the other
-            if (p.x < -60)
-                p.x = width + 20;
-            else if (p.x > width + 60)
-                p.x = -20;
-            // recycle at the floor
-            if (p.y > floor) {
-                returnPetal(petal);
+            // in-plane: own bias, plus a bank into the direction of travel
+            p.angle += (p.spin + p.vx * 0.42) * dt;
+            // Off the floor, or blown clean out of frame → recycle from the top.
+            // The old code teleported a petal to the opposite edge at whatever
+            // height it had, so one could pop into existence mid-screen.
+            if (p.y > floor || p.x < -p.size - 90 || p.x > width + p.size + 90) {
+                resetPetal(p, width, height, false);
+                petal.style.width = `${p.size.toFixed(1)}px`;
+                petal.style.height = `${p.size.toFixed(1)}px`;
+                setPetalLayer(petal, p);
                 continue;
             }
+            // Depth sets how solid a petal is; turning edge-on dims it further,
+            // which sells the flip on top of the geometric foreshortening.
             const fadeIn = Math.min(1, p.life * 1.6);
-            petal.style.opacity = (0.92 * fadeIn).toFixed(3);
+            const alpha = (0.28 + 0.66 * p.depth) * (0.46 + 0.54 * area) * fadeIn;
+            petal.style.opacity = alpha.toFixed(3);
             petal.style.transform =
-                `translate3d(${p.x.toFixed(2)}px, ${p.y.toFixed(2)}px, 0) rotate(${(p.angle % 360).toFixed(2)}deg)`;
+                `perspective(520px) translate3d(${p.x.toFixed(2)}px, ${p.y.toFixed(2)}px, 0) ` +
+                    `rotate(${(p.angle % 360).toFixed(2)}deg) ` +
+                    `rotate3d(${p.axisX.toFixed(3)}, ${p.axisY.toFixed(3)}, 0, ${((p.tumble * 180 / Math.PI) % 360).toFixed(2)}deg)`;
         }
     });
+    // Seed the sky FULL immediately rather than starting empty and filling over
+    // ~20s: the old init dropped 15 petals in from above at 300ms intervals, so
+    // the first thing anyone saw was an empty sky and a thin trickle.
+    // rAF is paused while the document is hidden, so no visibility gating.
+    for (let i = 0; i < MAX_PETALS; i++)
+        createPetal(true);
     document.addEventListener('mousemove', pointerMoveHandler, { passive: true });
     document.addEventListener('mouseleave', pointerLeaveHandler);
     sakuraDisposers.push(() => {
