@@ -216,6 +216,27 @@ sqlite3 data/bot_database.db "PRAGMA integrity_check;"
 | `ANTHROPIC_API_ENDPOINT` | `direct` | Failover endpoint selector (a sentinel, not a URL): valid values are exactly `direct` (default) or `proxy`; any other value (including a URL) is invalid and silently falls back to `direct`. The failover layer flips between direct and `ANTHROPIC_PROXY_BASE_URL` automatically based on error rate. |
 | `DEFAULT_AI_PROVIDER` | `claude` | Dashboard default provider (`gemini`/`claude`); unset resolves to `claude` |
 
+#### Chat toggles: what each one actually controls
+
+The dashboard chat has four checkboxes. Each is gated by an operator env flag,
+and the server reports in the WS `connected` handshake whether it can honour the
+toggle at all — an unusable one is greyed out with the reason as its tooltip
+rather than left live and inert.
+
+| Toggle | Env gate | Effect on the `cli` backend |
+| ------ | -------- | --------------------------- |
+| 🔍 Search | `DASHBOARD_CLI_WEB_TOOLS` | Adds `WebSearch` (+ `WebFetch`, when no attachment) to `--allowedTools`. Also drives Gemini's Google Search grounding when Gemini is available. |
+| ✍️ Write | `DASHBOARD_CLI_ALLOW_WRITE` | Runs the turn in write mode — `Write`/`Edit`/`MultiEdit` inside `DASHBOARD_CLI_WRITE_DIRS`, vetted per call by the `cli_write_guard.py` hook. Off unless requested per turn. |
+| 🧠 Thinking | — | Nothing; see below. |
+| 🔓 Unrestricted | `DASHBOARD_ALLOW_UNRESTRICTED` | Applies the unrestricted persona overlay. |
+
+**Search and Write are mutually exclusive.** Write mode appends
+`--disallowedTools "Bash WebFetch WebSearch NotebookEdit Task"`, so one turn
+cannot do both. When both are ticked, **Search wins**: write mode is dropped for
+that message and a warning toast says so. The dashboard resolves this before
+sending (and unticks Write); the server enforces the same rule for clients that
+don't.
+
 #### Where the thinking toggle applies
 
 The toggle only exists on the `api` backend. `claude -p` exposes reasoning depth

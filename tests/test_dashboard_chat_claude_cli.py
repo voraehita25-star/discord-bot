@@ -595,3 +595,89 @@ class TestHandlerPrewarmThinking:
         # developer's .env once the CLI stopped pinning xhigh itself.
         assert "--effort" in warm_argv and cli_mod._CLI_EFFORT in warm_argv
         assert "--resume" in warm_argv and "sess-think" in warm_argv
+
+
+class TestHandlerSearchAndWriteToggles:
+    """Per-turn Search / Write flags reach argv, and the conflict is resolved.
+
+    The Search checkbox used to be read only by the Gemini handler, so on a
+    Claude-only deployment it did nothing; write mode was env-only, so every
+    turn had file access whether or not the user wanted it. Both are now
+    per-turn requests — and because write mode denies WebSearch/WebFetch, a turn
+    can't have both.
+    """
+
+    @staticmethod
+    def _argv_from(prewarm_mock: MagicMock) -> list[str]:
+        prewarm_mock.assert_called_once()
+        return prewarm_mock.call_args[0][1]
+
+    async def _run(self, monkeypatch, tmp_path, data: dict, *, allow_write: bool) -> tuple:
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.setattr(cli_mod, "_CLI_WEB_TOOLS_ENABLED", True)
+        monkeypatch.setattr(cli_mod, "_dashboard_cli_write_enabled", lambda: allow_write)
+        monkeypatch.setattr(cli_mod, "_dashboard_cli_write_dirs", lambda: [tmp_path / "out"])
+        ws = _FakeWS()
+        prewarm_mock = MagicMock()
+
+        async def fake_subprocess(*_a, **_k):
+            return "sess-tools", None
+
+        try:
+            with _handler_patches(_mock_db(), fake_subprocess, prewarm_mock=prewarm_mock):
+                await cli_mod.handle_chat_message_claude_cli(
+                    ws,
+                    {"conversation_id": "c1", "content": "hi", "role_preset": "general", **data},
+                    None,
+                )
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+        return ws, self._argv_from(prewarm_mock)
+
+    @pytest.mark.asyncio
+    async def test_search_on_adds_websearch(self, monkeypatch, tmp_path):
+        _ws, argv = await self._run(monkeypatch, tmp_path, {"use_search": True}, allow_write=False)
+        assert "WebSearch" in " ".join(argv)
+
+    @pytest.mark.asyncio
+    async def test_search_off_withholds_web_tools(self, monkeypatch, tmp_path):
+        # The whole point of wiring the checkbox: unticking it must actually
+        # take the tools away, not just be logged.
+        _ws, argv = await self._run(monkeypatch, tmp_path, {"use_search": False}, allow_write=False)
+        joined = " ".join(argv)
+        assert "WebSearch" not in joined and "WebFetch" not in joined
+
+    @pytest.mark.asyncio
+    async def test_write_requires_the_per_turn_request(self, monkeypatch, tmp_path):
+        # Env permission alone is no longer enough — the user must ask for it.
+        _ws, argv = await self._run(monkeypatch, tmp_path, {"use_search": False}, allow_write=True)
+        assert "--disallowedTools" not in argv, "write mode must not engage unasked"
+
+    @pytest.mark.asyncio
+    async def test_write_on_engages_write_mode(self, monkeypatch, tmp_path):
+        _ws, argv = await self._run(
+            monkeypatch,
+            tmp_path,
+            {"use_search": False, "write_enabled": True},
+            allow_write=True,
+        )
+        assert "--disallowedTools" in argv
+
+    @pytest.mark.asyncio
+    async def test_both_on_keeps_search_and_warns(self, monkeypatch, tmp_path):
+        ws, argv = await self._run(
+            monkeypatch,
+            tmp_path,
+            {"use_search": True, "write_enabled": True},
+            allow_write=True,
+        )
+        joined = " ".join(argv)
+        assert "WebSearch" in joined, "search must win the conflict"
+        assert "--disallowedTools" not in argv, "write mode must be dropped"
+        warnings = ws.find("warning")
+        assert warnings, "the user must be told write mode was dropped"
+        assert "Write mode" in warnings[0]["message"]
+        # The notice has to land before the reply starts, not after it.
+        assert ws.sent.index(warnings[0]) < ws.sent.index(ws.find("stream_start")[0])

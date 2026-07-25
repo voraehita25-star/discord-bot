@@ -2613,18 +2613,41 @@ async def handle_chat_message_claude_cli(
     _unrestricted_env = os.getenv("DASHBOARD_ALLOW_UNRESTRICTED", "").strip().lower()
     _unrestricted_allowed = _unrestricted_env in ("1", "true", "yes", "on")
     unrestricted_requested = bool(data.get("unrestricted_mode")) and _unrestricted_allowed
-    # File-write autonomy (DASHBOARD_CLI_ALLOW_WRITE). When on, the embedded
-    # `claude -p` may create/edit files in the configured output dirs without
-    # the interactive "Allow?" prompt the chat UI can't surface. Read once here
-    # and thread it through every _build_claude_argv call on the main chat path
-    # (the /edit path intentionally stays text-only and never sets it).
-    # AND-resolve the roots up front: when the env flag is on but no write root
-    # resolves (bad DASHBOARD_CLI_WRITE_DIRS, missing Desktop/Documents/
+    # Web search + file-write autonomy are BOTH per-turn requests from the chat
+    # UI, each additionally gated by an operator env flag:
+    #
+    #   Search -> DASHBOARD_CLI_WEB_TOOLS, adds WebSearch/WebFetch to --allowedTools
+    #   Write  -> DASHBOARD_CLI_ALLOW_WRITE, lets `claude -p` create/edit files in
+    #             the configured output dirs without the interactive "Allow?"
+    #             prompt the chat UI can't surface
+    #
+    # The env flags say what the operator PERMITS; the checkboxes say what this
+    # turn ASKS for. `use_search` defaults to True so a client that predates the
+    # wiring keeps the web tools it used to get; `write_enabled` defaults to
+    # False because granting filesystem access to a client that never asked is
+    # the wrong way to fail.
+    #
+    # Write roots are AND-resolved up front: with the env flag on but no root
+    # resolving (bad DASHBOARD_CLI_WRITE_DIRS, missing Desktop/Documents/
     # Downloads), _build_claude_argv silently degrades to the read-only path —
-    # so the "✍️ Write" badge and the system-prompt web gating below must key
-    # on the RESOLVED state, not the raw flag, or the UI advertises write mode
-    # that this turn does not actually have.
-    write_enabled = _dashboard_cli_write_enabled() and bool(_dashboard_cli_write_dirs())
+    # so the "✍️ Write" badge and the system-prompt gating below must key on the
+    # RESOLVED state, not the raw flag, or the UI advertises a mode this turn
+    # does not actually have.
+    search_requested = bool(data.get("use_search", True))
+    write_requested = bool(data.get("write_enabled", False))
+    web_enabled = search_requested and _CLI_WEB_TOOLS_ENABLED
+    write_enabled = (
+        write_requested and _dashboard_cli_write_enabled() and bool(_dashboard_cli_write_dirs())
+    )
+    # The two are mutually exclusive: write mode appends --disallowedTools
+    # "… WebFetch WebSearch …", so a turn cannot have both. Search wins and write
+    # is dropped, with the client told why — silently losing either one would
+    # leave the model insisting it can't reach a tool the UI says is on. The
+    # dashboard resolves this before sending too; this is the authority for
+    # clients that don't (or predate it).
+    tool_conflict = web_enabled and write_enabled
+    if tool_conflict:
+        write_enabled = False
     # ``data["thinking_enabled"]`` is deliberately NOT read: this backend cannot
     # turn thinking off (see ``_CLI_EFFORT``), so honouring the flag would only
     # produce a control that appears to work. The dashboard is told the toggle
@@ -2856,10 +2879,8 @@ async def handle_chat_message_claude_cli(
             system_prompt_file = _ensure_system_prompt_file(
                 _build_system_prompt(
                     persona,
-                    web_enabled=_CLI_WEB_TOOLS_ENABLED and not write_enabled,
-                    webfetch_enabled=(
-                        _CLI_WEB_TOOLS_ENABLED and not write_enabled and not has_attachments
-                    ),
+                    web_enabled=web_enabled and not write_enabled,
+                    webfetch_enabled=(web_enabled and not write_enabled and not has_attachments),
                 )
             )
         except OSError:
@@ -2935,6 +2956,8 @@ async def handle_chat_message_claude_cli(
     # this backend always reasons, so a conditional badge would imply a control
     # the user does not have.
     mode_info.append(f"🧠 Thinking ({_CLI_EFFORT})")
+    if web_enabled:
+        mode_info.append("🔍 Search")
     if unrestricted_requested:
         mode_info.append("🔓 Unrestricted")
     if write_enabled:
@@ -2945,6 +2968,22 @@ async def handle_chat_message_claude_cli(
         mode_info.append(f"📎 {len(doc_paths)} doc(s)")
     mode_label = " • ".join(mode_info)
     try:
+        if tool_conflict:
+            # Sent BEFORE stream_start so the notice is on screen before the
+            # reply starts arriving. `warning` (not `info`) because the toast
+            # must surface even with notifications muted: the user asked for
+            # file writes and is not getting them this turn.
+            await ws.send_json(
+                {
+                    "type": "warning",
+                    "message": (
+                        "Write mode was turned off for this message — the Claude CLI "
+                        "cannot search the web and write files in the same turn. "
+                        "Untick Search to write files."
+                    ),
+                    "conversation_id": conversation_id,
+                }
+            )
         await ws.send_json(
             {
                 "type": "stream_start",
@@ -3053,7 +3092,7 @@ async def handle_chat_message_claude_cli(
         allow_read_for_images=need_read,
         enable_write=write_enabled,
         system_prompt_file=system_prompt_file,
-        enable_web=_CLI_WEB_TOOLS_ENABLED,
+        enable_web=web_enabled,
     )
 
     new_session_id = ""
@@ -3100,7 +3139,7 @@ async def handle_chat_message_claude_cli(
                         allow_read_for_images=need_read,
                         enable_write=write_enabled,
                         system_prompt_file=system_prompt_file,
-                        enable_web=_CLI_WEB_TOOLS_ENABLED,
+                        enable_web=web_enabled,
                     )
                     full_prompt = _build_full_prompt(
                         persona=persona,
@@ -3176,7 +3215,7 @@ async def handle_chat_message_claude_cli(
                         allow_read_for_images=need_read,
                         enable_write=write_enabled,
                         system_prompt_file=system_prompt_file,
-                        enable_web=_CLI_WEB_TOOLS_ENABLED,
+                        enable_web=web_enabled,
                     )
                     # The first attempt may have streamed some text (to the
                     # client AND into full_response/full_thinking) before the
@@ -3310,7 +3349,7 @@ async def handle_chat_message_claude_cli(
                     allow_read_for_images=False,
                     enable_write=write_enabled,
                     system_prompt_file=system_prompt_file,
-                    enable_web=_CLI_WEB_TOOLS_ENABLED,
+                    enable_web=web_enabled,
                 ),
             )
     finally:

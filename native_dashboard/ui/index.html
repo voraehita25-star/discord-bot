@@ -709,10 +709,15 @@
                             <!-- Input Area -->
                             <div class="chat-input-area">
                                 <div class="chat-input-options">
-                                    <label class="checkbox-label" title="Enable Google Search">
+                                    <label class="checkbox-label" id="chat-use-search-label" title="Let the assistant search the web">
                                         <input type="checkbox" id="chat-use-search">
                                         <span class="checkbox-icon"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg></span>
                                         <span class="checkbox-text">Search</span>
+                                    </label>
+                                    <label class="checkbox-label" id="chat-write-mode-label" title="Let the assistant create and edit files">
+                                        <input type="checkbox" id="chat-write-mode">
+                                        <span class="checkbox-icon"><svg class="ic" aria-hidden="true"><use href="#i-pencil"/></svg></span>
+                                        <span class="checkbox-text">Write</span>
                                     </label>
                                     <label class="checkbox-label unrestricted-toggle" title="Unrestricted Mode - Bypass AI restrictions">
                                         <input type="checkbox" id="chat-unrestricted">

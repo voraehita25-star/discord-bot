@@ -36,6 +36,7 @@ import type {
     ChatMessage,
     RolePreset,
     NativeConversationDetail,
+    ToggleSupport,
 } from './chat/types.js';
 
 import { highlightCodeBlocks } from './chat/prism.js';
@@ -466,13 +467,11 @@ export class ChatManager {
                     }
                     this.updateProviderSelects();
                 }
-                // The Thinking toggle only controls something on the SDK
-                // backend with a model that can be told to stop thinking. When
-                // the server says otherwise, disable the control instead of
-                // leaving a switch that silently does nothing.
-                this.applyThinkingToggleSupport(
-                    data.thinking_toggle as { supported?: boolean; reason?: string } | undefined,
-                );
+                // Each chat toggle only controls something under certain
+                // backend + config combinations. Where the server says it
+                // can't, disable the control rather than leave a switch that
+                // silently does nothing.
+                this.applyToggleSupportFromHandshake(data);
                 this.listConversations();
                 // Re-fetch the OPEN conversation after a (re)connect. A reconnect
                 // that interrupts a response stream drops the in-flight assistant
@@ -986,6 +985,15 @@ export class ChatManager {
                 // so the user sees progress instead of an apparent stall.
                 if (typeof data.message === 'string' && data.message) {
                     showToast(data.message, { type: 'info', duration: 2500 });
+                }
+                break;
+
+            case 'warning':
+                // Backend warning (e.g. write mode dropped for this turn). Uses
+                // the warning toast, which surfaces even with notifications
+                // muted — the user asked for something they didn't get.
+                if (typeof data.message === 'string' && data.message) {
+                    showToast(data.message, { type: 'warning' });
                 }
                 break;
 
@@ -1605,7 +1613,12 @@ export class ChatManager {
 
         const thinkingToggle = document.getElementById('thinking-toggle') as HTMLInputElement | null;
         const searchToggle = document.getElementById('chat-use-search') as HTMLInputElement | null;
+        const writeToggle = document.getElementById('chat-write-mode') as HTMLInputElement | null;
         const unrestrictedToggle = document.getElementById('chat-unrestricted') as HTMLInputElement | null;
+        // Search and write mode are mutually exclusive on the Claude CLI —
+        // resolve here so the payload and the checkboxes agree.
+        const useSearch = searchToggle?.checked ?? true;
+        const writeEnabled = this.resolveSearchWriteConflict(useSearch, writeToggle?.checked ?? false);
         const userName = settings.userName || 'User';
         
         // Snapshot both attachment types before the send so clear() can't
@@ -1624,7 +1637,8 @@ export class ChatManager {
             thinking_enabled: thinkingToggle?.checked || false,
             history: historyToSend,
             // New features
-            use_search: searchToggle?.checked ?? true,
+            use_search: useSearch,
+            write_enabled: writeEnabled,
             unrestricted_mode: unrestrictedToggle?.checked || false,
             images,
             documents: docs.length > 0 ? docs : undefined,
@@ -3354,7 +3368,12 @@ export class ChatManager {
 
         const thinkingToggle = document.getElementById('thinking-toggle') as HTMLInputElement | null;
         const searchToggle = document.getElementById('chat-use-search') as HTMLInputElement | null;
+        const writeToggle = document.getElementById('chat-write-mode') as HTMLInputElement | null;
         const unrestrictedToggle = document.getElementById('chat-unrestricted') as HTMLInputElement | null;
+        // Search and write mode are mutually exclusive on the Claude CLI —
+        // resolve here so the payload and the checkboxes agree.
+        const useSearch = searchToggle?.checked ?? true;
+        const writeEnabled = this.resolveSearchWriteConflict(useSearch, writeToggle?.checked ?? false);
         const userName = settings.userName || 'User';
 
         // Carry over the original message's images/documents so the
@@ -3375,7 +3394,8 @@ export class ChatManager {
             role_preset: this.currentConversation.role_preset,
             thinking_enabled: thinkingToggle?.checked || false,
             history: historyToSend,
-            use_search: searchToggle?.checked ?? true,
+            use_search: useSearch,
+            write_enabled: writeEnabled,
             unrestricted_mode: unrestrictedToggle?.checked || false,
             images: originalImages,
             documents: originalDocs,
@@ -3440,50 +3460,94 @@ export class ChatManager {
     }
 
     /**
-     * Enable or disable the Thinking checkboxes from the server's handshake.
+     * Disable one chat toggle when the server says it can't honour it.
      *
-     * The toggle is only meaningful on the SDK backend with a model that can be
-     * told to stop thinking; on the CLI backend (the default) the model reasons
-     * on every turn regardless. Rather than leave a switch that does nothing, we
-     * disable it and surface the server's explanation as the tooltip.
+     * Shared by the Thinking / Search / Write checkboxes: each is only
+     * meaningful under some backend + config combination, and a live checkbox
+     * that silently does nothing is worse than no checkbox at all. The server
+     * reports support in the `connected` handshake and we surface its reason as
+     * the disabled control's tooltip.
      *
-     * Missing/!== false support is treated as supported so an older server —
-     * which never sends this field — keeps the control usable.
+     * Missing or `!== false` support counts as supported, so an older server —
+     * which never sends these fields — keeps every control usable.
      */
-    applyThinkingToggleSupport(info?: { supported?: boolean; reason?: string }): void {
+    applyToggleSupport(
+        input: HTMLInputElement | null,
+        label: HTMLElement | null,
+        defaultTitle: string,
+        info?: ToggleSupport,
+    ): boolean {
         const supported = info?.supported !== false;
-        const reason = info?.reason || '';
-        const targets: Array<[HTMLInputElement | null, HTMLElement | null, string]> = [
-            [
-                document.getElementById('thinking-toggle') as HTMLInputElement | null,
-                document.querySelector('.thinking-toggle'),
-                'Enable Thinking Mode',
-            ],
-            [
-                document.getElementById('modal-thinking') as HTMLInputElement | null,
-                (document.getElementById('modal-thinking') as HTMLElement | null)?.closest(
-                    '.option-row',
-                ) as HTMLElement | null,
-                '',
-            ],
-        ];
-        for (const [input, label, defaultTitle] of targets) {
-            if (!input) continue;
+        if (input) {
             input.disabled = !supported;
-            if (!supported) {
-                // Uncheck as well: a checked-but-disabled box reads as "thinking
-                // is on and locked", which is the opposite of what the user is
-                // being told on the SDK-model case.
-                input.checked = false;
-            }
-            if (label) {
-                label.classList.toggle('is-unavailable', !supported);
-                const title = supported ? defaultTitle : reason;
-                if (title) label.setAttribute('title', title);
-                else label.removeAttribute('title');
-            }
+            // Uncheck too: a checked-but-disabled box reads as "on and locked",
+            // the opposite of what the tooltip is telling the user.
+            if (!supported) input.checked = false;
         }
-        if (!supported) this.thinkingEnabled = false;
+        if (label) {
+            label.classList.toggle('is-unavailable', !supported);
+            let title = supported ? defaultTitle : info?.reason || '';
+            // Write mode's blast radius is the useful part of its tooltip.
+            if (supported && info?.roots?.length) {
+                title = `${defaultTitle} in: ${info.roots.join(', ')}`;
+            }
+            if (title) label.setAttribute('title', title);
+            else label.removeAttribute('title');
+        }
+        return supported;
+    }
+
+    /** Apply the handshake's capability report to every chat toggle. */
+    applyToggleSupportFromHandshake(data: Record<string, unknown>): void {
+        const thinking = data.thinking_toggle as ToggleSupport | undefined;
+        const thinkingOk = this.applyToggleSupport(
+            document.getElementById('thinking-toggle') as HTMLInputElement | null,
+            document.querySelector('.thinking-toggle'),
+            'Enable Thinking Mode',
+            thinking,
+        );
+        this.applyToggleSupport(
+            document.getElementById('modal-thinking') as HTMLInputElement | null,
+            (document.getElementById('modal-thinking') as HTMLElement | null)?.closest(
+                '.option-row',
+            ) as HTMLElement | null,
+            '',
+            thinking,
+        );
+        if (!thinkingOk) this.thinkingEnabled = false;
+
+        this.applyToggleSupport(
+            document.getElementById('chat-use-search') as HTMLInputElement | null,
+            document.getElementById('chat-use-search-label'),
+            'Let the assistant search the web',
+            data.web_search_toggle as ToggleSupport | undefined,
+        );
+        this.applyToggleSupport(
+            document.getElementById('chat-write-mode') as HTMLInputElement | null,
+            document.getElementById('chat-write-mode-label'),
+            'Let the assistant create and edit files',
+            data.write_mode_toggle as ToggleSupport | undefined,
+        );
+    }
+
+    /**
+     * Resolve the Search/Write conflict before sending, returning the write flag.
+     *
+     * The Claude CLI can't do both in one turn: write mode denies WebSearch and
+     * WebFetch outright. Search wins — it's the non-destructive one, and a turn
+     * that silently lost its web access looks like the model lying about its
+     * tools. We untick Write so the UI keeps matching what the backend will do,
+     * and say so rather than letting the setting vanish on its own.
+     */
+    resolveSearchWriteConflict(searchOn: boolean, writeOn: boolean): boolean {
+        if (!(searchOn && writeOn)) return writeOn;
+        const writeToggle = document.getElementById('chat-write-mode') as HTMLInputElement | null;
+        if (writeToggle) writeToggle.checked = false;
+        showToast(
+            'Write mode turned off — the assistant cannot search the web and write files in the same message.',
+            { type: 'warning' },
+        );
+        return false;
     }
 
     updateProviderSelects(): void {

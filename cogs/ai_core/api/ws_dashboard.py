@@ -49,6 +49,9 @@ from .dashboard_chat_claude import (
     handle_chat_message_claude as _handle_chat_message_claude,
 )
 from .dashboard_chat_claude_cli import (
+    _CLI_WEB_TOOLS_ENABLED,
+    _dashboard_cli_write_dirs,
+    _dashboard_cli_write_enabled,
     handle_ai_edit_message_claude_cli as _handle_ai_edit_message_claude_cli,
     handle_chat_message_claude_cli as _handle_chat_message_claude_cli,
     remember_deleted_conversation as _remember_deleted_cli_conversation,
@@ -114,6 +117,71 @@ from .dashboard_handlers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _web_search_toggle_support() -> dict[str, Any]:
+    """Whether the chat UI's Search checkbox controls anything.
+
+    It has always sent ``use_search``, but only the Gemini handler ever read it
+    — on a Claude-only deployment it was an inert control. The CLI backend now
+    honours it (it adds WebSearch/WebFetch to ``--allowedTools``), gated by the
+    operator's ``DASHBOARD_CLI_WEB_TOOLS``. The SDK Claude path still has no web
+    tool wired, so it reports unsupported there.
+    """
+    if "gemini" in AVAILABLE_PROVIDERS:
+        # Gemini grounding reads use_search regardless of the Claude backend.
+        return {"supported": True, "reason": ""}
+    if _CLAUDE_BACKEND != "cli":
+        return {
+            "supported": False,
+            "reason": (
+                "Web search is available on the Claude Code CLI backend or with "
+                "Gemini. The Anthropic SDK backend has no web tool configured."
+            ),
+        }
+    if not _CLI_WEB_TOOLS_ENABLED:
+        return {
+            "supported": False,
+            "reason": "Web tools are turned off by DASHBOARD_CLI_WEB_TOOLS=0.",
+        }
+    return {"supported": True, "reason": ""}
+
+
+def _write_mode_toggle_support() -> dict[str, Any]:
+    """Whether the chat UI's Write checkbox controls anything.
+
+    File writes are an opt-in operator capability: the toggle can only grant
+    what ``DASHBOARD_CLI_ALLOW_WRITE`` already permits, and only on the CLI
+    backend (the SDK path has no file tools at all).
+    """
+    if _CLAUDE_BACKEND != "cli":
+        return {
+            "supported": False,
+            "reason": "File writes are only available on the Claude Code CLI backend.",
+        }
+    if not _dashboard_cli_write_enabled():
+        return {
+            "supported": False,
+            "reason": (
+                "File writes are disabled. Set DASHBOARD_CLI_ALLOW_WRITE=1 to allow "
+                "the assistant to create and edit files."
+            ),
+        }
+    roots = _dashboard_cli_write_dirs()
+    if not roots:
+        return {
+            "supported": False,
+            "reason": (
+                "DASHBOARD_CLI_ALLOW_WRITE is on but no writable folder resolved — "
+                "set DASHBOARD_CLI_WRITE_DIRS to an existing path."
+            ),
+        }
+    return {
+        "supported": True,
+        "reason": "",
+        # Shown in the tooltip so the user knows the blast radius before ticking.
+        "roots": [str(r) for r in roots],
+    }
 
 
 def _thinking_toggle_support() -> dict[str, Any]:
@@ -977,6 +1045,8 @@ class DashboardWebSocketServer:
                 # letting the user flip a switch with no effect. Safe pre-auth:
                 # it names a capability, not an endpoint, key, or usage figure.
                 "thinking_toggle": _thinking_toggle_support(),
+                "web_search_toggle": _web_search_toggle_support(),
+                "write_mode_toggle": _write_mode_toggle_support(),
             }
             # ``api_failover.get_status()`` exposes endpoint URLs, total
             # request counts, and the last error message — none of which

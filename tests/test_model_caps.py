@@ -178,6 +178,78 @@ class TestThinkingToggleHandshake:
         assert "claude-fable-5" in result["reason"]
 
 
+class TestSearchWriteToggleHandshake:
+    """Search and Write report their own support, like Thinking does."""
+
+    def _mod(self, monkeypatch: pytest.MonkeyPatch, **attrs):
+        from cogs.ai_core.api import ws_dashboard
+
+        for k, v in attrs.items():
+            monkeypatch.setattr(ws_dashboard, k, v)
+        return ws_dashboard
+
+    def test_search_supported_on_cli_with_web_tools_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        w = self._mod(
+            monkeypatch,
+            _CLAUDE_BACKEND="cli",
+            _CLI_WEB_TOOLS_ENABLED=True,
+            AVAILABLE_PROVIDERS=["claude"],
+        )
+        assert w._web_search_toggle_support()["supported"] is True
+
+    def test_search_unsupported_when_web_tools_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        w = self._mod(
+            monkeypatch,
+            _CLAUDE_BACKEND="cli",
+            _CLI_WEB_TOOLS_ENABLED=False,
+            AVAILABLE_PROVIDERS=["claude"],
+        )
+        result = w._web_search_toggle_support()
+        assert result["supported"] is False
+        assert "DASHBOARD_CLI_WEB_TOOLS" in result["reason"]
+
+    def test_search_supported_whenever_gemini_is_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The Gemini handler reads use_search for grounding regardless of the
+        # Claude backend, so the control is live even with Claude web tools off.
+        w = self._mod(
+            monkeypatch,
+            _CLAUDE_BACKEND="api",
+            _CLI_WEB_TOOLS_ENABLED=False,
+            AVAILABLE_PROVIDERS=["claude", "gemini"],
+        )
+        assert w._web_search_toggle_support()["supported"] is True
+
+    def test_write_unsupported_when_env_flag_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        w = self._mod(monkeypatch, _CLAUDE_BACKEND="cli")
+        monkeypatch.setattr(w, "_dashboard_cli_write_enabled", lambda: False)
+        result = w._write_mode_toggle_support()
+        assert result["supported"] is False
+        assert "DASHBOARD_CLI_ALLOW_WRITE" in result["reason"]
+
+    def test_write_unsupported_when_no_root_resolves(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        w = self._mod(monkeypatch, _CLAUDE_BACKEND="cli")
+        monkeypatch.setattr(w, "_dashboard_cli_write_enabled", lambda: True)
+        monkeypatch.setattr(w, "_dashboard_cli_write_dirs", list)
+        result = w._write_mode_toggle_support()
+        assert result["supported"] is False
+        assert "DASHBOARD_CLI_WRITE_DIRS" in result["reason"]
+
+    def test_write_supported_reports_its_roots(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from pathlib import Path
+
+        w = self._mod(monkeypatch, _CLAUDE_BACKEND="cli")
+        monkeypatch.setattr(w, "_dashboard_cli_write_enabled", lambda: True)
+        monkeypatch.setattr(w, "_dashboard_cli_write_dirs", lambda: [Path("/tmp/out")])
+        result = w._write_mode_toggle_support()
+        assert result["supported"] is True
+        # The tooltip states the blast radius before the user ticks the box.
+        assert result["roots"] == [str(Path("/tmp/out"))]
+
+
 class TestOpus5Pricing:
     """Opus 5 bills at the Opus tier — not the Sonnet fallback."""
 

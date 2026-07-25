@@ -44,7 +44,8 @@ const CHAT_DOM = `
     <select id="chat-ai-provider"><option value="gemini">Gemini</option><option value="claude">Claude</option></select>
     <input type="checkbox" id="thinking-toggle">
     <input type="checkbox" id="chat-unrestricted">
-    <input type="checkbox" id="chat-use-search">
+    <label class="checkbox-label" id="chat-use-search-label"><input type="checkbox" id="chat-use-search"></label>
+    <label class="checkbox-label" id="chat-write-mode-label"><input type="checkbox" id="chat-write-mode"></label>
 
     <div id="context-window-indicator" style="display:none">
         <div id="context-bar-fill"></div>
@@ -1160,48 +1161,60 @@ describe('sendMessage — failed send keeps the bubble (INT-04)', () => {
     });
 });
 
-describe('applyThinkingToggleSupport — dead controls are disabled, not left lying', () => {
-    // The CLI backend (the default) always reasons: `claude -p` exposes only
-    // effort tiers and cannot switch thinking off. The server says so in the
-    // `connected` handshake; leaving the checkbox live would let the user flip
-    // a switch with no effect, which is what made the toggle look broken.
-    function toggle(): HTMLInputElement {
-        return document.getElementById('thinking-toggle') as HTMLInputElement;
-    }
+describe('chat toggles — dead controls are disabled, not left lying', () => {
+    // Each toggle only controls something under certain backend + config
+    // combinations. A live checkbox that silently does nothing is what made the
+    // Thinking and Search buttons feel broken; the handshake now says which are
+    // real and the UI greys out the rest.
+    const $ = (id: string) => document.getElementById(id) as HTMLInputElement;
 
-    it('disables and unchecks the toggle when the server reports it unsupported', () => {
+    it('disables and unchecks the thinking toggle when unsupported', () => {
         const cm = mountDomAndChat();
-        toggle().checked = true;
+        $('thinking-toggle').checked = true;
         cm.thinkingEnabled = true;
 
-        cm.applyThinkingToggleSupport({ supported: false, reason: 'CLI always reasons' });
+        cm.applyToggleSupportFromHandshake({
+            thinking_toggle: { supported: false, reason: 'CLI always reasons' },
+        });
 
-        expect(toggle().disabled).toBe(true);
-        expect(toggle().checked).toBe(false);
+        expect($('thinking-toggle').disabled).toBe(true);
+        expect($('thinking-toggle').checked).toBe(false);
         expect(cm.thinkingEnabled).toBe(false);
     });
 
-    it('surfaces the server reason as the tooltip so the user learns why', () => {
+    it('disables Search and Write independently, each with its own reason', () => {
         const cm = mountDomAndChat();
-        cm.applyThinkingToggleSupport({ supported: false, reason: 'CLI always reasons' });
-        const label = document.querySelector('.thinking-toggle');
-        // The fixture has no wrapping label; the checkbox itself must still be
-        // disabled, and when a label exists it carries the reason.
-        if (label) expect(label.getAttribute('title')).toBe('CLI always reasons');
-        expect(toggle().disabled).toBe(true);
+        cm.applyToggleSupportFromHandshake({
+            web_search_toggle: { supported: false, reason: 'web tools off' },
+            write_mode_toggle: { supported: true, reason: '', roots: ['C:\Users\ME\Desktop'] },
+        });
+
+        expect($('chat-use-search').disabled).toBe(true);
+        expect(document.getElementById('chat-use-search-label')!.getAttribute('title'))
+            .toBe('web tools off');
+        expect($('chat-write-mode').disabled).toBe(false);
     });
 
-    it('leaves the toggle usable when supported', () => {
+    it('names the write roots in the tooltip so the blast radius is visible', () => {
         const cm = mountDomAndChat();
-        cm.applyThinkingToggleSupport({ supported: true, reason: '' });
-        expect(toggle().disabled).toBe(false);
+        cm.applyToggleSupportFromHandshake({
+            write_mode_toggle: { supported: true, roots: ['C:\Users\ME\Desktop'] },
+        });
+        expect(document.getElementById('chat-write-mode-label')!.getAttribute('title'))
+            .toContain('C:\Users\ME\Desktop');
     });
 
-    it('treats a missing field as supported so an older server still works', () => {
+    it('treats missing fields as supported so an older server still works', () => {
         const cm = mountDomAndChat();
-        toggle().disabled = true;
-        cm.applyThinkingToggleSupport(undefined);
-        expect(toggle().disabled).toBe(false);
+        $('thinking-toggle').disabled = true;
+        $('chat-use-search').disabled = true;
+        $('chat-write-mode').disabled = true;
+
+        cm.applyToggleSupportFromHandshake({});
+
+        expect($('thinking-toggle').disabled).toBe(false);
+        expect($('chat-use-search').disabled).toBe(false);
+        expect($('chat-write-mode').disabled).toBe(false);
     });
 
     it('applies the handshake through handleMessage', () => {
@@ -1210,7 +1223,57 @@ describe('applyThinkingToggleSupport — dead controls are disabled, not left ly
             type: 'connected',
             presets: {},
             thinking_toggle: { supported: false, reason: 'nope' },
+            write_mode_toggle: { supported: false, reason: 'writes disabled' },
         });
-        expect(toggle().disabled).toBe(true);
+        expect($('thinking-toggle').disabled).toBe(true);
+        expect($('chat-write-mode').disabled).toBe(true);
+    });
+});
+
+describe('resolveSearchWriteConflict — Search wins, and the user is told', () => {
+    // The Claude CLI denies WebSearch/WebFetch in write mode, so a turn cannot
+    // have both. Dropping write silently would leave the checkbox claiming a
+    // capability the turn didn't have.
+    const $ = (id: string) => document.getElementById(id) as HTMLInputElement;
+
+    it('drops write mode and unticks the box when both are on', () => {
+        const cm = mountDomAndChat();
+        $('chat-write-mode').checked = true;
+
+        expect(cm.resolveSearchWriteConflict(true, true)).toBe(false);
+        expect($('chat-write-mode').checked).toBe(false);
+    });
+
+    it('leaves write mode alone when search is off', () => {
+        const cm = mountDomAndChat();
+        $('chat-write-mode').checked = true;
+
+        expect(cm.resolveSearchWriteConflict(false, true)).toBe(true);
+        expect($('chat-write-mode').checked).toBe(true);
+    });
+
+    it('is a no-op when write mode was never requested', () => {
+        const cm = mountDomAndChat();
+        expect(cm.resolveSearchWriteConflict(true, false)).toBe(false);
+        expect(cm.resolveSearchWriteConflict(false, false)).toBe(false);
+    });
+
+    it('sends the resolved flags, not the raw checkbox states', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = {
+            id: 'c1', title: 't', role_preset: 'general', thinking_enabled: false,
+            is_starred: false, created_at: '2026-04-01',
+        };
+        $('chat-use-search').checked = true;
+        $('chat-write-mode').checked = true;
+        (document.getElementById('chat-input') as HTMLTextAreaElement).value = 'hi';
+
+        cm.sendMessage();
+
+        const sent = (cm.wsClient.send as ReturnType<typeof vi.fn>).mock.calls
+            .map(c => c[0] as Record<string, unknown>)
+            .find(p => p.type === 'message');
+        expect(sent!.use_search).toBe(true);
+        expect(sent!.write_enabled).toBe(false);
     });
 });

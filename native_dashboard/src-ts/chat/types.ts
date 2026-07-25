@@ -51,3 +51,18 @@ export interface NativeConversationDetail {
     conversation: ChatConversation;
     messages: ChatMessage[];
 }
+
+/**
+ * A chat toggle's capability report from the WS `connected` handshake.
+ *
+ * The Thinking / Search / Write checkboxes each depend on the backend and the
+ * operator's env flags, so the server tells the client which of them can
+ * actually do anything. `reason` is user-facing copy shown as the disabled
+ * control's tooltip; `roots` (write mode only) names the folders the assistant
+ * may write into, so the tooltip can state the blast radius up front.
+ */
+export interface ToggleSupport {
+    supported?: boolean;
+    reason?: string;
+    roots?: string[];
+}
