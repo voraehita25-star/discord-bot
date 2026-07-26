@@ -1259,6 +1259,9 @@ function initSakuraAnimation(): void {
 
     const petals: PetalPhysics[] = [];
     const TAU = Math.PI * 2;
+    /** Shared empty array for single petals — they have no lobes to jitter, and
+     *  handing every one of them its own [] is 30-odd dead allocations. */
+    const EMPTY_JITTER: number[] = [];
     // Density scales with the window: a fixed 30 was a blizzard at the 800x600
     // floor and a drizzle on a wide monitor. Petals are recycled in place once
     // the sky is full, so this is also the total DOM node count for the effect.
@@ -1304,12 +1307,21 @@ function initSakuraAnimation(): void {
         vEdge: number;              // px/s fall speed when edge-on
         lift: number;               // 1/s lift coefficient (per unit fall speed)
         spin: number;               // deg/s in-plane tumble bias
-        // --- form: handed to the model, constant for this petal's life -------
+        // --- form: handed to the model, constant for this body's life --------
         aspect: number;             // width / length, so no two are the same cut
         cup: number;                // blade curl across the width
         twist: number;              // progressive twist, base → tip
         bend: number;               // lengthwise arc
-        r: number; g: number; b: number;
+        neck: number;               // taper exponent — narrow neck vs broad shoulders
+        dome: number;               // tip roundness
+        notch: number;              // depth of the cleft
+        /** 1 = a loose petal, 5 = a whole blossom drawn as five lobe instances
+         *  sharing this one body's centre, tumble and fall. */
+        lobes: number;
+        /** per-lobe angular jitter so a flower is not a perfect pentagon */
+        lobeJitter: number[];
+        r: number; g: number; b: number;         // body colour
+        baseR: number; baseG: number; baseB: number;  // throat / basal flush
     }
 
     /**
@@ -1365,12 +1377,12 @@ function initSakuraAnimation(): void {
         // below), so it is pulled up to match.
         p.vane = 0.38 + Math.random() * 0.5;
 
-        // ---- form. No two petals are the same object -----------------------
-        // These three feed the surface in sakura-model.ts, and they are the
-        // reason a petal now reads as a curved membrane rather than a rotated
-        // sheet: the CUP puts a bright crescent down one flank and shadow on
-        // the other, and because it is geometry, that highlight slides across
-        // the blade as the petal turns instead of turning with it.
+        // ---- form. No two bodies are the same object -----------------------
+        // These feed the surface in sakura-model.ts, and they are the reason a
+        // petal reads as a curved membrane rather than a rotated sheet: the CUP
+        // puts a bright crescent down one flank and shadow on the other, and
+        // because it is geometry, that highlight slides across the blade as the
+        // petal turns instead of turning with it.
         //
         // Signs are randomised rather than mirroring the mesh: a negative scale
         // would invert the surface's own normals and light the petal inside-out.
@@ -1380,10 +1392,78 @@ function initSakuraAnimation(): void {
         // Kept small: past ~0.12 the blade folds into a scoop and reads as a
         // taco shell rather than a petal with a little arc in it.
         p.bend = (Math.random() < 0.5 ? -1 : 1) * (0.03 + Math.random() * 0.08);
+
+        // ---- which sakura -------------------------------------------------
+        // One outline for every petal is what makes a field read as wallpaper.
+        // The silhouette is a shader parameter now, so a body can be a
+        // different FLOWER rather than the same one at a different angle.
         const rgb = pickColor();
         p.r = rgb[0];
         p.g = rgb[1];
         p.b = rgb[2];
+        p.lobes = 1;
+        p.lobeJitter = EMPTY_JITTER;
+        // A basal flush: real petals hold more colour where they met the
+        // flower. Warmed and deepened off the body colour so it always belongs
+        // to the same blossom.
+        p.baseR = Math.min(1, p.r * 1.02);
+        p.baseG = p.g * 0.76;
+        p.baseB = p.b * 0.80;
+
+        const kind = Math.random();
+        if (kind < 0.40) {
+            // somei-yoshino — the one everybody pictures. Moderate everything.
+            p.neck = 1.35 + Math.random() * 0.25;
+            p.dome = 0.38 + Math.random() * 0.08;
+            p.notch = 0.09 + Math.random() * 0.04;
+        } else if (kind < 0.62) {
+            // a slim, deeply cleft petal — long neck, tighter tip
+            p.neck = 1.12 + Math.random() * 0.16;
+            p.dome = 0.27 + Math.random() * 0.08;
+            p.notch = 0.12 + Math.random() * 0.05;
+            p.aspect *= 0.80;
+        } else if (kind < 0.80) {
+            // broad-shouldered, barely cleft — the rounder yaezakura petal,
+            // and a deeper pink to go with it
+            p.neck = 1.85 + Math.random() * 0.35;
+            p.dome = 0.46 + Math.random() * 0.08;
+            p.notch = 0.03 + Math.random() * 0.04;
+            p.aspect *= 1.12;
+            p.g *= 0.90;
+            p.b *= 0.94;
+        } else if (kind < 0.92) {
+            // one that has been off the tree a while: a firmer curl and more
+            // twist, colour drawn back toward the base. Multipliers kept
+            // moderate — much past this the blade folds along its midline and
+            // the silhouette pinches into a V, which reads as a torn leaf
+            // rather than a curled petal.
+            p.neck = 1.30 + Math.random() * 0.30;
+            p.dome = 0.34 + Math.random() * 0.10;
+            p.notch = 0.08 + Math.random() * 0.05;
+            p.cup *= 1.15;
+            p.twist *= 1.3;
+            p.notch *= 0.7;   // a hard curl already deepens the cleft optically
+            p.baseG *= 0.90;
+            p.baseB *= 0.92;
+        } else {
+            // A WHOLE BLOSSOM: five lobes sharing this body's centre, tumble
+            // and fall. They turn about their BASE (pivot, in the model) so the
+            // five meet in the middle, and the basal tint becomes the flower's
+            // gold throat where they do.
+            p.lobes = 5;
+            p.neck = 1.45 + Math.random() * 0.25;
+            p.dome = 0.42 + Math.random() * 0.08;
+            p.notch = 0.09 + Math.random() * 0.04;
+            p.aspect *= 1.05;
+            // A flower is a bigger object than a loose petal.
+            p.size *= 1.5;
+            p.cup = 0.20 + Math.random() * 0.10;   // lobes cup the same way: a dish
+            p.twist *= 0.35;
+            p.baseR = 1.0;
+            p.baseG = 0.88;
+            p.baseB = 0.58;
+            p.lobeJitter = [0, 1, 2, 3, 4].map(() => (Math.random() - 0.5) * 0.20);
+        }
 
         if (Math.random() < 0.93) {
             // Flutterer: rocks about broadside and never turns over. Raised from
@@ -1456,7 +1536,9 @@ function initSakuraAnimation(): void {
             axisAngle: 0, precess: 0, axisX: 1, axisY: 0,
             sway: 0, swayFreq: 0.4, swayBoost: 0, vane: 0.4,
             vBroad: 30, vEdge: 90, lift: 1, spin: 0,
-            aspect: 1, cup: 0.2, twist: 0.2, bend: 0.08, r: 1, g: 0.8, b: 0.87,
+            aspect: 1, cup: 0.2, twist: 0.2, bend: 0.08,
+            neck: 1.4, dome: 0.4, notch: 0.1, lobes: 1, lobeJitter: EMPTY_JITTER,
+            r: 1, g: 0.8, b: 0.87, baseR: 1, baseG: 0.62, baseB: 0.7,
         };
         resetPetal(
             p,
@@ -1699,24 +1781,73 @@ function initSakuraAnimation(): void {
             // stays solid where it faces you and goes to nothing along the
             // edge that has rolled away, in the same frame.
             const fadeIn = Math.min(1, p.life * 1.6);
-            draw.push({
-                x: p.x + p.size / 2,
-                y: p.y + p.size / 2,
-                sizeX: p.size * p.aspect,
-                sizeY: p.size,
-                angle: p.angle * Math.PI / 180,
-                axisX: p.axisX,
-                axisY: p.axisY,
-                tumble: p.tumble,
-                cup: p.cup,
-                twist: p.twist,
-                bend: p.bend,
-                r: p.r,
-                g: p.g,
-                b: p.b,
-                alpha: (0.52 + 0.46 * p.depth) * (0.62 + 0.38 * area) * fadeIn,
-                depth: p.depth,
-            });
+            const alpha = (0.52 + 0.46 * p.depth) * (0.62 + 0.38 * area) * fadeIn;
+            const baseAngle = p.angle * Math.PI / 180;
+            const cx = p.x + p.size / 2;
+            const cy = p.y + p.size / 2;
+
+            for (let k = 0; k < p.lobes; k++) {
+                // A single petal turns about its own middle (pivot 0). A
+                // blossom's five lobes turn about their BASE, which is what
+                // brings them together into one flower instead of five petals
+                // orbiting a hole.
+                const theta = p.lobes === 1
+                    ? baseAngle
+                    : baseAngle + k * (TAU / 5) + p.lobeJitter[k];
+
+                // The shader tumbles FIRST and rotates in-plane second. For a
+                // flower that is the wrong order — each lobe would tumble about
+                // its own axis and the blossom would come apart. Since
+                // Rz(θ)·R_a(t) = R_{Rz(θ)·a}(t), feeding each lobe the axis
+                // pre-rotated by -θ makes the whole arrangement tumble about
+                // ONE shared axis, as a rigid flower.
+                let ax = p.axisX;
+                let ay = p.axisY;
+                if (p.lobes > 1) {
+                    const c = Math.cos(theta);
+                    const s = Math.sin(theta);
+                    ax = p.axisX * c + p.axisY * s;
+                    ay = -p.axisX * s + p.axisY * c;
+                }
+
+                // No flower has five identical petals. The angular jitter
+                // doubles as a size jitter so the lobes are not a stamped
+                // pentagon.
+                const lobeScale = p.lobes === 1 ? 1 : 1 + p.lobeJitter[k] * 0.55;
+
+                draw.push({
+                    x: cx,
+                    y: cy,
+                    sizeX: p.size * p.aspect * lobeScale,
+                    sizeY: p.size * lobeScale,
+                    angle: theta,
+                    axisX: ax,
+                    axisY: ay,
+                    tumble: p.tumble,
+                    cup: p.cup,
+                    twist: p.twist,
+                    bend: p.bend,
+                    // -0.44, not -0.52. At -0.52 a lobe's base sits exactly on
+                    // the flower's centre — and the base is where the width
+                    // profile goes to zero, so five of them met at a point and
+                    // left a hole punched through the middle of every blossom.
+                    // The extra 0.08 carries each lobe past the centre so they
+                    // overlap and close it, which is also where the gold throat
+                    // comes from.
+                    pivot: p.lobes === 1 ? 0 : -0.44,
+                    neck: p.neck,
+                    dome: p.dome,
+                    notch: p.notch,
+                    r: p.r,
+                    g: p.g,
+                    b: p.b,
+                    baseR: p.baseR,
+                    baseG: p.baseG,
+                    baseB: p.baseB,
+                    alpha,
+                    depth: p.depth,
+                });
+            }
         }
 
         renderer.render(draw, LIGHT_DIR);
