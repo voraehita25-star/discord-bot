@@ -1297,11 +1297,10 @@ html[data-theme="light"] .chat-connection-status.connected {
    on top of a per-frame-integrated value reads as stutter. Petals stay
    pointer-events:none — the cursor force field is computed in JS.
    ============================================================================ */
-#sakura-container .sakura-petal svg {
-    display: block;
-    width: 100%;
-    height: 100%;
-}
+/* The petals are drawn by the WebGL model (sakura-model.ts) into two
+   canvases the renderer creates and styles inline, so there is no petal
+   element left to rule. #sakura-container itself still matters — see the
+   stacking-context note in its own block. */
 
 /* Star toggle — chat-manager renders the graphic <svg .ic> star; the .starred
    state fills the glyph in blossom gold (+ aria-pressed for AT). */

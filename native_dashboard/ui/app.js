@@ -9,6 +9,7 @@
 import { invoke, escapeHtml, isSafeAvatarUrl, settings, loadSettings, saveSettings, initToastContainer, setup3DInteractions, animateNumber, setSkeleton, showToast, showConfirmDialog, icon, countLabel, } from './shared.js';
 import { chatManager, initChatManager, } from './chat-manager.js';
 import { HistoryManager } from './history-manager.js';
+import { SakuraRenderer } from './sakura-model.js';
 // ============================================================================
 // Performance Cache System
 // ============================================================================
@@ -1042,12 +1043,25 @@ function updateCharts() {
     }
 }
 // ============================================================================
-// Sakura Petals Animation — thin-plate aerodynamics, integrated per frame.
-// A fixed set of nodes (sized to the window) is recycled in place, so after the
-// first second the effect makes no DOM mutations at all; the sim writes only
-// transform + opacity. See the model notes above the simulation loop.
+// Sakura Petals Animation — thin-plate aerodynamics, integrated per frame, and
+// drawn as a real 3D surface (see sakura-model.ts for the geometry and the
+// shading; this half owns only the motion).
+//
+// A fixed set of petals sized to the window is recycled in place, so the field
+// allocates nothing after the first second. There are no per-petal DOM nodes
+// any more: the sim fills a plain array and the renderer draws the lot in two
+// instanced calls.
 // ============================================================================
 let sakuraEnabled = true;
+let sakuraRenderer = null;
+/** Live field stats. There are no per-petal DOM nodes to count any more, so
+ *  this is the only handle the e2e suite has on whether the effect is actually
+ *  running — see the sakura tests in ui-invariants.spec.ts. `frames` doubling
+ *  its rate is how a second simulation loop would show itself. */
+const sakuraStats = { count: 0, frames: 0 };
+export function sakuraDebugState() {
+    return { running: sakuraRunning, count: sakuraStats.count, frames: sakuraStats.frames };
+}
 /** True between a successful initSakuraAnimation() and the next stopSakura().
  *  Replaces the old `sakuraInterval !== null` running-check: spawning moved
  *  into the rAF loop, so there is no interval left to test. Without an explicit
@@ -1060,9 +1074,12 @@ function stopSakura() {
     for (const dispose of sakuraDisposers)
         dispose();
     sakuraDisposers = [];
+    sakuraRenderer?.dispose();
+    sakuraRenderer = null;
+    sakuraStats.count = 0;
     const c = document.getElementById('sakura-container');
     if (c)
-        c.innerHTML = '';
+        c.replaceChildren();
 }
 /** Called by Settings UI toggle. Enables or disables the animation at runtime. */
 export function setSakuraEnabled(enabled) {
@@ -1087,157 +1104,47 @@ function initSakuraAnimation() {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches)
         return;
     sakuraRunning = true;
-    // All five shapes are unmistakably sakura: two full five-petal blossoms and
-    // three single petals — every petal carries the signature notched (cleft)
-    // outer tip. (The old set mixed in plain ellipses and a diamond sparkle.)
-    const BLOSSOM_LOBE = 'M20 20 C15 15 13.6 8.4 16.4 5.2 C18 3.4 19.5 4.8 20 7 C20.5 4.8 22 3.4 23.6 5.2 C26.4 8.4 25 15 20 20 Z';
-    const BLOSSOM_LOBE_ROUND = 'M20 20 C14.6 15.2 13 9 16 5.6 C17.8 3.6 19.4 5 20 7.4 C20.6 5 22.2 3.6 24 5.6 C27 9 25.4 15.2 20 20 Z';
-    // A petal is a curved translucent membrane, and the previous paint — one
-    // opacity ramp along the long axis — could not say so. A single value
-    // gradient in one direction is exactly what a piece of tinted paper looks
-    // like, which is what the field read as.
+    // Colour, as RGB triples the renderer hands straight to the shader. Two
+    // palettes, because one never worked: pale blossom reads beautifully on the
+    // midnight canvas and disappears completely on dawn paper. The dawn set is
+    // the same flower at a depth that survives a near-white backdrop.
     //
-    // Three stacked fills of the SAME path say it instead:
-    //
-    //   1. currentColor — the flower's own hue, flat.
-    //   2. a white ramp along the petal's axis (y=0 is the notched outer tip,
-    //      y=1 the base). Real sakura are near-white at the rim and hold their
-    //      colour at the base; that value shift is most of the difference
-    //      between "petal" and "pink shape".
-    //   3. the CUP — shadow down one flank, a soft sheen up the other, across
-    //      the SHORT axis. This is the term that gives the surface a curve.
-    //      It rides in petal space, so it turns with the petal the way a real
-    //      surface's own shading does; the global light direction is handled
-    //      separately, by the normal-based brightness write in the sim loop.
-    //
-    // Both gradients are objectBoundingBox, so the five rotated lobes of a
-    // blossom each shade along THEIR own axis for free.
-    //
-    // The ids have to be unique per petal: several inline <svg> roots in one
-    // document share an id namespace, and url(#…) resolves to the FIRST match —
-    // so every petal would inherit the first petal's gradients.
-    let gradSeq = 0;
-    const petalPaint = () => {
-        const n = gradSeq++;
-        const tip = `sk-t${n}`;
-        const cup = `sk-c${n}`;
-        return {
-            tip,
-            cup,
-            defs: `<defs>` +
-                `<linearGradient id="${tip}" x1="0" y1="0" x2="0" y2="1">` +
-                `<stop offset="0" stop-color="#fff" stop-opacity="0.40"/>` +
-                `<stop offset="0.38" stop-color="#fff" stop-opacity="0.13"/>` +
-                `<stop offset="0.82" stop-color="#fff" stop-opacity="0"/>` +
-                `</linearGradient>` +
-                // Six stops, not four: with the shadow zeroed at 0.32 and the
-                // sheen only starting at 0.70, the untouched band between them
-                // met the sheen at a visible vertical seam down the middle of
-                // the petal — a crease, which is the one thing a smooth curved
-                // surface must not have. The extra stops carry the shadow out
-                // and bring the sheen in gradually, and the drop at the far rim
-                // is the edge rolling away from the light.
-                `<linearGradient id="${cup}" x1="0" y1="0" x2="1" y2="0">` +
-                `<stop offset="0" stop-color="#4a1428" stop-opacity="0.30"/>` +
-                `<stop offset="0.26" stop-color="#4a1428" stop-opacity="0.08"/>` +
-                `<stop offset="0.46" stop-color="#4a1428" stop-opacity="0"/>` +
-                `<stop offset="0.66" stop-color="#fff" stop-opacity="0.12"/>` +
-                `<stop offset="0.86" stop-color="#fff" stop-opacity="0.22"/>` +
-                `<stop offset="1" stop-color="#fff" stop-opacity="0.05"/>` +
-                `</linearGradient>` +
-                `</defs>`,
-        };
-    };
-    const blossom = (lobe, center) => {
-        const { tip, cup, defs } = petalPaint();
-        const lobes = [0, 72, 144, 216, 288]
-            .map(a => `<path d="${lobe}" transform="rotate(${a} 20 20)"/>`)
-            .join('');
-        return `<svg viewBox="0 0 40 40">${defs}` +
-            `<g fill="currentColor">${lobes}</g>` +
-            `<g fill="url(#${tip})">${lobes}</g>` +
-            `<g fill="url(#${cup})">${lobes}</g>` +
-            `${center}</svg>`;
-    };
-    const single = (d) => {
-        const { tip, cup, defs } = petalPaint();
-        return `<svg viewBox="0 0 40 40">${defs}` +
-            `<path d="${d}" fill="currentColor"/>` +
-            `<path d="${d}" fill="url(#${tip})"/>` +
-            `<path d="${d}" fill="url(#${cup})"/>` +
-            `</svg>`;
-    };
-    // Built per petal, not once: each call mints a fresh pair of gradient ids.
-    const makeShape = () => {
-        // Whole blossoms do come off the tree, but the overwhelming majority of
-        // what falls is single petals — and now that a petal is ~14px at the
-        // near plane instead of 26px, a five-lobe flower has fewer pixels to
-        // read as one, so it is rarer still.
-        if (Math.random() < 0.08) {
-            return Math.random() < 0.5
-                // full blossom with a pale stamen dot
-                ? blossom(BLOSSOM_LOBE, '<circle cx="20" cy="20" r="2.2" fill="rgba(255,255,255,0.8)"/>')
-                // full blossom, rounder lobes, no center
-                : blossom(BLOSSOM_LOBE_ROUND, '');
-        }
-        // SILHOUETTE — the single thing that decides whether these read as
-        // sakura. The previous set was 24 units wide over 32 tall with the notch
-        // cut 6 units deep between two round shoulders, and that combination
-        // does not draw a petal: it draws a HEART. Rendered at 100px the whole
-        // field was little apple shapes.
-        //
-        // A somei-yoshino petal is spatulate — it tapers to a narrow point where
-        // it met the flower, carries its width high, and the famous notch is a
-        // small nick in an otherwise round end, roughly a tenth of the petal's
-        // length. These are ~20 wide over ~31 tall (ratio 1.6, vs the old 1.3)
-        // with a 3-unit notch, which is the shape everyone actually pictures.
-        const singles = [
-            // wide petal — the canonical one
-            'M20 36.5 C16.2 32 11.4 25.4 10.2 17.6 C9.3 11.4 12.4 5.6 16.4 5.2 C18.2 5 19.4 6.4 20 8.4 C20.6 6.4 21.8 5 23.6 5.2 C27.6 5.6 30.7 11.4 29.8 17.6 C28.6 25.4 23.8 32 20 36.5 Z',
-            // narrow petal — same anatomy, slimmer (ratio 2.2)
-            'M20 36.8 C17.2 31.6 13.8 24.6 13 17.2 C12.3 11.2 14.8 5.8 17.6 5.4 C18.9 5.2 19.6 6.6 20 8.6 C20.4 6.6 21.1 5.2 22.4 5.4 C25.2 5.8 27.7 11.2 27 17.2 C26.2 24.6 22.8 31.6 20 36.8 Z',
-            // leaning petal — the flank curves harder on one side, so it reads
-            // as one caught mid-flutter rather than a symmetric cut-out
-            'M21.8 36.2 C16.4 31.4 11.6 24.2 11.2 16.6 C10.9 10.4 14.2 5.4 18 5.6 C19.6 5.7 20.4 7 20.6 8.9 C21.5 7.1 23.2 5.9 25 6.6 C28.4 7.9 30 13.4 28.6 19.4 C27.2 25.6 24.8 31.6 21.8 36.2 Z',
-            // curling petal — the right flank has already rolled toward the
-            // viewer, so the outline pinches in at the waist and swells again
-            // below it. The cup gradient lands across that pinch and reads as
-            // the roll rather than as a flat shadow.
-            'M20 36.6 C16.4 31.6 12.2 24.6 11.6 17.2 C11.1 11 14 5.6 17.8 5.4 C19.4 5.3 20.4 6.6 20.8 8.6 C21.6 6.8 23 5.6 24.6 6.2 C27.2 7.2 28.4 11.6 27.6 16.4 C26.9 20.6 25 23.4 23.2 24 C25.4 26.8 25.2 31.4 23.4 34.6 C22.6 36 21.4 36.6 20 36.6 Z',
-        ];
-        return single(singles[Math.floor(Math.random() * singles.length)]);
-    };
-    // Opaque colours: the alpha used to be baked into the swatch, which fought
-    // the depth model below for control of how solid a petal looks. Alpha is
-    // now owned entirely by the per-frame opacity write.
-    //
-    // Two palettes, because one never worked: pale blossom reads beautifully on
-    // the midnight canvas and disappears completely on dawn paper. The dawn set
-    // is the same flower at a depth that survives a near-white backdrop.
+    // Alpha is NOT baked in. The per-frame opacity write owns the petal's
+    // overall presence, and the shader thins the blade further wherever its own
+    // curvature turns a part of it edge-on.
     const NIGHT_COLORS = [
-        '#ffd7e4',
-        '#ffc2d6',
-        '#ffb0c9',
-        '#ff9dbd',
-        // The pale one. Was #fff1f5, which is white to within a rounding error —
-        // and the tip ramp whitens the top of every petal anyway, so those came
-        // out as featureless white blobs. Keeping a little pink in the base is
-        // what lets the ramp read as a gradient at all.
-        '#ffdce8',
+        [1.000, 0.843, 0.894],
+        [1.000, 0.761, 0.839],
+        [1.000, 0.690, 0.788],
+        [1.000, 0.616, 0.741],
+        [1.000, 0.863, 0.910],
     ];
     const DAWN_COLORS = [
-        '#ef8fb1',
-        '#e5749f',
-        '#f2a6c1',
-        '#d96a94',
-        '#f8c2d5',
+        [0.937, 0.561, 0.694],
+        [0.898, 0.455, 0.624],
+        [0.949, 0.651, 0.757],
+        [0.851, 0.416, 0.580],
+        [0.973, 0.761, 0.835],
     ];
     const isLight = () => document.documentElement.getAttribute('data-theme') === 'light';
     const pickColor = () => {
         const set = isLight() ? DAWN_COLORS : NIGHT_COLORS;
         return set[Math.floor(Math.random() * set.length)];
     };
-    const activePetals = new Set();
+    // The renderer owns the two canvases and all the GL state. If the platform
+    // cannot give us WebGL2 the field simply does not run: it is decoration,
+    // and a second full software renderer kept alive for a case Tauri's own
+    // WebView never hits would be more code than the effect is worth.
+    const renderer = new SakuraRenderer(container);
+    if (!renderer.ok) {
+        sakuraRunning = false;
+        return;
+    }
+    sakuraRenderer = renderer;
+    // `function` declarations below are hoisted, which drops the null-narrowing
+    // the early return above established on `container`. Capture it once.
+    const host = container;
+    const petals = [];
     const TAU = Math.PI * 2;
     // Density scales with the window: a fixed 30 was a blizzard at the 800x600
     // floor and a drizzle on a wide monitor. Petals are recycled in place once
@@ -1248,16 +1155,6 @@ function initSakuraAnimation() {
     // 31 petals to 37.
     const MAX_PETALS = Math.max(16, Math.min(44, Math.round(((container.clientWidth || window.innerWidth) *
         (container.clientHeight || window.innerHeight)) / 28000)));
-    const physics = new WeakMap();
-    // No detach/reattach pool any more: a petal that reaches the floor is given
-    // fresh initial conditions IN PLACE (see the sim loop), so after the first
-    // few seconds the effect performs zero DOM mutations — only transform and
-    // opacity writes on a fixed set of composited nodes.
-    function makePetal() {
-        const petal = document.createElement('div');
-        petal.className = 'sakura-petal';
-        return petal;
-    }
     /**
      * Give a petal a fresh set of initial conditions.
      *
@@ -1308,18 +1205,25 @@ function initSakuraAnimation() {
         // Weathervaning now owns the in-plane angle almost entirely (see p.spin
         // below), so it is pulled up to match.
         p.vane = 0.38 + Math.random() * 0.5;
-        p.shade = -1;
-        // Depth of field, near end. The far tier already gets it for free from
-        // .app's backdrop-filter; without the matching cue at the near end the
-        // closest petals looked pasted onto the glass instead of passing in
-        // front of it. Scaled with the smaller petal — 0.6px on a 14px shape is
-        // a smear, not a focus cue.
-        p.blur = depth > 0.87 ? 'blur(0.4px) ' : '';
-        // No two petals are cut from the same die: a little stretch along the
-        // long axis, and a coin-flip mirror so the asymmetric shape does not
-        // always lean the same way.
-        p.sx = (Math.random() < 0.5 ? -1 : 1) * (0.92 + Math.random() * 0.16);
-        p.sy = 0.9 + Math.random() * 0.24;
+        // ---- form. No two petals are the same object -----------------------
+        // These three feed the surface in sakura-model.ts, and they are the
+        // reason a petal now reads as a curved membrane rather than a rotated
+        // sheet: the CUP puts a bright crescent down one flank and shadow on
+        // the other, and because it is geometry, that highlight slides across
+        // the blade as the petal turns instead of turning with it.
+        //
+        // Signs are randomised rather than mirroring the mesh: a negative scale
+        // would invert the surface's own normals and light the petal inside-out.
+        p.aspect = 0.90 + Math.random() * 0.22;
+        p.cup = (Math.random() < 0.5 ? -1 : 1) * (0.14 + Math.random() * 0.18);
+        p.twist = (Math.random() < 0.5 ? -1 : 1) * (0.08 + Math.random() * 0.28);
+        // Kept small: past ~0.12 the blade folds into a scoop and reads as a
+        // taco shell rather than a petal with a little arc in it.
+        p.bend = (Math.random() < 0.5 ? -1 : 1) * (0.03 + Math.random() * 0.08);
+        const rgb = pickColor();
+        p.r = rgb[0];
+        p.g = rgb[1];
+        p.b = rgb[2];
         if (Math.random() < 0.93) {
             // Flutterer: rocks about broadside and never turns over. Raised from
             // 76% — one petal in four doing continuous revolutions is far more
@@ -1367,59 +1271,33 @@ function initSakuraAnimation() {
         p.spin = (Math.random() - 0.5) * 11;
     }
     /**
-     * Put the petal on the correct side of the UI.
+     * Which side of the UI a petal passes on.
      *
      * The whole field used to sit at z-index 0 behind `.app` (z-index 1), and
      * once the panels went opaque there was nowhere left for a petal to be
-     * seen — the effect was running perfectly and rendering nothing. Depth now
-     * decides: the far half stays behind the app, where `.app`'s
-     * `backdrop-filter: blur(2px)` softens it into genuine depth-of-field for
-     * free; the near half drifts in FRONT of the deck. Petals are
-     * pointer-events:none, so nothing becomes unclickable. Modals and toasts
-     * live far above both (--z-modal / --z-toast).
+     * seen — the effect was running perfectly and rendering nothing. Depth
+     * decides: the far half stays behind the deck and is OCCLUDED by the
+     * panels, which is the parallax cue; the near half drifts in front. The
+     * split is why there are two canvases — see SakuraRenderer. Both are
+     * pointer-events:none, so nothing becomes unclickable, and modals/toasts
+     * live far above either (--z-modal / --z-toast).
      *
      * Requires `#sakura-container` to stay stacking-context-free (no transform,
      * no will-change, z-index:auto) — see the sakura block in orbital.css.
      */
-    function setPetalLayer(petal, p) {
-        petal.style.zIndex = p.depth > 0.52 ? '2' : '0';
-    }
     function createPetal(seeded = false) {
-        if (activePetals.size >= MAX_PETALS)
+        if (petals.length >= MAX_PETALS)
             return;
-        const target = document.getElementById('sakura-container');
-        if (!target)
-            return;
-        const petal = makePetal();
-        activePetals.add(petal);
-        const color = pickColor();
-        const shape = makeShape();
         const p = {
             x: 0, y: 0, vx: 0, vy: 0, angle: 0, size: 12, life: 0, depth: 0.5,
             tumble: 0, tumbleAmp: 1, tumbleRate: 0, tumbleBase: 0,
             axisAngle: 0, precess: 0, axisX: 1, axisY: 0,
-            sway: 0, swayFreq: 0.4, swayBoost: 0, vane: 0.4, shade: -1,
-            blur: '', sx: 1, sy: 1,
+            sway: 0, swayFreq: 0.4, swayBoost: 0, vane: 0.4,
             vBroad: 30, vEdge: 90, lift: 1, spin: 0,
+            aspect: 1, cup: 0.2, twist: 0.2, bend: 0.08, r: 1, g: 0.8, b: 0.87,
         };
-        resetPetal(p, target.clientWidth || window.innerWidth, target.clientHeight || window.innerHeight, seeded);
-        physics.set(petal, p);
-        petal.innerHTML = shape;
-        // position:absolute (not fixed) so the container's overflow:hidden
-        // actually clips petals — fixed escapes any ancestor clip and would
-        // push past the viewport, creating phantom horizontal scroll. The
-        // simulation drives position via transform; left/top stay 0.
-        petal.style.position = 'absolute';
-        petal.style.width = `${p.size.toFixed(1)}px`;
-        petal.style.height = `${p.size.toFixed(1)}px`;
-        petal.style.left = '0';
-        petal.style.top = '0';
-        petal.style.color = color;
-        petal.style.pointerEvents = 'none';
-        petal.style.opacity = '0';
-        petal.style.willChange = 'transform, opacity, filter';
-        setPetalLayer(petal, p);
-        target.appendChild(petal);
+        resetPetal(p, host.clientWidth || window.innerWidth, host.clientHeight || window.innerHeight, seeded);
+        petals.push(p);
     }
     // ---- Physics simulation -------------------------------------------------
     // Thin-plate aerodynamics, integrated per frame (semi-implicit Euler). The
@@ -1449,10 +1327,8 @@ function initSakuraAnimation() {
     const CURSOR_WIND = 0.85; // fraction of cursor velocity entrained
     const SPAWN_RATE = 1.4; // petals/s (jittered, see the spawn accumulator)
     // Key light, screen space, y down: upper-left and in front of the deck.
-    // Unit length, so the Lambert term below needs no normalising per frame.
-    const LIGHT_X = -0.46;
-    const LIGHT_Y = -0.56;
-    const LIGHT_Z = 0.69;
+    // Unit length, so the shader's Lambert term needs no normalising per frame.
+    const LIGHT_DIR = [-0.46, -0.56, 0.69];
     let pointerX = -9999;
     let pointerY = -9999;
     let pointerVX = 0;
@@ -1477,6 +1353,16 @@ function initSakuraAnimation() {
         pointerVY = 0;
         lastPointerT = 0;
     };
+    // Reused every frame: the renderer copies out of it immediately, so there is
+    // no allocation in the loop.
+    const draw = [];
+    const syncRendererSize = () => {
+        renderer.resize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
+    };
+    syncRendererSize();
+    const resizeHandler = () => syncRendererSize();
+    window.addEventListener('resize', resizeHandler);
+    sakuraDisposers.push(() => window.removeEventListener('resize', resizeHandler));
     let simTime = 0;
     let spawnAcc = 0;
     let lastThemeLight = isLight();
@@ -1497,6 +1383,7 @@ function initSakuraAnimation() {
         const height = container.clientHeight || window.innerHeight;
         const width = container.clientWidth || window.innerWidth;
         const floor = height + 60;
+        draw.length = 0;
         // One attribute read per frame (not per petal) catches a theme flip and
         // re-tints the whole field at once. Without it, blossom mixed for the
         // midnight canvas would hang around invisibly on dawn paper until every
@@ -1504,8 +1391,12 @@ function initSakuraAnimation() {
         const lightNow = isLight();
         if (lightNow !== lastThemeLight) {
             lastThemeLight = lightNow;
-            for (const petal of activePetals)
-                petal.style.color = pickColor();
+            for (const p of petals) {
+                const rgb = pickColor();
+                p.r = rgb[0];
+                p.g = rgb[1];
+                p.b = rgb[2];
+            }
         }
         // Spawning lives in the sim now, not a setInterval: one petal exactly
         // every 1000ms is a metronome you can hear, and an interval also keeps
@@ -1521,10 +1412,7 @@ function initSakuraAnimation() {
         const gust = Math.pow(Math.max(0, Math.sin(simTime * 0.079 + 0.9)), 6);
         const breeze = (15 * Math.sin(simTime * 0.27) + 10 * Math.sin(simTime * 0.101 + 1.7))
             * (1 + 2.4 * gust);
-        for (const petal of Array.from(activePetals)) {
-            const p = physics.get(petal);
-            if (!p)
-                continue;
+        for (const p of petals) {
             p.life += dt;
             // --- attitude to the airflow: the source of both force laws ------
             const cosT = Math.cos(p.tumble);
@@ -1611,57 +1499,38 @@ function initSakuraAnimation() {
             // height it had, so one could pop into existence mid-screen.
             if (p.y > floor || p.x < -p.size - 90 || p.x > width + p.size + 90) {
                 resetPetal(p, width, height, false);
-                petal.style.width = `${p.size.toFixed(1)}px`;
-                petal.style.height = `${p.size.toFixed(1)}px`;
-                petal.style.color = pickColor();
-                setPetalLayer(petal, p);
                 continue;
             }
-            // Depth sets how solid a petal is; turning edge-on dims it further,
-            // which sells the flip on top of the geometric foreshortening.
-            // The depth term is raised so the far tier stays a shape rather than
-            // fading to a smudge at the new smaller size, and the area term is
-            // left generous: the petals no longer tilt far enough for a hard
-            // edge-on fade to be the effect it was, and stacking a steep alpha
-            // ramp on top of the geometric foreshortening only greys them out.
+            // Overall presence. Depth sets how solid a petal is; the attitude
+            // term is deliberately gentle now, because the SHADER thins each
+            // part of the blade by its own local normal — a whole-petal fade on
+            // top of that would just grey the field out. That per-fragment
+            // thinning is something the sprite could never do: a curled petal
+            // stays solid where it faces you and goes to nothing along the
+            // edge that has rolled away, in the same frame.
             const fadeIn = Math.min(1, p.life * 1.6);
-            const alpha = (0.38 + 0.60 * p.depth) * (0.34 + 0.66 * area) * fadeIn;
-            petal.style.opacity = alpha.toFixed(3);
-            // Shading, from the plate's actual normal rather than from |cos|.
-            // The old term was a function of projected area alone, so every
-            // petal at a given attitude was lit identically no matter which way
-            // it was facing — brightness that tracks nothing but foreshortening
-            // reads as a sprite being squashed, not a surface turning in light.
-            //
-            // rotate3d(axisX, axisY, 0, θ) carries the face normal (0,0,1) to
-            // (axisY·sinθ, −axisX·sinθ, cosθ). Dotting that with a fixed light
-            // gives a petal that brightens as it rolls its face toward the lamp
-            // and darkens as it rolls away — the same petal, at the same
-            // projected area, can now be lit or shadowed depending on its
-            // heading, which is what sells it as a solid thing.
-            const nx = p.axisY * sinT;
-            const ny = -p.axisX * sinT;
-            const lambert = Math.max(0, nx * LIGHT_X + ny * LIGHT_Y + cosT * LIGHT_Z);
-            // Front face catches the key light; the back is lit only by what
-            // comes through the membrane, so it is dimmer AND more saturated
-            // (transmitted colour), which is how a backlit petal actually looks.
-            const front = cosT >= 0;
-            const shade = (front ? 0.86 : 0.66) + 0.42 * lambert;
-            // Quantised + coalesced: filter is a GPU colour matrix on an
-            // already-composited layer, but there is no point writing it 60x a
-            // second for a change nobody can see.
-            if (Math.abs(shade - p.shade) > 0.02) {
-                p.shade = shade;
-                const sat = front ? 1 : 1.3;
-                petal.style.filter =
-                    `${p.blur}brightness(${shade.toFixed(2)}) saturate(${sat.toFixed(2)})`;
-            }
-            petal.style.transform =
-                `perspective(520px) translate3d(${p.x.toFixed(2)}px, ${p.y.toFixed(2)}px, 0) ` +
-                    `rotate(${(p.angle % 360).toFixed(2)}deg) ` +
-                    `rotate3d(${p.axisX.toFixed(3)}, ${p.axisY.toFixed(3)}, 0, ${((p.tumble * 180 / Math.PI) % 360).toFixed(2)}deg) ` +
-                    `scale(${p.sx.toFixed(2)}, ${p.sy.toFixed(2)})`;
+            draw.push({
+                x: p.x + p.size / 2,
+                y: p.y + p.size / 2,
+                sizeX: p.size * p.aspect,
+                sizeY: p.size,
+                angle: p.angle * Math.PI / 180,
+                axisX: p.axisX,
+                axisY: p.axisY,
+                tumble: p.tumble,
+                cup: p.cup,
+                twist: p.twist,
+                bend: p.bend,
+                r: p.r,
+                g: p.g,
+                b: p.b,
+                alpha: (0.52 + 0.46 * p.depth) * (0.62 + 0.38 * area) * fadeIn,
+                depth: p.depth,
+            });
         }
+        renderer.render(draw, LIGHT_DIR);
+        sakuraStats.count = petals.length;
+        sakuraStats.frames++;
     });
     // Seed the sky FULL immediately rather than starting empty and filling over
     // ~20s: the old init dropped 15 petals in from above at 300ms intervals, so

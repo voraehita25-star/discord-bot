@@ -304,17 +304,20 @@ test('every settings row sits in a card that explains it', async ({ page }) => {
 });
 
 // ---------------------------------------------------------------------------
-// The sakura simulation, which the rest of the suite cannot see.
+// The sakura field, which the rest of the suite cannot see.
 //
 // `SEED_SETTINGS.sakuraEnabled = false` in the fixture switches the effect off
-// for every other spec — deliberately, because the animated transforms make
-// scrollWidth flicker and produce false horizontal-overflow failures. The side
-// effect is that the entire renderer (a per-frame physics loop that writes
-// transform + opacity on ~30 nodes) shipped with no automated coverage at all.
+// for every other spec — deliberately, because the motion makes scrollWidth
+// flicker and produces false horizontal-overflow failures. The side effect is
+// that the whole thing shipped with no automated coverage at all.
 //
-// These two tests turn it ON and assert the properties that do not depend on
-// where any individual petal happens to be, so nothing here can flicker.
+// It is now a 3D model drawn through WebGL (sakura-model.ts), so there are no
+// per-petal DOM nodes left to inspect: these assert through the two canvases
+// and the `sakuraDebugState()` seam instead, and only on properties that do not
+// depend on where any individual petal happens to be.
 // ---------------------------------------------------------------------------
+interface SakuraState { running: boolean; count: number; frames: number }
+
 async function bootWithSakura(page: Page): Promise<void> {
     await page.setViewportSize({ width: 1280, height: 800 });
     await installPopulatedMocks(page);
@@ -329,73 +332,92 @@ async function bootWithSakura(page: Page): Promise<void> {
     });
     await page.goto('/index.html');
     await waitForDashboardReady(page);
-    await page.waitForTimeout(2500);   // let the field seed and the loop run
+    await page.waitForTimeout(2200);   // let the field seed and the loop run
 }
 
-test('sakura: the field renders, moves, and stays inside its container', async ({ page }) => {
+/** The app module's live view of the field. */
+async function sakuraState(page: Page): Promise<SakuraState> {
+    return page.evaluate(async () => {
+        // Variable specifier so tsc does not try to resolve the server path.
+        const appModulePath = '/app.js';
+        const mod = await import(appModulePath) as { sakuraDebugState?: () => SakuraState };
+        return mod.sakuraDebugState?.() ?? { running: false, count: -1, frames: -1 };
+    });
+}
+
+test('sakura: the field renders through both depth layers and advances', async ({ page }) => {
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(`${e.name}: ${e.message}`));
     await bootWithSakura(page);
 
-    const first = await page.evaluate(() => {
-        const petals = Array.from(
-            document.getElementById('sakura-container')?.querySelectorAll<HTMLElement>('.sakura-petal') ?? [],
-        );
+    const layers = await page.evaluate(() => {
+        const c = document.getElementById('sakura-container');
+        const canvases = Array.from(c?.querySelectorAll<HTMLCanvasElement>('canvas.sakura-gl') ?? []);
         return {
-            count: petals.length,
-            withShape: petals.filter((p) => p.querySelector('svg path')).length,
-            visible: petals.filter((p) => parseFloat(p.style.opacity || '0') > 0.01).length,
-            // Several inline <svg> roots share one id namespace and url(#id)
-            // resolves to the FIRST match, so a duplicate gradient id would
-            // repaint every petal in the first petal's colour.
-            gradIds: petals.map((p) => p.querySelector('linearGradient')?.id ?? '').filter(Boolean),
-            transforms: petals.map((p) => p.style.transform),
-            docOverflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            count: canvases.length,
+            // One behind `.app` (which is z-index 1) and one in front. That
+            // split is the parallax: the far half is occluded by the panels.
+            zIndexes: canvases.map((n) => n.style.zIndex).sort(),
+            // A zero-sized backing store means resize() never ran and the field
+            // is drawing into nothing.
+            sized: canvases.every((n) => n.width > 0 && n.height > 0),
+            // Decoration must never eat a click.
+            clickThrough: canvases.every((n) => getComputedStyle(n).pointerEvents === 'none'),
         };
     });
+    expect(layers.count, 'expected a far and a near canvas').toBe(2);
+    expect(layers.zIndexes).toEqual(['0', '2']);
+    expect(layers.sized, 'a petal canvas has no backing store').toBe(true);
+    expect(layers.clickThrough, 'the petal canvases are not click-through').toBe(true);
 
-    expect(first.count, 'no petals spawned').toBeGreaterThan(0);
-    expect(first.withShape, 'a petal rendered without its SVG shape').toBe(first.count);
-    expect(first.visible, 'petals spawned but never faded in').toBe(first.count);
-    expect(new Set(first.gradIds).size, 'duplicate petal gradient ids').toBe(first.gradIds.length);
-    expect(first.docOverflowX, 'petals pushed the document sideways').toBeLessThanOrEqual(1);
+    const first = await sakuraState(page);
+    expect(first.running, 'the field reports itself stopped').toBe(true);
+    expect(first.count, 'no petals in the field').toBeGreaterThan(0);
+
+    // A stalled loop is the failure mode a single snapshot cannot tell apart
+    // from a healthy one.
+    await page.waitForTimeout(600);
+    const second = await sakuraState(page);
+    expect(second.frames, 'the simulation is not advancing').toBeGreaterThan(first.frames);
     expect(errors, errors.join('\n')).toEqual([]);
-
-    // The sim writes transform every frame; a stalled loop is the failure mode
-    // a static snapshot cannot tell apart from a healthy one.
-    await page.waitForTimeout(700);
-    const moved = await page.evaluate((before: string[]) => {
-        const now = Array.from(
-            document.getElementById('sakura-container')?.querySelectorAll<HTMLElement>('.sakura-petal') ?? [],
-        ).map((p) => p.style.transform);
-        return now.some((t, i) => t !== before[i]);
-    }, first.transforms);
-    expect(moved, 'the simulation is not advancing').toBe(true);
 });
 
 test('sakura: toggling off then on does not leave a second loop running', async ({ page }) => {
     await bootWithSakura(page);
-    const counts = await page.evaluate(async () => {
-        // Variable specifier so tsc does not try to resolve the server path.
-        const appModulePath = '/app.js';
-        const mod = await import(appModulePath) as { setSakuraEnabled?: (b: boolean) => void };
-        const n = () =>
-            document.getElementById('sakura-container')?.querySelectorAll('.sakura-petal').length ?? -1;
-        mod.setSakuraEnabled?.(false);
-        await new Promise((r) => setTimeout(r, 300));
-        const off = n();
-        mod.setSakuraEnabled?.(true);
-        await new Promise((r) => setTimeout(r, 2500));
-        const on = n();
-        mod.setSakuraEnabled?.(true);          // idempotent re-enable
-        await new Promise((r) => setTimeout(r, 2500));
-        return { off, on, onTwice: n() };
-    });
-    expect(counts.off, 'disabling must clear the field').toBe(0);
-    expect(counts.on, 're-enabling must refill it').toBeGreaterThan(0);
-    // A second simulation loop over the same container would push the node
-    // count past the cap the first loop enforces.
-    expect(counts.onTwice, 'a second loop started on re-enable').toBe(counts.on);
+
+    const setEnabled = (on: boolean) =>
+        page.evaluate(async (v) => {
+            const appModulePath = '/app.js';
+            const mod = await import(appModulePath) as { setSakuraEnabled?: (b: boolean) => void };
+            mod.setSakuraEnabled?.(v);
+        }, on);
+    const canvasCount = () =>
+        page.evaluate(() =>
+            document.getElementById('sakura-container')?.querySelectorAll('canvas.sakura-gl').length ?? -1);
+
+    await setEnabled(false);
+    await page.waitForTimeout(250);
+    expect((await sakuraState(page)).count, 'disabling must clear the field').toBe(0);
+    expect(await canvasCount(), 'disabling must tear the canvases down').toBe(0);
+
+    await setEnabled(true);
+    await page.waitForTimeout(1500);
+    const on = await sakuraState(page);
+    expect(on.count, 're-enabling must refill the field').toBeGreaterThan(0);
+    expect(await canvasCount()).toBe(2);
+
+    // Idempotent re-enable. A second init would build a second renderer (two
+    // more canvases) and a second rAF loop — which would also double the rate
+    // the frame counter climbs at, so both are checked.
+    await setEnabled(true);
+    const before = await sakuraState(page);
+    await page.waitForTimeout(700);
+    const after = await sakuraState(page);
+    expect(await canvasCount(), 'a second renderer was built on re-enable').toBe(2);
+    // ~60fps over 700ms is ~42 frames; a doubled loop would be ~84. 70 is clear
+    // of the noise in either direction.
+    expect(after.frames - before.frames, 'a second simulation loop is running').toBeLessThan(70);
+    expect(after.frames).toBeGreaterThan(before.frames);
 });
 
 // ---------------------------------------------------------------------------
