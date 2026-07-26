@@ -255,6 +255,14 @@ in vec3 vBase;
 in vec2 vForm;            // dome, notch
 
 uniform vec3 uLight;
+/* Ambient floor — the fraction of the body colour a petal keeps when its normal
+   faces AWAY from the key light. It has to be per-theme, because the canvas it
+   blends onto is the other half of the equation: on the midnight deck a petal is
+   source-over-composited onto near-black, so every unit of value the shading
+   takes off is a unit the blend takes off again, and a floor tuned for paper
+   lands the result on grey. On dawn paper the opposite holds — value is what
+   makes a petal DISAPPEAR. See AMBIENT_NIGHT / AMBIENT_DAWN in app.ts. */
+uniform float uAmbient;
 
 out vec4 fragColor;
 
@@ -304,7 +312,13 @@ void main() {
     // loose petal) and near-white at the rim — real sakura do this, and it is
     // the value shift that makes the tip read as thin.
     vec3 body = mix(vBase, vColor.rgb, smoothstep(0.0, 0.42, u));
-    vec3 tinted = mix(body, vec3(1.0), smoothstep(0.42, 1.0, u) * 0.40);
+    /* 0.40 of the way to PURE WHITE bleached the outer half of every blade: by
+       the rim the petal had lost most of its chroma, and what the compositor
+       then thinned against the night canvas was a grey. Real sakura go pale at
+       the rim, not colourless — 0.24 reads as thin membrane and still arrives
+       pink. Lower in both themes: on paper the extra chroma is what separates a
+       petal from the page. */
+    vec3 tinted = mix(body, vec3(1.0), smoothstep(0.42, 1.0, u) * 0.24);
 
     // Veins fan from the base. Because v is normalised across the width, a line
     // at constant v already spreads as the blade widens, which is exactly how
@@ -314,7 +328,9 @@ void main() {
     float veinMask = smoothstep(0.10, 0.38, u) * (1.0 - smoothstep(0.72, 1.0, u));
     tinted *= 1.0 - 0.06 * vein * veinMask;
 
-    vec3 lit = tinted * (0.62 + 0.58 * lam);
+    /* Floor + slope always sum to 1.0, so a fully-lit fragment is the body
+       colour itself whatever the floor is set to; only the unlit side moves. */
+    vec3 lit = tinted * (uAmbient + (1.0 - uAmbient) * lam);
     // A petal is thin enough to be lit from behind, and the underside of a real
     // one glows rather than going to shadow.
     lit += vColor.rgb * trans * (back ? 0.85 : 0.40);
@@ -365,6 +381,7 @@ class PetalLayer {
     private uViewport: WebGLUniformLocation | null = null;
     private uPersp: WebGLUniformLocation | null = null;
     private uLight: WebGLUniformLocation | null = null;
+    private uAmbient: WebGLUniformLocation | null = null;
     private data = new Float32Array(0);
     private capacity = 0;
     ok = false;
@@ -465,6 +482,7 @@ class PetalLayer {
         this.uViewport = gl.getUniformLocation(prog, 'uViewport');
         this.uPersp = gl.getUniformLocation(prog, 'uPersp');
         this.uLight = gl.getUniformLocation(prog, 'uLight');
+        this.uAmbient = gl.getUniformLocation(prog, 'uAmbient');
 
         gl.disable(gl.DEPTH_TEST);
         gl.enable(gl.BLEND);
@@ -485,7 +503,13 @@ class PetalLayer {
     }
 
     /** `list` must already be sorted back-to-front. */
-    draw(list: PetalDraw[], cssW: number, cssH: number, light: [number, number, number]): void {
+    draw(
+        list: PetalDraw[],
+        cssW: number,
+        cssH: number,
+        light: [number, number, number],
+        ambient: number,
+    ): void {
         if (!this.ok) return;
         const gl = this.gl;
         gl.clearColor(0, 0, 0, 0);
@@ -534,6 +558,7 @@ class PetalLayer {
         gl.uniform2f(this.uViewport, cssW, cssH);
         gl.uniform1f(this.uPersp, 620);
         gl.uniform3f(this.uLight, light[0], light[1], light[2]);
+        gl.uniform1f(this.uAmbient, ambient);
         gl.drawElementsInstanced(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0, list.length);
         gl.bindVertexArray(null);
     }
@@ -595,7 +620,7 @@ export class SakuraRenderer {
         this.near.resize(cssW, cssH, dpr);
     }
 
-    render(list: PetalDraw[], light: [number, number, number]): void {
+    render(list: PetalDraw[], light: [number, number, number], ambient: number): void {
         if (!this.ok) return;
         this.farList.length = 0;
         this.nearList.length = 0;
@@ -606,8 +631,8 @@ export class SakuraRenderer {
         // what shows through what.
         this.farList.sort((a, b) => a.depth - b.depth);
         this.nearList.sort((a, b) => a.depth - b.depth);
-        this.far.draw(this.farList, this.cssW, this.cssH, light);
-        this.near.draw(this.nearList, this.cssW, this.cssH, light);
+        this.far.draw(this.farList, this.cssW, this.cssH, light, ambient);
+        this.near.draw(this.nearList, this.cssW, this.cssH, light, ambient);
     }
 
     dispose(): void {

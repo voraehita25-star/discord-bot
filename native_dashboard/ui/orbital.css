@@ -646,8 +646,13 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     box-shadow: var(--glass-hi);
 }
 
-/* Status hero card (CONTRACT): the Messages card spans two grid columns and
-   gets an oversized numeral. Inner ids (#stat-messages etc.) untouched. */
+/* Status hero card (CONTRACT): the Messages card spans two grid columns.
+   Inner ids (#stat-messages etc.) untouched.
+   The numeral override that used to live here is GONE, along with its twin
+   further down the file: three blocks each declared a different hero font-size
+   (--step-4, --step-3, a 1.55vw clamp) and only the last could ever apply, so
+   editing either of the first two changed nothing. The strip's one numeral size
+   is now set once, on `.stat-card .stat-value`. */
 .stat-card--hero {
     grid-column: span 2;
     background:
@@ -655,11 +660,6 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
         radial-gradient(120% 140% at 100% 0%, var(--cyan-100), transparent 60%),
         var(--card-bg);
     border-top-color: var(--border-focus);
-}
-.stat-card--hero .stat-value {
-    font-family: var(--font-mono) !important;
-    font-size: var(--step-4);
-    line-height: 1.05;
 }
 /* keep the hero from forcing a 2-col span when the grid collapses */
 @media (max-width: 560px) {
@@ -2165,7 +2165,14 @@ html[data-theme="light"],
     grid-area: value;
     align-self: start;
     margin: 0;
-    line-height: 1.08;
+    /* 1.08 was BELOW JetBrains Mono's own glyph box (ascender→descender
+       measures ~1.16-1.20em at these sizes), and this box clips its overflow to
+       drive the ellipsis. The line box was therefore 1-2px shorter than the ink
+       it had to hold, and `overflow: hidden` sliced the bottom off every comma
+       and comma-like descender: "1,234,567" rendered with both commas cut flat.
+       Visible on the hero tile at 1280 and on all five tiles at the 800px
+       window floor. 1.28 clears the glyph box at every step of the clamp. */
+    line-height: 1.28;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2197,13 +2204,13 @@ html[data-theme="light"],
 /* Hero tile (Messages) — v4 gave it a 2-column span, which at the old card
    height meant a ~620px banner holding one digit. It now earns its emphasis
    from TREATMENT rather than width: a sakura inset rail, a thicker bloom bar,
-   the existing radial wash, and the oversized numeral it already declared. */
+   and the existing radial wash. (The numeral override this block used to carry
+   was inert — see the note on `.stat-card--hero` above.) */
 .stat-card--hero {
     box-shadow: var(--shadow-md), var(--glass-hi), inset 3px 0 0 -1px var(--accent-sakura);
 }
 .stat-card--hero::after { height: 3px; }
 .stat-card--hero .stat-label { color: var(--text-secondary); }
-.stat-card--hero .stat-value { font-size: var(--step-3); }
 
 /* The metric strip.
    Selectors are #page-* scoped (1,1,0) on purpose: the v4 "rectangular stat
@@ -2867,7 +2874,13 @@ html[data-theme="light"] #bot-status-text.is-online { color: var(--accent-green)
     box-shadow: none;
 }
 .stat-card--hero .stat-icon .ic { color: var(--accent-sakura); }
-.stat-card--hero .stat-value { font-size: clamp(17px, 1.55vw, 26px); }
+/* NO numeral override. The comment above says the hero earns its emphasis from
+   one lit edge — but this rule was still shipping the "oversized numeral" that
+   sentence had retired, and it cost the strip its baseline: a taller value row
+   inside `align-content: center` lifted the hero's whole block, so MESSAGES sat
+   1.7px above the four labels beside it. Every tile in the strip now shares one
+   numeral size, and the hero is told apart by its lit tile, its sakura glyph and
+   its bottom edge. */
 .stat-card--hero .stat-label { color: var(--text-secondary); }
 .stat-card--hero::after { transform: scaleX(1); height: 2px; opacity: 1; }
 
@@ -3552,4 +3565,340 @@ html[data-theme="light"] .chat-input-hint { color: var(--text-tertiary); }
         padding: 11px;
         margin-bottom: 0;
     }
+}
+
+/* ============================================================================
+   v7 — THE AUDIT LAYER
+   Findings from a geometry + screenshot pass over every page, both themes, at
+   800/1280/1920. Appended last so source order alone decides; nothing above is
+   edited, and no id/class/custom-property contract changes.
+   ============================================================================ */
+
+/* ---------------------------------------------------------------------------
+   NATIVE CONTROLS — the three that never got dressed.
+   `accent-color` only tints a checkbox once it is CHECKED; the empty box stays
+   UA chrome, and under `color-scheme: dark` Chromium draws that as a flat
+   olive-grey square. Twelve of them down the Database list were the loudest
+   thing on a plum-and-sakura page, and the New Conversation modal had a
+   thirteenth beside "Enable Thinking Mode". The crop dialog's zoom slider was
+   the same story in a different shape. Every other toggle in the app is already
+   a custom control (the settings switches hide their input at opacity 0), so
+   these were the only places the OS showed through.
+   --------------------------------------------------------------------------- */
+.data-item-checkbox,
+#modal-thinking {
+    appearance: none;
+    -webkit-appearance: none;
+    /* the 24px floor is a WCAG 2.5.8 contract — see the note in styles.css */
+    width: 24px;
+    height: 24px;
+    flex: 0 0 auto;
+    margin: 0;
+    border: 1.5px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface-1);
+    box-shadow: var(--glass-hi);
+    cursor: pointer;
+    position: relative;
+}
+.data-item-checkbox:hover,
+#modal-thinking:hover {
+    border-color: var(--border-focus);
+    background: var(--cyan-100);
+}
+.data-item-checkbox:checked,
+#modal-thinking:checked {
+    border-color: transparent;
+    background: var(--brand-grad);
+}
+/* The tick is drawn, not a glyph: a font's checkmark lands differently in every
+   fallback, and this box is 24px. Ink is the deep plum both gradient stops
+   carry white text against, so it reads in either theme. */
+.data-item-checkbox:checked::after,
+#modal-thinking:checked::after {
+    content: "";
+    position: absolute;
+    left: 7px;
+    top: 4.5px;
+    width: 6px;
+    height: 10px;
+    border: solid #1a0f1e;
+    border-width: 0 2.2px 2.2px 0;
+    transform: rotate(42deg);
+}
+.data-item-checkbox:focus-visible,
+#modal-thinking:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+#crop-zoom {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 100%;
+    height: 22px;
+    background: transparent;
+    cursor: pointer;
+}
+#crop-zoom::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: var(--r-pill);
+    background: var(--surface-3);
+}
+#crop-zoom::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    margin-top: -6px;           /* centre the thumb on a 4px track */
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--brand-grad);
+    box-shadow: 0 1px 4px rgba(8, 3, 14, 0.45);
+}
+#crop-zoom:focus-visible { outline: none; }
+#crop-zoom:focus-visible::-webkit-slider-thumb { box-shadow: var(--focus-ring); }
+
+/* The provider select in the New Conversation modal was the one select in the
+   app with no chevron — it read as a text field. `.select-provider-inline` was
+   added to the chevron list when this was last fixed; its sibling
+   `.select-provider` was not, and the `background` SHORTHAND on both of them in
+   styles.css (0,1,0) outranks the bare `select` element selector (0,0,1) that
+   was supposed to be covering it. */
+.select-provider {
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: var(--surface-2);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23c9b7cd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    background-size: 13px;
+    padding-right: 30px;
+}
+html[data-theme="light"] .select-provider {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234d3550' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    background-size: 13px;
+}
+
+/* ---------------------------------------------------------------------------
+   PLACEHOLDERS — centre them in the box they are standing in for.
+   Four panels put their empty state at the TOP of a 540-660px scroller and left
+   the rest of the panel blank: the Log viewer's was 293px above the centre of
+   its own frame, the chat rail's 229px, both History panes 155-169px. The
+   containers are scrollers, so they cannot simply be centred — `:has()` applies
+   the centring ONLY while the placeholder is the thing being shown, and the
+   populated list keeps its normal top-anchored flow.
+   --------------------------------------------------------------------------- */
+#log-container:has(> #log-content > .empty-state),
+#conversation-list:has(> .no-conversations),
+#ai-channel-list:has(> .empty-state),
+#ai-channel-list:has(> .no-data),
+#ai-history-messages:has(> .empty-state) {
+    display: grid;
+    place-content: center;
+    place-items: center;
+}
+/* #log-content is a <pre> whose width would otherwise collapse to its text. */
+#log-container:has(> #log-content > .empty-state) > #log-content { width: 100%; }
+
+/* ---------------------------------------------------------------------------
+   DISABLED — one state, one look.
+   `opacity .42 + saturate(.5)` dims each variant's OWN treatment, which is not
+   the same as giving them a shared one: in the offline control row a disabled
+   primary stayed a filled grey-lavender slab (the most solid object in the row)
+   while the disabled warning beside it faded to a near-invisible outline. Both
+   now collapse to the same flat, quiet surface, so "not available" looks like
+   one thing whatever the button would have been. axe exempts disabled controls
+   from colour-contrast, so the quiet label is safe here.
+   --------------------------------------------------------------------------- */
+/* `.btn.btn:disabled` is (0,4,1) on purpose, not a typo. A plain `.btn:disabled`
+   is (0,2,0) and every variant paint in this app is theme-scoped —
+   `html[data-theme="light"] .btn-danger` is (0,2,1), and
+   `html[data-theme="light"] .btn-icon.btn-danger` is (0,3,1) — so the low-
+   specificity form silently lost the `background` on exactly the buttons that
+   needed it most: a disabled STOP stayed full-strength red on dawn paper. */
+html[data-theme] .btn.btn:disabled,
+html[data-theme] .btn.btn[disabled] {
+    opacity: 1;                 /* the treatment IS the state now, not a dim */
+    filter: none;
+    background: var(--surface-2);
+    background-image: none;
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+    box-shadow: none;
+    cursor: not-allowed;
+}
+html[data-theme] .btn.btn:disabled .ic,
+html[data-theme] .btn.btn[disabled] .ic { color: var(--text-muted); }
+/* The shimmer sweep and the lift are hover-gated already; the ::after fill bar
+   is not, so silence it too. */
+.btn:disabled::after,
+.btn[disabled]::after { display: none; }
+
+/* ---------------------------------------------------------------------------
+   KEYBOARD SHORTCUTS — one column edge, one screenful.
+   The kbd chips are content-width past their 80px min, so "Ctrl+Enter" pushed
+   its description 14px right of the other eleven — in the ? modal AND in the
+   Settings card, which render the same reference list. A fixed chip column
+   fixes both. The twelve rows also overflowed the 800px window minimum (the
+   modal scrolled, but the `?` row that documents how to OPEN it was the one
+   below the fold); two columns bring the whole reference into view.
+   --------------------------------------------------------------------------- */
+.shortcuts-list {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--space-1) var(--space-5);
+}
+.shortcut-item {
+    display: grid;
+    grid-template-columns: 86px minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-3);
+    padding: 7px 0;
+}
+.shortcut-item kbd { min-width: 0; width: 86px; }
+/* The descriptions inherited `text-align: center` from `.modal-small` (below),
+   which was invisible while each one was a shrink-to-fit flex item and became a
+   ragged centred column the moment they filled a grid track. `anywhere` is the
+   backstop for the one long label ("Close modal / cancel") at the narrowest
+   track: a grid column may be narrower than an unbreakable word, and the word
+   then paints straight out of the panel. */
+.shortcut-item span { text-align: left; overflow-wrap: anywhere; }
+@media (min-width: 720px) {
+    #shortcuts-modal .shortcuts-list,
+    #page-settings .shortcuts-list { grid-template-columns: 1fr 1fr; }
+}
+/* #shortcuts-modal borrows `.modal-small` — the 380px CENTRED shell built for
+   the delete-confirm dialog, whose whole content is one sentence. A twelve-row
+   reference table is the opposite shape: at 380px each of two columns had ~180px
+   for its label, so "Go to Status" broke over two lines and "Search in
+   Conversation" over three, with the last word painting past the panel edge.
+   Sized to the content instead, and left-aligned like the list it is. */
+#shortcuts-modal .modal-content {
+    max-width: 660px;
+    text-align: left;
+}
+
+/* ---------------------------------------------------------------------------
+   SETTINGS — give the form's right edge an owner.
+   Every row was 922px wide with its content stopping at 1025: a 206px gutter on
+   the right of every control that belonged to nothing. The 260px caption column
+   was the other half of it — the longest label ("Send Anonymous Crash Reports")
+   needs ~200px, so 60px of that column was holding a gap between a label and
+   the control it names. Narrowing the caption column and capping the cards to
+   the measure the form actually occupies turns an unowned in-card gutter into a
+   deliberate page margin. The one-left-edge / one-right-edge invariant that
+   ui-invariants.spec.ts pins is untouched: fields still share a grid column.
+   --------------------------------------------------------------------------- */
+#page-settings .settings-card { max-width: 780px; }
+.setting-row { grid-template-columns: minmax(0, 200px) minmax(0, 1fr); }
+/* With the page capped, the 420px cap on each field becomes the SECOND unowned
+   gutter — 86px of empty control column to the right of every input, inside a
+   row whose hover tint spans it. The cap existed to stop one <select> stretching
+   across a 922px row; the measure now does that job, so the fields fill their
+   column and the card's frame closes on the form instead of around it. */
+#page-settings .setting-row > .setting-input,
+#page-settings .setting-row > .setting-textarea,
+#page-settings .setting-row > .setting-select,
+#page-settings .setting-row .setting-control { max-width: none; }
+
+/* The Save action was stranded mid-card in the control column. Right-aligned,
+   which now IS the fields' right edge, and where a form's commit belongs. */
+.setting-row > .btn:only-child { justify-self: end; }
+
+/* ---------------------------------------------------------------------------
+   TOOLBAR TYPOGRAPHY — the Logs level filter sat in a row of three uppercase
+   mono buttons wearing sentence-case UI type, so one control in the row read as
+   a different kind of object. It is a menu, not a button, so it keeps the
+   chevron and the input fill — only the type matches.
+   --------------------------------------------------------------------------- */
+#log-filter {
+    font-family: var(--font-mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+/* Remove-avatar was a 31x27 icon button beside a 44px CHANGE button — over the
+   24px floor, but visibly a different species of control, and small enough that
+   the glyph inside it had no room. Squared off to sit level with its neighbour.
+   Its glyph also moved from the close X to the trash can (index.html): an X on a
+   row of controls means "dismiss this", and this button deletes a file. */
+#btn-remove-ai-avatar,
+#btn-remove-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   TOASTS — the sprite, not emoji.
+   showToast() rendered four full-colour emoji (a green tick, a blue info
+   square, a yellow triangle, a red cross) into an app whose entire icon
+   language is one monoline sakura sprite. The glyphs now come from that sprite
+   (shared.ts) and take the severity colour the toast's own rail already uses.
+   --------------------------------------------------------------------------- */
+.toast-icon {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+}
+.toast-icon .ic { width: 17px; height: 17px; }
+.toast-success .toast-icon .ic { color: var(--sev-info); }
+.toast-error   .toast-icon .ic { color: var(--sev-error); }
+.toast-warning .toast-icon .ic { color: var(--sev-warn); }
+.toast-info    .toast-icon .ic { color: var(--accent-cyan); }
+.toast-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    flex: 0 0 auto;
+    border-radius: var(--radius-sm);
+}
+.toast-close .ic { width: 13px; height: 13px; }
+.toast-close:hover { background: var(--cyan-100); }
+
+/* ---------------------------------------------------------------------------
+   CHAT HEADER — two rows on purpose, both of them deliberate.
+   The header carries identity, connection state, a context meter, a provider
+   menu, a Thinking toggle and five icon actions. At the app's 1280 design width
+   the chat pane is ~708px and that content needs ~721px, so the action cluster
+   wrapped to a second row it did not fill: ~330px of dead space down the left of
+   its own row, and the layout flipped between one row and two somewhere between
+   1280 and 1920 depending on how long the conversation title was.
+   It is now always two rows, and the second is a real toolbar — the controls
+   that change how the NEXT message is sent on the left, the ones that act on the
+   conversation as a whole on the right.
+   --------------------------------------------------------------------------- */
+.chat-header-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+}
+.chat-header-actions .thinking-toggle { margin-right: auto; }
+
+/* The chat page hides its .page-title-bar (visually — the h1 stays in the a11y
+   tree), so its panels started 10px from the top of the content area while every
+   other page's first panel starts at ~130px. Chat wants that height for
+   messages, so this is a breath rather than a full page header: enough that the
+   rail title and the conversation title are not touching the window chrome. */
+#page-chat .chat-layout { margin-top: var(--space-2); }
+
+/* The Thinking control is drawn TWICE. `.thinking-toggle` is the <label>
+   wrapper and still carries the pre-v6 chip treatment (padding + a --surface-2
+   fill + an 8px radius); v6 then made the inner `.thinking-label` the chip, with
+   its own border and the same fill, to match the composer's Search/Write/
+   Unrestricted row. The result is a chip inside a slightly larger chip — a box
+   the eye reads as a container holding a button that is really one control. The
+   wrapper goes back to being a hit area. */
+.thinking-toggle {
+    padding: 0;
+    background: none;
+    border-radius: 0;
 }

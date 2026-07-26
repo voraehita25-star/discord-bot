@@ -28,6 +28,30 @@ async function show(page: Page, name: string): Promise<void> {
     await page.waitForTimeout(250);
 }
 
+/**
+ * Freeze CSS animation + transition so a geometry assertion measures LAYOUT.
+ *
+ * The panels animate in with a per-card stagger, so a rect read shortly after a
+ * page switch samples a frame of that entrance: the metric strip's five captions
+ * came back at 281.0 / 281.2 / 281.5 / 282.1 / 283.1 — a 2.1px monotonic drift
+ * left-to-right that is the stagger, not a misalignment. Colour transitions do
+ * the same to a computed-colour read (a just-disabled button samples mid-fade).
+ *
+ * Injected as a constructed stylesheet rather than page.addStyleTag(): the
+ * production CSP has no 'unsafe-inline' for style-src, so a <style> element is
+ * blocked, while CSSOM mutation is exempt. Same technique as
+ * visual-regression.spec.ts.
+ */
+async function freezeMotion(page: Page): Promise<void> {
+    await page.evaluate(() => {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync(
+            '*, *::before, *::after { animation: none !important; transition: none !important; }',
+        );
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    });
+}
+
 // ---------------------------------------------------------------------------
 // The three keyboard-shortcut surfaces are one reference in three places.
 // The Settings card used to list 10 of the 12 the modal listed — and the two it
@@ -467,4 +491,258 @@ test('the LIVE badge does not animate its own opacity', async ({ page }) => {
         `livePulse dims the badge below full opacity: ${found.offenders.join(', ')}`,
     ).toEqual([]);
     expect(found.liveOpacity, 'the badge is dimmed by a static rule instead').toBe(1);
+});
+
+// ---------------------------------------------------------------------------
+// v7 audit — one guard per finding from the July-2026 geometry + screenshot
+// pass. Each of these shipped green: the suite proved the app boots, navigates,
+// passes axe and matches its baselines, and none of it measured whether a
+// numeral's descender fitted its own line box, whether two disabled buttons in
+// one row looked disabled the same way, or whether the OS was drawing a control.
+// ---------------------------------------------------------------------------
+
+// `.stat-card .stat-value` clips its overflow to drive the ellipsis, and carried
+// `line-height: 1.08` — under JetBrains Mono's ~1.16-1.20em glyph box. The line
+// box was 1-2px shorter than the ink, so `overflow: hidden` sliced the bottom off
+// every comma: "1,234,567" rendered with both commas cut flat. Visible on the
+// hero tile at 1280 and on all five tiles at the 800px window floor.
+test('stat numerals are not clipped by their own line box', async ({ page }) => {
+    for (const [w, h] of [[1280, 900], [800, 600], [1920, 1080]] as const) {
+        await boot(page, w, h);
+        await freezeMotion(page);
+        for (const p of ['status', 'database']) {
+            await show(page, p);
+            const clipped = await page.evaluate(
+                (pg) =>
+                    Array.from(document.querySelectorAll<HTMLElement>(`#page-${pg} .stat-value`))
+                        .filter((el) => el.scrollHeight > el.clientHeight)
+                        .map((el) => `${el.id}: ${el.scrollHeight - el.clientHeight}px of "${el.textContent}"`),
+                p,
+            );
+            expect(clipped, `${w}x${h} ${p}: ${clipped.join(', ')}`).toEqual([]);
+        }
+    }
+});
+
+// The metric strip is one row of sibling tiles, so its captions are one line of
+// type. The hero tile declared a bigger numeral, which made its value row taller;
+// inside `align-content: center` that lifted the hero's whole block and MESSAGES
+// sat 1.7px above the four labels beside it.
+test('the metric strip shares one caption baseline', async ({ page }) => {
+    // 1280 and up only: below ~1150 the grid wraps to two rows, where different
+    // caption tops are correct rather than a defect.
+    for (const [w, h] of [[1280, 900], [1920, 1080]] as const) {
+        await boot(page, w, h);
+        await freezeMotion(page);
+        for (const p of ['status', 'database']) {
+            await show(page, p);
+            const tops = await page.evaluate(
+                (pg) =>
+                    Array.from(
+                        document.querySelectorAll<HTMLElement>(`#page-${pg} .stat-card .stat-label`),
+                    ).map((el) => +el.getBoundingClientRect().top.toFixed(1)),
+                p,
+            );
+            expect(tops.length, `${p} rendered no stat captions`).toBeGreaterThan(3);
+            const spread = Math.max(...tops) - Math.min(...tops);
+            expect(spread, `${w}x${h} ${p}: caption tops ${tops.join(', ')}`).toBeLessThanOrEqual(1);
+        }
+    }
+});
+
+// `accent-color` tints a checkbox only once it is CHECKED, so the empty box kept
+// UA chrome — which `color-scheme: dark` draws as a flat olive-grey square.
+// Twelve of them down the Database list, plus one in the New Conversation modal
+// and the crop dialog's zoom slider, were the only places the OS showed through
+// a hand-built UI.
+test('no form control is left drawing OS chrome', async ({ page }) => {
+    await boot(page);
+    const native: string[] = [];
+    for (const p of PAGES) {
+        await show(page, p);
+        native.push(...(await page.evaluate((pg) => {
+            const out: string[] = [];
+            const sel = 'input[type="checkbox"], input[type="radio"], input[type="range"], select';
+            for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
+                const cs = getComputedStyle(el);
+                const b = el.getBoundingClientRect();
+                // A control hidden behind a custom one (the settings switches clip
+                // their input to 1px at opacity 0) is not showing OS chrome.
+                if (b.width < 8 || b.height < 8) continue;
+                if (cs.opacity === '0' || cs.visibility === 'hidden') continue;
+                if (cs.appearance !== 'none') {
+                    out.push(`${pg}: ${el.tagName}#${el.id || '?'}.${el.className.toString().slice(0, 28)} appearance:${cs.appearance}`);
+                }
+            }
+            return out;
+        }, p)));
+    }
+    // The modals are where the last two hid.
+    for (const id of ['new-chat-modal', 'avatar-crop-modal']) {
+        await page.evaluate((m) => {
+            (window as unknown as { showPage?: (s: string) => void }).showPage?.('chat');
+            document.getElementById(m)?.classList.add('active');
+        }, id);
+        await page.waitForTimeout(150);
+        native.push(...(await page.evaluate((m) => {
+            const out: string[] = [];
+            const root = document.getElementById(m);
+            if (!root) return out;
+            for (const el of Array.from(root.querySelectorAll<HTMLElement>('input[type="checkbox"], input[type="range"], select'))) {
+                const cs = getComputedStyle(el);
+                const b = el.getBoundingClientRect();
+                if (b.width < 8 || b.height < 8) continue;
+                if (cs.opacity === '0' || cs.visibility === 'hidden') continue;
+                if (cs.appearance !== 'none') out.push(`${m}: ${el.tagName}#${el.id || '?'} appearance:${cs.appearance}`);
+            }
+            return out;
+        }, id)));
+        await page.evaluate((m) => document.getElementById(m)?.classList.remove('active'), id);
+    }
+    expect([...new Set(native)], native.join('\n')).toEqual([]);
+});
+
+// `opacity + saturate` dims each variant's OWN treatment, which is not the same
+// as giving them a shared one. In the offline control row a disabled primary
+// stayed a filled slab (the most solid object in the row) while the disabled
+// warning beside it faded to a near-invisible outline — and in light theme a
+// disabled STOP kept full-strength red, because `html[data-theme="light"]
+// .btn-danger` (0,2,1) outranked a bare `.btn:disabled` (0,2,0).
+test('disabled buttons look disabled the same way, whatever variant they are', async ({ page }) => {
+    for (const theme of ['dark', 'light'] as const) {
+        await boot(page);
+        await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+        await show(page, 'status');
+        // Without this the read lands mid-fade: a just-disabled STOP sampled
+        // rgba(0,0,0,0) because --danger-grad's background-COLOR was already
+        // transparent and the new surface colour had not finished animating in.
+        await freezeMotion(page);
+        const seen = await page.evaluate(() => {
+            const out: Array<{ id: string; bg: string; img: string }> = [];
+            for (const id of ['btn-start', 'btn-dev', 'btn-stop', 'btn-restart']) {
+                const el = document.getElementById(id) as HTMLButtonElement | null;
+                if (!el) continue;
+                el.disabled = true;
+                const cs = getComputedStyle(el);
+                out.push({ id, bg: cs.backgroundColor, img: cs.backgroundImage });
+            }
+            return out;
+        });
+        expect(seen.length, 'no control buttons found').toBe(4);
+        const fills = [...new Set(seen.map((s) => `${s.bg} | ${s.img}`))];
+        expect(
+            fills,
+            `[${theme}] four disabled buttons render ${fills.length} different fills:\n` +
+                seen.map((s) => `  ${s.id}: ${s.bg} / ${s.img}`).join('\n'),
+        ).toHaveLength(1);
+        // ...and the shared fill is a real surface, not a gradient left showing.
+        expect(seen[0].img, `[${theme}] disabled button still paints a gradient`).toBe('none');
+    }
+});
+
+// Four panels put their empty state at the TOP of a 540-660px scroller and left
+// the rest blank: the Log viewer's was 293px above the centre of its own frame,
+// the chat rail's 229px, both History panes 155-169px.
+test('a panel standing empty centres its placeholder', async ({ page }) => {
+    await boot(page, 1280, 900);
+    await freezeMotion(page);
+    const cases: Array<[string, string, string]> = [
+        ['logs', '#log-container', '.empty-state'],
+        ['chat', '#conversation-list', '.no-conversations'],
+        ['history', '#ai-channel-list', '.empty-state, .no-data'],
+        ['history', '#ai-history-messages', '.empty-state'],
+    ];
+    const offenders: string[] = [];
+    for (const [pageName, host, placeholder] of cases) {
+        await show(page, pageName);
+        const off = await page.evaluate(([h, ph]) => {
+            const host = document.querySelector<HTMLElement>(h);
+            const el = host?.querySelector<HTMLElement>(ph);
+            if (!host || !el) return null;
+            const hr = host.getBoundingClientRect();
+            const er = el.getBoundingClientRect();
+            if (hr.height < 260) return null;   // too short to have a centre worth hitting
+            return {
+                off: Math.round(er.top + er.height / 2 - (hr.top + hr.height / 2)),
+                hostH: Math.round(hr.height),
+            };
+        }, [host, placeholder] as const);
+        if (off === null) continue;
+        if (Math.abs(off.off) > 40) {
+            offenders.push(`${pageName} ${host}: placeholder is ${off.off}px off the centre of a ${off.hostH}px panel`);
+        }
+    }
+    expect(offenders, offenders.join('\n')).toEqual([]);
+});
+
+// The kbd chips were content-width past their 80px min, so "Ctrl+Enter" pushed
+// its description 14px right of the other eleven — in the ? modal AND in the
+// Settings card, which render the same reference. The modal also needs to fit the
+// 800x600 window floor without hiding the `?` row that documents how to open it.
+test('the shortcut reference lines up and fits the smallest window', async ({ page }) => {
+    await boot(page, 800, 600);
+    await page.evaluate(() => document.getElementById('shortcuts-modal')?.classList.add('active'));
+    await page.waitForTimeout(200);
+
+    const r = await page.evaluate(() => {
+        const rows = Array.from(document.querySelectorAll<HTMLElement>('#shortcuts-modal .shortcut-item'));
+        const box = document.querySelector<HTMLElement>('#shortcuts-modal .modal-content')!;
+        return {
+            // Descriptions in the same COLUMN must share a left edge. Two columns
+            // means two allowed values, so group by column index instead of
+            // demanding one x for all twelve.
+            lefts: rows.map((r) => {
+                const s = r.querySelector('span')!.getBoundingClientRect();
+                return Math.round(s.left);
+            }),
+            // Nothing may paint outside the panel.
+            overflowing: rows
+                .filter((r) => {
+                    const s = r.querySelector('span')!;
+                    return s.scrollWidth > s.clientWidth + 1;
+                })
+                .map((r) => r.querySelector('span')!.textContent),
+            fits: box.scrollHeight <= box.clientHeight + 1,
+            rows: rows.length,
+        };
+    });
+
+    expect(r.rows, 'the shortcuts modal lists nothing').toBeGreaterThan(6);
+    expect(new Set(r.lefts).size, `descriptions start at ${new Set(r.lefts).size} different x: ${r.lefts.join(', ')}`)
+        .toBeLessThanOrEqual(2);
+    expect(r.overflowing, `a shortcut label paints past its column: ${r.overflowing.join(', ')}`).toEqual([]);
+    expect(r.fits, 'the shortcut reference does not fit the 800x600 window without scrolling').toBe(true);
+});
+
+// showToast() rendered four full-colour emoji into an app whose entire icon
+// language is one monoline sprite. Emoji also inherit no colour, so a toast's
+// glyph could never agree with the severity rail down its own left edge.
+test('toasts use the icon sprite, not emoji', async ({ page }) => {
+    await boot(page);
+    const r = await page.evaluate(async () => {
+        // Variable specifier so tsc does not try to resolve the server-root path
+        // as a module (same trick the sakura + chart specs use for '/app.js').
+        const sharedModulePath = '/shared.js';
+        const mod = await import(sharedModulePath) as {
+            showToast?: (m: string, o: { type: string; duration?: number }) => void;
+        };
+        for (const type of ['success', 'error', 'warning', 'info']) {
+            mod.showToast?.(`a ${type} toast`, { type, duration: 30_000 });
+        }
+        await new Promise((r) => setTimeout(r, 200));
+        const toasts = Array.from(document.querySelectorAll('#toast-container .toast'));
+        return toasts.map((t) => ({
+            cls: t.className,
+            icon: (t.querySelector('.toast-icon')?.textContent || '').trim(),
+            sprite: t.querySelector('.toast-icon use')?.getAttribute('href') ?? null,
+            closeSprite: t.querySelector('.toast-close use')?.getAttribute('href') ?? null,
+        }));
+    });
+    expect(r.length, 'no toasts rendered').toBe(4);
+    for (const t of r) {
+        expect(t.sprite, `${t.cls} has no sprite icon`).toMatch(/^#i-/);
+        expect(t.closeSprite, `${t.cls} dismiss control has no sprite icon`).toMatch(/^#i-/);
+        // Any leftover emoji would show up as text content beside the <svg>.
+        expect(t.icon, `${t.cls} still renders a text/emoji glyph: "${t.icon}"`).toBe('');
+    }
 });

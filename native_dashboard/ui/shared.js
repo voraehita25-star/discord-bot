@@ -443,18 +443,24 @@ export function showToast(message, options = { type: 'info' }) {
         toast.setAttribute('role', 'alert');
         toast.setAttribute('aria-live', 'assertive');
     }
+    // Sprite names, not emoji. These four used to be \u2705 \u274C \u26A0\uFE0F \u2139\uFE0F, which
+    // render as full-colour OS emoji \u2014 a green tick and a blue info square in an
+    // app whose every other glyph is one monoline sakura sprite. The severity
+    // colour comes from CSS (`.toast-<type> .toast-icon .ic`), matching the rail
+    // the toast already draws down its left edge.
     const icons = {
-        success: '\u2705',
-        error: '\u274C',
-        warning: '\u26A0\uFE0F',
-        info: '\u2139\uFE0F'
+        success: 'check',
+        error: 'x',
+        warning: 'alert',
+        info: 'info'
     };
-    // ?? '' so an unknown ``options.type`` doesn't render the literal
-    // string "undefined" into the toast \u2014 falls back to a silent icon.
+    // ?? '' so an unknown ``options.type`` doesn't render a broken <use> href
+    // into the toast \u2014 falls back to a silent icon.
+    const glyph = icons[options.type] ? icon(icons[options.type]) : '';
     toast.innerHTML = `
-        <span class="toast-icon">${icons[options.type] ?? ''}</span>
+        <span class="toast-icon">${glyph}</span>
         <span class="toast-message">${escapeHtml(message)}</span>
-        <button class="toast-close" aria-label="Dismiss">\u00D7</button>
+        <button class="toast-close" aria-label="Dismiss">${icon('x')}</button>
     `;
     // Use addEventListener instead of inline onclick (CSP blocks inline scripts)
     toast.querySelector('.toast-close')?.addEventListener('click', () => toast.remove());

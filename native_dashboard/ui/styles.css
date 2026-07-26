@@ -16,8 +16,17 @@ html[data-theme="light"] .sidebar {
     box-shadow: 2px 0 20px rgba(0, 0, 0, 0.08);
 }
 
+/* Every hard literal in this light-theme block used to be a slate/indigo from
+   the pre-Blueprint skin, then a teal from Blueprint itself. Sakura Midnight v4
+   retired BOTH, but a literal cannot follow a token, so the ones orbital.css
+   does not happen to override at equal specificity kept painting the old brand:
+   a slate-blue nav label, a teal input border, a navy heading. Repointed to the
+   dawn tokens so "새벽" is the same garden everywhere. (The [B2] guard scans
+   light-theme rules for the retired PURPLE literals; the teal that replaced them
+   is now retired too, and nothing was watching it — see the extended guard in
+   upgrade-guards.spec.ts.) */
 html[data-theme="light"] .nav-item {
-    color: #4a4a6a;
+    color: var(--text-secondary);
 }
 
 html[data-theme="light"] .nav-item:hover {
@@ -44,8 +53,11 @@ html[data-theme="light"] .control-card,
 html[data-theme="light"] .settings-card,
 html[data-theme="light"] .chart-card {
     background: var(--card-bg);
-    border: 1px solid rgba(94, 88, 140, 0.16);
-    box-shadow: 0 8px 24px rgba(31, 36, 48, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    /* were a slate-violet hairline and a cool-grey drop: every panel on dawn
+       paper was outlined and shadowed in a colour from a different palette. The
+       dawn tokens are warm plum, which is what the paper itself is made of. */
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-md), var(--glass-hi);
 }
 
 html[data-theme="light"] .btn {
@@ -115,16 +127,18 @@ html[data-theme="light"] .status-badge.online {
 }
 
 html[data-theme="light"] .log-container {
-    background: #f8fafc;
-    color: #0f172a;
-    border: 1px solid rgba(94, 88, 140, 0.18);
-    box-shadow: 0 6px 20px rgba(31, 36, 48, 0.06);
+    /* was slate-50 paper, slate-900 ink, a slate-violet border and a cool-grey
+       drop — a four-literal island of the old palette on the Logs page. */
+    background: var(--surface-1);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-md);
 }
 
 html[data-theme="light"] .theme-toggle {
-    /* [B2] was anime purple→pink wash; repointed to the teal Blueprint wash. */
+    /* [B2] was anime purple→pink wash; now the dawn sakura wash. */
     background: var(--cyan-100);
-    color: #4a4a6a;
+    color: var(--text-secondary);
 }
 
 html[data-theme="light"] .theme-toggle:hover {
@@ -142,10 +156,11 @@ html[data-theme="light"] .logo-text {
     color: var(--accent-cyan);
 }
 
-html[data-theme="light"] h1, 
-html[data-theme="light"] h2, 
+html[data-theme="light"] h1,
+html[data-theme="light"] h2,
 html[data-theme="light"] h3 {
-    color: #1a1a2e;
+    /* was #1a1a2e, a navy: the dawn ink is a plum (#231423). */
+    color: var(--text-primary);
 }
 
 html[data-theme="light"] .shortcut {
@@ -158,10 +173,11 @@ html[data-theme="light"] .shortcut {
 html[data-theme="light"] .setting-select,
 html[data-theme="light"] .setting-input,
 html[data-theme="light"] #log-filter {
-    background: #ffffff;
-    /* [B2] input border was muted-purple; repointed to a teal Blueprint tint. */
-    border: 1px solid rgba(9, 124, 150, 0.25);
-    color: #1a1a2e;
+    background: var(--surface-1);
+    /* was a 25%-alpha teal (#097c96) — the most visible survivor of Blueprint,
+       drawn around every input, select and the log level filter on dawn paper. */
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
 }
 
 html[data-theme="light"] .toggle-slider {
@@ -259,24 +275,36 @@ html[data-theme="light"] kbd {
     color: var(--text-primary);
 }
 
+/* All four washes were literals from the palette before this one — a
+   Tailwind-400 green/red/orange, and for info the retired #22d3ee teal, which
+   put a cold blue card on screen every time the app said something neutral. The
+   border already followed the token; the fill now does too, mixed off the SAME
+   --sev-* value orbital.css draws the toast's left rail from, so a toast is one
+   colour in three places instead of two colours in two.
+   Toasts only exist while one is on screen, which is why a static sweep of the
+   resting DOM never saw any of this. */
 .toast-success {
     border-color: var(--accent-green);
-    background: linear-gradient(135deg, rgba(74, 222, 128, 0.15), var(--bg-secondary));
+    background: linear-gradient(135deg,
+        color-mix(in srgb, var(--sev-info) 15%, transparent), var(--bg-secondary));
 }
 
 .toast-error {
     border-color: var(--accent-red);
-    background: linear-gradient(135deg, rgba(248, 113, 113, 0.15), var(--bg-secondary));
+    background: linear-gradient(135deg,
+        color-mix(in srgb, var(--sev-error) 15%, transparent), var(--bg-secondary));
 }
 
 .toast-warning {
     border-color: var(--accent-orange);
-    background: linear-gradient(135deg, rgba(251, 146, 60, 0.15), var(--bg-secondary));
+    background: linear-gradient(135deg,
+        color-mix(in srgb, var(--sev-warn) 15%, transparent), var(--bg-secondary));
 }
 
 .toast-info {
     border-color: var(--accent-cyan);
-    background: linear-gradient(135deg, rgba(34, 211, 238, 0.15), var(--bg-secondary));
+    background: linear-gradient(135deg,
+        color-mix(in srgb, var(--accent-cyan) 15%, transparent), var(--bg-secondary));
 }
 
 body {
@@ -1044,9 +1072,15 @@ html[data-theme="light"] .log-line.info {
 }
 
 .data-item.selected {
+    /* The border already followed the token. The fill and the glow were the
+       LITERAL #22d3ee the token used to hold, so checking a Database row painted
+       it teal in a plum-and-sakura app — the one place in the dark theme where a
+       retired palette still showed, and only in a state no screenshot covered.
+       --accent-cyan is the primary-accent SLOT (see the token map in
+       orbital.css); the tint ramp is what a wash of it is called. */
     border-color: var(--accent-cyan);
-    background: rgba(34, 211, 238, 0.12);
-    box-shadow: 0 0 12px rgba(34, 211, 238, 0.15);
+    background: var(--cyan-200);
+    box-shadow: 0 0 12px var(--glow-pink);
 }
 
 /* min-width:0 is load-bearing: a flex item's default min-width:auto refuses to

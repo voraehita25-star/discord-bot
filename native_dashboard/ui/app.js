@@ -1112,12 +1112,21 @@ function initSakuraAnimation() {
     // Alpha is NOT baked in. The per-frame opacity write owns the petal's
     // overall presence, and the shader thins the blade further wherever its own
     // curvature turns a part of it edge-on.
+    // The night set used to top out around 15% saturation (#FFD7E4 and paler).
+    // On its own that is a fair sakura, but it is not what shipped: the shader
+    // dropped an unlit blade to 62% of its body colour, bleached 40% of the rim
+    // toward white, and the compositor then thinned the result against a
+    // near-black canvas. A #FFD7E4 petal at a typical 0.6 alpha arrived on the
+    // deck as #544750 — 8% saturation, which the eye reads as grey debris, not
+    // blossom. Same hues, ~2x the chroma, so what survives all three steps is
+    // still recognisably pink. See also AMBIENT_NIGHT and the rim wash in
+    // sakura-model.ts: this was never a one-number problem.
     const NIGHT_COLORS = [
-        [1.000, 0.843, 0.894],
-        [1.000, 0.761, 0.839],
-        [1.000, 0.690, 0.788],
-        [1.000, 0.616, 0.741],
-        [1.000, 0.863, 0.910],
+        [1.000, 0.816, 0.886],
+        [1.000, 0.780, 0.860],
+        [1.000, 0.706, 0.812],
+        [1.000, 0.643, 0.769],
+        [1.000, 0.576, 0.722],
     ];
     const DAWN_COLORS = [
         [0.937, 0.561, 0.694],
@@ -1158,6 +1167,19 @@ function initSakuraAnimation() {
     // 31 petals to 37.
     const MAX_PETALS = Math.max(16, Math.min(44, Math.round(((container.clientWidth || window.innerWidth) *
         (container.clientHeight || window.innerHeight)) / 28000)));
+    /**
+     * The basal flush, derived from whatever body colour the petal is wearing.
+     *
+     * Real petals hold more colour where they met the flower, so this is warmed
+     * and deepened off the body rather than picked independently — it has to
+     * belong to the same blossom. Both callers (a fresh petal, and a live one
+     * re-tinted by a theme flip) go through here so the two can never disagree.
+     */
+    function setBaseTint(p) {
+        p.baseR = Math.min(1, p.r * 1.02);
+        p.baseG = p.g * 0.76;
+        p.baseB = p.b * 0.80;
+    }
     /**
      * Give a petal a fresh set of initial conditions.
      *
@@ -1233,12 +1255,7 @@ function initSakuraAnimation() {
         p.b = rgb[2];
         p.lobes = 1;
         p.lobeJitter = EMPTY_JITTER;
-        // A basal flush: real petals hold more colour where they met the
-        // flower. Warmed and deepened off the body colour so it always belongs
-        // to the same blossom.
-        p.baseR = Math.min(1, p.r * 1.02);
-        p.baseG = p.g * 0.76;
-        p.baseB = p.b * 0.80;
+        setBaseTint(p);
         const kind = Math.random();
         if (kind < 0.40) {
             // somei-yoshino — the one everybody pictures. Moderate everything.
@@ -1404,6 +1421,16 @@ function initSakuraAnimation() {
     // Key light, screen space, y down: upper-left and in front of the deck.
     // Unit length, so the shader's Lambert term needs no normalising per frame.
     const LIGHT_DIR = [-0.46, -0.56, 0.69];
+    // How much of its body colour a petal keeps on the side facing away from the
+    // key light. It is a per-THEME value, not a per-scene one, because the two
+    // canvases fight the shading in opposite directions: source-over onto
+    // near-black subtracts value a second time, so the night field needs a high
+    // floor to arrive as blossom rather than as a smudge; on dawn paper value is
+    // exactly what makes a petal vanish, so the floor stays low and the shading
+    // is allowed to do its work. One number for both was why the field only ever
+    // looked right in one of them.
+    const AMBIENT_NIGHT = 0.82;
+    const AMBIENT_DAWN = 0.60;
     let pointerX = -9999;
     let pointerY = -9999;
     let pointerVX = 0;
@@ -1471,6 +1498,12 @@ function initSakuraAnimation() {
                 p.r = rgb[0];
                 p.g = rgb[1];
                 p.b = rgb[2];
+                // The basal flush is DERIVED from the body colour, so re-tinting
+                // one without the other left every live petal wearing the new
+                // theme's blade over the old theme's throat — a dawn-deep base
+                // under a night-pale body, which the shader mixes across the
+                // bottom 42% of the blade. Kept in step with resetPetal().
+                setBaseTint(p);
             }
         }
         // Spawning lives in the sim now, not a setInterval: one petal exactly
@@ -1648,7 +1681,7 @@ function initSakuraAnimation() {
                 });
             }
         }
-        renderer.render(draw, LIGHT_DIR);
+        renderer.render(draw, LIGHT_DIR, lastThemeLight ? AMBIENT_DAWN : AMBIENT_NIGHT);
         sakuraStats.count = petals.length;
         sakuraStats.frames++;
     });

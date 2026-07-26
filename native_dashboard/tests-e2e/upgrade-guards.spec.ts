@@ -79,8 +79,12 @@ test('[B1] danger buttons: white label clears AA (>=4.5:1) on resting AND hover 
 test('[B2] light theme: NO anime-purple/indigo in any light-theme CSS rule', async ({ page }) => {
     // Static scan of every rule scoped to the light theme — catches hover/active
     // and every other state, not just the resting DOM a previous guard probed.
+    //
+    // ⚠️ This test spent its whole life passing vacuously — see the note on the
+    // walk below. It inspected zero declarations. Its sibling [B2c] covers the
+    // colours that leaked past it while it was asleep.
     const offenders = await page.evaluate(() => {
-        const PURPLE = [
+        const RETIRED = [
             '124, 58, 237', '124,58,237', '#7c3aed',  // primary anime-purple
             '#6d28d9', '#9333ea', '#6366f1', '#818cf8', // violet/indigo family
             '214, 51, 132', '#d63384',                  // pink gradient partner
@@ -89,20 +93,35 @@ test('[B2] light theme: NO anime-purple/indigo in any light-theme CSS rule', asy
         for (const sheet of Array.from(document.styleSheets)) {
             let rules: CSSRuleList;
             try { rules = sheet.cssRules; } catch { continue; }
+            // CAREFUL — this walk used to read:
+            //     if (grouping.cssRules) { walk(grouping.cssRules); continue; }
+            //     if (!sr.selectorText) continue;
+            //     ...check...
+            // Since Chromium shipped CSS nesting, `CSSStyleRule` ALSO exposes a
+            // (usually empty) `cssRules`, so that first branch matched every
+            // style rule in the sheet, recursed into nothing, and `continue`d
+            // past the check. The guard inspected zero declarations and passed
+            // unconditionally — which is how a retired teal survived two skins
+            // under a test written to forbid exactly that. Check the rule FIRST,
+            // then descend into whatever it nests.
             const walk = (list: CSSRuleList) => {
                 for (const rule of Array.from(list)) {
-                    const grouping = rule as CSSGroupingRule;
-                    if (grouping.cssRules) { walk(grouping.cssRules); continue; }
                     const sr = rule as CSSStyleRule;
-                    if (!sr.selectorText) continue;
-                    if (!/\[data-theme=["']?light["']?\]/.test(sr.selectorText)) continue;
-                    const lower = sr.cssText.toLowerCase();
-                    for (const p of PURPLE) {
-                        if (lower.includes(p.toLowerCase())) {
-                            hits.push(`${sr.selectorText}  ::  ${p}`);
-                            break;
+                    if (sr.selectorText && sr.style &&
+                        /\[data-theme=["']?light["']?\]/.test(sr.selectorText)) {
+                        // .style.cssText is this rule's own declarations. Using
+                        // .cssText instead would pull in nested rules' text and
+                        // report the same literal against several selectors.
+                        const lower = sr.style.cssText.toLowerCase();
+                        for (const p of RETIRED) {
+                            if (lower.includes(p.toLowerCase())) {
+                                hits.push(`${sr.selectorText}  ::  ${p}`);
+                                break;
+                            }
                         }
                     }
+                    const nested = (rule as CSSGroupingRule).cssRules;
+                    if (nested && nested.length) walk(nested);
                 }
             };
             walk(rules);
@@ -110,6 +129,140 @@ test('[B2] light theme: NO anime-purple/indigo in any light-theme CSS rule', asy
         return hits;
     });
     expect(offenders, `light-theme purple/indigo leak:\n${offenders.join('\n')}`).toEqual([]);
+});
+
+/**
+ * [B2c] No retired palette reaches the SCREEN, in either theme.
+ *
+ * [B2] above is a static scan, and a static scan of a layered stylesheet cannot
+ * tell a live rule from a dead one: styles.css still holds ~40 declarations in
+ * the retired Blueprint teal / slate / Tailwind-400 ramp, and orbital.css
+ * overrides most of them. Demanding the source be literal-free would be a
+ * separate cleanup; what matters to a user is which of them still PAINT.
+ *
+ * Four did, and none of them were visible to any existing test:
+ *   · `.data-item.selected`   — a teal fill + glow on a checked Database row,
+ *                               a state no screenshot covered.
+ *   · `.toast-info`           — a cold blue card every time the app said
+ *                               something neutral; toasts only exist while one
+ *                               is on screen, so the resting DOM never had it.
+ *   · the light card border / log-container / input rules — a slate-violet
+ *                               hairline and a 25%-alpha teal outline on dawn
+ *                               paper, which axe has no opinion about.
+ *
+ * So this samples COMPUTED colour across every page, both themes, and the
+ * transient surfaces (toasts, each modal, a selected row) that a resting sweep
+ * misses — then flags any hue in the 165-250deg band. The Sakura Midnight palette
+ * is gold (~36deg), jade (~155deg), wisteria (~257deg) and sakura/rose
+ * (~337-351deg); nothing legitimate lands between jade and wisteria.
+ */
+test('[B2c] no retired-palette colour is painted on screen, in either theme', async ({ page }) => {
+    const PROPS = [
+        'color', 'backgroundColor', 'borderTopColor', 'borderLeftColor',
+        'outlineColor', 'boxShadow', 'backgroundImage', 'fill', 'stroke',
+    ] as const;
+
+    const scan = (label: string) =>
+        page.evaluate(({ label, PROPS }) => {
+            const hueOf = (r: number, g: number, b: number) => {
+                const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+                if (!d) return { h: 0, s: 0, l: mx / 255 };
+                let h: number;
+                if (mx === r) h = 60 * (((g - b) / d) % 6);
+                else if (mx === g) h = 60 * ((b - r) / d + 2);
+                else h = 60 * ((r - g) / d + 4);
+                return { h: h < 0 ? h + 360 : h, s: d / mx, l: mx / 255 };
+            };
+            const out: string[] = [];
+            for (const el of Array.from(document.querySelectorAll<HTMLElement>('*'))) {
+                const cs = getComputedStyle(el);
+                if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+                const b = el.getBoundingClientRect();
+                if (b.width === 0 || b.height === 0) continue;
+                for (const prop of PROPS) {
+                    const raw = (cs as unknown as Record<string, string>)[prop];
+                    if (!raw || raw === 'none') continue;
+                    for (const m of raw.matchAll(/rgba?\(([^)]*)\)/g)) {
+                        const parts = m[1].split(/[,/\s]+/).filter(Boolean).map(Number);
+                        const [r, g, bl] = parts;
+                        const a = parts.length > 3 ? parts[3] : 1;
+                        if (!Number.isFinite(r) || a < 0.06) continue;
+                        const { h, s, l } = hueOf(r, g, bl);
+                        if (s < 0.18 || l < 0.10) continue;
+                        if (h < 165 || h > 250) continue;
+                        out.push(
+                            `[${label}] hue ${Math.round(h)} rgb(${r},${g},${bl}) via ${prop} on ` +
+                            el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') +
+                            (typeof el.className === 'string' && el.className
+                                ? '.' + el.className.trim().split(/\s+/).slice(0, 3).join('.') : ''),
+                        );
+                    }
+                }
+            }
+            return out;
+        }, { label, PROPS: PROPS as unknown as string[] });
+
+    const hits: string[] = [];
+    for (const theme of ['dark', 'light'] as const) {
+        await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+        await page.waitForTimeout(300);
+
+        for (const p of ['status', 'chat', 'logs', 'database', 'settings', 'history']) {
+            await page.evaluate(
+                (n) => (window as unknown as { showPage?: (s: string) => void }).showPage?.(n),
+                p,
+            );
+            await page.waitForTimeout(250);
+            hits.push(...(await scan(`${theme}/${p}`)));
+        }
+
+        // A selected Database row — where the teal actually hid.
+        await page.evaluate(() => {
+            (window as unknown as { showPage?: (s: string) => void }).showPage?.('database');
+            document.querySelectorAll<HTMLInputElement>('.data-item-checkbox')[0]?.click();
+        });
+        await page.waitForTimeout(250);
+        hits.push(...(await scan(`${theme}/database:row-selected`)));
+
+        // All four toast severities.
+        await page.evaluate(async () => {
+            const sharedModulePath = '/shared.js';
+            const mod = await import(sharedModulePath) as {
+                showToast?: (m: string, o: { type: string; duration?: number }) => void;
+            };
+            for (const type of ['success', 'error', 'warning', 'info']) {
+                mod.showToast?.(`a ${type} toast`, { type, duration: 30_000 });
+            }
+        });
+        await page.waitForTimeout(400);
+        hits.push(...(await scan(`${theme}/toasts`)));
+        await page.evaluate(() => {
+            document.getElementById('toast-container')?.replaceChildren();
+        });
+
+        // Every modal, each of which owns surfaces nothing else renders.
+        for (const id of [
+            'new-chat-modal', 'rename-modal', 'delete-confirm-modal',
+            'chat-files-modal', 'avatar-crop-modal', 'shortcuts-modal',
+        ]) {
+            await page.evaluate((m) => {
+                for (const el of Array.from(document.querySelectorAll('.modal.active'))) {
+                    el.classList.remove('active');
+                }
+                document.getElementById(m)?.classList.add('active');
+            }, id);
+            await page.waitForTimeout(200);
+            hits.push(...(await scan(`${theme}/${id}`)));
+        }
+        await page.evaluate(() => {
+            for (const el of Array.from(document.querySelectorAll('.modal.active'))) {
+                el.classList.remove('active');
+            }
+        });
+    }
+
+    expect([...new Set(hits)], `retired palette still painting:\n${[...new Set(hits)].join('\n')}`)
+        .toEqual([]);
 });
 
 /**
