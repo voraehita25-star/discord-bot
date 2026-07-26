@@ -230,6 +230,101 @@ test('history: content is fully reachable at the 800x600 window minimum', async 
     expect(result.clipped, result.clipped.join('\n')).toEqual([]);
 });
 
+// ---------------------------------------------------------------------------
+// AI Chat at the window minimum. The stacked-and-short fix was scoped to
+// #page-history on the reading that chat "already lays out correctly at this
+// size" — it did not. `.chat-sidebar` capped at 38vh is 228px here, the rail's
+// own chrome took ~186px of it, and #conversation-list was left 42px to show a
+// 111px zero-data block: both its heading and its hint sat below the fold.
+// Nothing in the suite saw it, because a vertically crushed panel still has no
+// horizontal overflow and still passes axe.
+// ---------------------------------------------------------------------------
+test('chat: the conversation rail is usable at the 800x600 window minimum', async ({ page }) => {
+    await boot(page, MIN_WIN);
+    await show(page, 'chat');
+
+    const r = await page.evaluate(() => {
+        const q = (sel: string) => document.querySelector<HTMLElement>(sel);
+        const list = q('#conversation-list')!;
+        const rail = q('#page-chat .chat-sidebar')!;
+        const main = q('#page-chat .chat-main')!;
+        const zero = q('#conversation-list .no-conversations');
+        return {
+            listClientH: list.clientHeight,
+            zeroH: zero ? zero.getBoundingClientRect().height : 0,
+            railSelfOverflow: rail.scrollHeight - rail.clientHeight,
+            mainH: Math.round(main.getBoundingClientRect().height),
+        };
+    });
+
+    // The zero-data block must FIT the list, not be sliced by it.
+    expect(r.zeroH, 'no zero-data block to measure — fixture changed').toBeGreaterThan(0);
+    expect(
+        r.zeroH,
+        `zero-data block is ${r.zeroH}px inside a ${r.listClientH}px list`,
+    ).toBeLessThanOrEqual(r.listClientH);
+    // The rail must not overflow its own cap either.
+    expect(r.railSelfOverflow, 'chat rail overflows its own max-height').toBeLessThanOrEqual(2);
+    // …and it must not win the split at .chat-main's expense.
+    expect(r.mainH, 'chat-main squeezed by the rail').toBeGreaterThanOrEqual(260);
+});
+
+test('chat: the composer stays pinned at 800x600 with a conversation open', async ({ page }) => {
+    await boot(page, MIN_WIN);
+    await show(page, 'chat');
+    // Reveal the live conversation surface (the overlay + .hidden gating is not
+    // what this test is about) and fill it past the message viewport.
+    await page.evaluate(() => {
+        document.getElementById('chat-not-running-overlay')?.classList.remove('visible');
+        document.getElementById('chat-empty')?.classList.add('hidden');
+        const c = document.getElementById('chat-container');
+        if (c) { c.classList.remove('hidden'); c.style.display = 'flex'; }
+        const m = document.getElementById('chat-messages');
+        if (m) {
+            for (let i = 0; i < 30; i++) {
+                const d = document.createElement('div');
+                d.className = 'chat-message user';
+                d.textContent = `message ${i}`;
+                m.appendChild(d);
+            }
+        }
+    });
+    await page.waitForTimeout(300);
+
+    const r = await page.evaluate(() => {
+        const input = document.getElementById('chat-input')!.getBoundingClientRect();
+        const messages = document.getElementById('chat-messages')!;
+        const rail = document.querySelector<HTMLElement>('#page-chat .chat-sidebar')!;
+        const footer = document.querySelector<HTMLElement>('#page-chat .chat-sidebar-footer')!;
+        return {
+            inputInView: input.top >= 0 && input.bottom <= window.innerHeight + 1,
+            inputH: Math.round(input.height),
+            messagesScrolls: messages.scrollHeight > messages.clientHeight,
+            messagesClientH: messages.clientHeight,
+            docOverflowY: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+            // The rail shrinks once a conversation is open; .chat-sidebar does
+            // not clip, so anything it cannot fit spills over the conversation
+            // header below it rather than scrolling.
+            footerSpill: Math.round(
+                footer.getBoundingClientRect().bottom - rail.getBoundingClientRect().bottom),
+        };
+    });
+
+    // The height model that the #page-history fix deliberately did NOT apply
+    // here: the composer stays put and only .chat-messages scrolls.
+    expect(r.inputInView, 'composer scrolled out of the window').toBe(true);
+    expect(r.messagesScrolls, 'the message list must own the overflow').toBe(true);
+    expect(r.docOverflowY, 'the page itself must not scroll').toBeLessThanOrEqual(1);
+    // 96px ≈ two messages. The floor is set from the two states this pins:
+    // the header (130px) + composer (178px) chrome used to leave 62px here,
+    // and compacting both — plus letting the rail shrink once a conversation
+    // is open — takes it to ~130px. A regression in either direction lands
+    // back near 62 and fails; ordinary font/spacing drift does not.
+    expect(r.messagesClientH, 'message viewport crushed').toBeGreaterThanOrEqual(96);
+    expect(r.footerSpill, 'the rail spilled its footer over the conversation header')
+        .toBeLessThanOrEqual(1);
+});
+
 test('history: both scroll containers are keyboard-focusable', async ({ page }) => {
     await boot(page, MIN_WIN);
     await show(page, 'history');

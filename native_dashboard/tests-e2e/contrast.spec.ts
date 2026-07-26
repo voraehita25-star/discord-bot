@@ -33,8 +33,18 @@ import { PNG } from 'pngjs';
 
 const PAGES = ['status', 'chat', 'logs', 'database', 'settings', 'history'] as const;
 
-/** Every style whose job is to be quiet — i.e. every candidate for going too quiet. */
+/**
+ * Every style whose job is to be quiet — i.e. every candidate for going too
+ * quiet — plus every ACCENT-ON-TINT chip. The accent group is here because the
+ * light palette's tokens were each verified against white, and not one of them
+ * is ever painted on white: they sit on a 9-10% tint of themselves, over a
+ * tinted surface. `--accent-green` measured 5.0:1 on paper and 4.25:1 on the
+ * sidebar badge it actually paints; the "LIVE" chip was worse still.
+ */
 const MUTED_TEXT = [
+    '.status-badge .status-text',
+    '#bot-status-text',
+    '.live-indicator',
     '.page-eyebrow',
     '.nav-item .shortcut',
     '.setting-hint-inline',
@@ -82,6 +92,11 @@ async function collectTargets(page: Page, sels: string[]): Promise<Target[]> {
                 if (cs.visibility === 'hidden' || cs.display === 'none') return;
                 const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
                 if (!text) return;
+                // -webkit-text-fill-color wins over `color` when both are set
+                // (.live-indicator sets it), so read the one that paints.
+                const fill = cs.webkitTextFillColor;
+                const inkColor =
+                    fill && fill !== 'currentcolor' && /^rgba?\(/.test(fill) ? fill : cs.color;
                 // The effective alpha is the element's own opacity times every
                 // ancestor's — `color`'s alpha channel alone misses both.
                 let alpha = 1;
@@ -92,7 +107,7 @@ async function collectTargets(page: Page, sels: string[]): Promise<Target[]> {
                 if (alpha < 0.05) return; // effectively invisible; not a contrast question
                 out.push({
                     sel, idx, x: b.x, y: b.y, w: b.width, h: b.height,
-                    color: cs.color, alpha,
+                    color: inkColor, alpha,
                     fontPx: parseFloat(cs.fontSize),
                     bold: parseInt(cs.fontWeight, 10) >= 700,
                     text: text.slice(0, 50),
@@ -104,23 +119,38 @@ async function collectTargets(page: Page, sels: string[]): Promise<Target[]> {
 }
 
 async function measure(page: Page, t: Target): Promise<{ ratio: number; need: number; bg: string } | null> {
-    const setVis = (v: string) =>
+    // Hide the GLYPHS, not the element. `visibility: hidden` also removes the
+    // element's own background, so any chip that paints its own fill (the
+    // status badge, #bot-status-text, the LIVE indicator) would be measured
+    // against the surface BEHIND it rather than the tint it actually sits on —
+    // which reads as a comfortable pass for text that is really under AA.
+    const setInk = (v: string) =>
         page.evaluate(
             ({ sel, idx, v }) => {
                 const el = document.querySelectorAll<HTMLElement>(sel)[idx];
-                if (el) el.style.visibility = v;
+                if (!el) return;
+                if (v) {
+                    el.style.setProperty('color', v, 'important');
+                    el.style.setProperty('-webkit-text-fill-color', v, 'important');
+                } else {
+                    el.style.removeProperty('color');
+                    el.style.removeProperty('-webkit-text-fill-color');
+                }
             },
             { sel: t.sel, idx: t.idx, v },
         );
 
-    await setVis('hidden');
+    await setInk('transparent');
     const buf = await page.screenshot({
         clip: {
             x: Math.floor(t.x), y: Math.floor(t.y),
             width: Math.max(2, Math.floor(t.w)), height: Math.max(2, Math.floor(t.h)),
         },
+        // Freeze the LIVE badge's infinite pulse so its sampled backdrop is
+        // the same on every run.
+        animations: 'disabled',
     });
-    await setVis('');
+    await setInk('');
 
     const png = PNG.sync.read(buf);
     let r = 0, g = 0, b = 0, n = 0;
@@ -133,6 +163,10 @@ async function measure(page: Page, t: Target): Promise<{ ratio: number; need: nu
     const m = t.color.match(/rgba?\(([^)]+)\)/);
     if (!m) return null;
     const cv = m[1].split(',').map((x) => parseFloat(x));
+    // Fully transparent ink means the glyphs are painted by something else
+    // (background-clip:text). Blending it would compute a fabricated 1.0 ratio
+    // and report a pass; skip instead of lying.
+    if (cv[3] === 0) return null;
     const a = t.alpha * (cv[3] === undefined ? 1 : cv[3]);
     const fr = cv[0] * a + r * (1 - a);
     const fg = cv[1] * a + g * (1 - a);
@@ -163,7 +197,16 @@ for (const theme of ['dark', 'light'] as const) {
                 (n) => (window as unknown as { showPage?: (s: string) => void }).showPage?.(n),
                 p,
             );
-            await page.waitForTimeout(250);
+            // Long enough for every FINITE entrance animation to settle. This
+            // is load-bearing, not padding: #page-status.active .stat-card runs
+            // orbital-rise (opacity 0 -> 1) with delays up to 0.20s on top of a
+            // 0.5s duration, and .page.active adds a 0.3s fadeIn. collectTargets
+            // reads the live opacity while page.screenshot({animations:'disabled'})
+            // fast-forwards the render to completion — measure before they
+            // settle and the text alpha comes from a half-faded card while the
+            // backdrop comes from a fully painted one, which scored .stat-label
+            // at a fictional 4.13:1.
+            await page.waitForTimeout(900);
 
             for (const t of await collectTargets(page, MUTED_TEXT)) {
                 const m = await measure(page, t);

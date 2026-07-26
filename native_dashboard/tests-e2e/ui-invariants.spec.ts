@@ -302,3 +302,147 @@ test('every settings row sits in a card that explains it', async ({ page }) => {
     );
     expect(mixed, mixed.join('\n')).toEqual([]);
 });
+
+// ---------------------------------------------------------------------------
+// The sakura simulation, which the rest of the suite cannot see.
+//
+// `SEED_SETTINGS.sakuraEnabled = false` in the fixture switches the effect off
+// for every other spec — deliberately, because the animated transforms make
+// scrollWidth flicker and produce false horizontal-overflow failures. The side
+// effect is that the entire renderer (a per-frame physics loop that writes
+// transform + opacity on ~30 nodes) shipped with no automated coverage at all.
+//
+// These two tests turn it ON and assert the properties that do not depend on
+// where any individual petal happens to be, so nothing here can flicker.
+// ---------------------------------------------------------------------------
+async function bootWithSakura(page: Page): Promise<void> {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await installPopulatedMocks(page);
+    // Runs after the fixture's own init script, so it wins.
+    await page.addInitScript(() => {
+        try {
+            const raw = localStorage.getItem('dashboard-settings');
+            const s = raw ? JSON.parse(raw) : {};
+            s.sakuraEnabled = true;
+            localStorage.setItem('dashboard-settings', JSON.stringify(s));
+        } catch { /* storage blocked — the test below will report it */ }
+    });
+    await page.goto('/index.html');
+    await waitForDashboardReady(page);
+    await page.waitForTimeout(2500);   // let the field seed and the loop run
+}
+
+test('sakura: the field renders, moves, and stays inside its container', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(`${e.name}: ${e.message}`));
+    await bootWithSakura(page);
+
+    const first = await page.evaluate(() => {
+        const petals = Array.from(
+            document.getElementById('sakura-container')?.querySelectorAll<HTMLElement>('.sakura-petal') ?? [],
+        );
+        return {
+            count: petals.length,
+            withShape: petals.filter((p) => p.querySelector('svg path')).length,
+            visible: petals.filter((p) => parseFloat(p.style.opacity || '0') > 0.01).length,
+            // Several inline <svg> roots share one id namespace and url(#id)
+            // resolves to the FIRST match, so a duplicate gradient id would
+            // repaint every petal in the first petal's colour.
+            gradIds: petals.map((p) => p.querySelector('linearGradient')?.id ?? '').filter(Boolean),
+            transforms: petals.map((p) => p.style.transform),
+            docOverflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+    });
+
+    expect(first.count, 'no petals spawned').toBeGreaterThan(0);
+    expect(first.withShape, 'a petal rendered without its SVG shape').toBe(first.count);
+    expect(first.visible, 'petals spawned but never faded in').toBe(first.count);
+    expect(new Set(first.gradIds).size, 'duplicate petal gradient ids').toBe(first.gradIds.length);
+    expect(first.docOverflowX, 'petals pushed the document sideways').toBeLessThanOrEqual(1);
+    expect(errors, errors.join('\n')).toEqual([]);
+
+    // The sim writes transform every frame; a stalled loop is the failure mode
+    // a static snapshot cannot tell apart from a healthy one.
+    await page.waitForTimeout(700);
+    const moved = await page.evaluate((before: string[]) => {
+        const now = Array.from(
+            document.getElementById('sakura-container')?.querySelectorAll<HTMLElement>('.sakura-petal') ?? [],
+        ).map((p) => p.style.transform);
+        return now.some((t, i) => t !== before[i]);
+    }, first.transforms);
+    expect(moved, 'the simulation is not advancing').toBe(true);
+});
+
+test('sakura: toggling off then on does not leave a second loop running', async ({ page }) => {
+    await bootWithSakura(page);
+    const counts = await page.evaluate(async () => {
+        // Variable specifier so tsc does not try to resolve the server path.
+        const appModulePath = '/app.js';
+        const mod = await import(appModulePath) as { setSakuraEnabled?: (b: boolean) => void };
+        const n = () =>
+            document.getElementById('sakura-container')?.querySelectorAll('.sakura-petal').length ?? -1;
+        mod.setSakuraEnabled?.(false);
+        await new Promise((r) => setTimeout(r, 300));
+        const off = n();
+        mod.setSakuraEnabled?.(true);
+        await new Promise((r) => setTimeout(r, 2500));
+        const on = n();
+        mod.setSakuraEnabled?.(true);          // idempotent re-enable
+        await new Promise((r) => setTimeout(r, 2500));
+        return { off, on, onTwice: n() };
+    });
+    expect(counts.off, 'disabling must clear the field').toBe(0);
+    expect(counts.on, 're-enabling must refill it').toBeGreaterThan(0);
+    // A second simulation loop over the same container would push the node
+    // count past the cap the first loop enforces.
+    expect(counts.onTwice, 'a second loop started on re-enable').toBe(counts.on);
+});
+
+// ---------------------------------------------------------------------------
+// The LIVE badge pulses its GLOW, not its legibility.
+//
+// `livePulse` used to cycle opacity 1 -> 0.7 twice a second, which took the
+// label from 4.9:1 to 3.4:1 in dark and from 4.2:1 to 3.0:1 in light — under
+// WCAG AA for part of every cycle, and in light theme for all of it. Nothing
+// caught it: an opacity multiplier is invisible to anything reading `color`
+// (axe), and contrast.spec.ts freezes infinite animations to their FIRST frame,
+// where opacity is still 1. So the trough needs its own assertion, made against
+// the keyframes themselves rather than a sampled pixel.
+// ---------------------------------------------------------------------------
+test('the LIVE badge does not animate its own opacity', async ({ page }) => {
+    await boot(page);
+    await show(page, 'logs');
+
+    const found = await page.evaluate(() => {
+        const el = document.getElementById('live-indicator')!;
+        const name = getComputedStyle(el).animationName;
+        const offenders: string[] = [];
+        let matched = false;
+        for (const sheet of Array.from(document.styleSheets)) {
+            let rules: CSSRuleList;
+            try { rules = sheet.cssRules; } catch { continue; }
+            for (const rule of Array.from(rules)) {
+                if (!(rule instanceof CSSKeyframesRule) || rule.name !== name) continue;
+                matched = true;
+                for (const kf of Array.from(rule.cssRules) as CSSKeyframeRule[]) {
+                    const op = kf.style.getPropertyValue('opacity');
+                    if (op && parseFloat(op) < 1) offenders.push(`${kf.keyText} { opacity: ${op} }`);
+                }
+            }
+        }
+        return {
+            name,
+            matched,
+            offenders,
+            liveOpacity: parseFloat(getComputedStyle(el).opacity),
+        };
+    });
+
+    expect(found.name, 'the LIVE badge lost its animation entirely').not.toBe('none');
+    expect(found.matched, `no @keyframes named "${found.name}" found`).toBe(true);
+    expect(
+        found.offenders,
+        `livePulse dims the badge below full opacity: ${found.offenders.join(', ')}`,
+    ).toEqual([]);
+    expect(found.liveOpacity, 'the badge is dimmed by a static rule instead').toBe(1);
+});
