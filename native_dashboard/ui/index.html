@@ -261,6 +261,12 @@
     <path d="M12 16.5h.01"/>
   </symbol>
 
+  <!-- i-bell — notification bell with clapper (Toast Notifications) -->
+  <symbol id="i-bell" viewBox="0 0 24 24">
+    <path d="M18 8a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6Z"/>
+    <path d="M10.3 20a2 2 0 0 0 3.4 0"/>
+  </symbol>
+
   <!-- i-user — person: head circle + shoulders (Profile) -->
   <symbol id="i-user" viewBox="0 0 24 24">
     <circle cx="12" cy="8" r="4"/>
@@ -750,9 +756,12 @@
                                     </div>
                                 </div>
                                 <div class="chat-input-container">
+                                    <!-- Placeholder says WHAT to do, .chat-input-hint below
+                                         says HOW. It used to read "…(Enter to send)" with
+                                         "Press Enter to send" restated 20px underneath. -->
                                     <textarea
                                         id="chat-input"
-                                        placeholder="Type your message... (Enter to send)"
+                                        placeholder="Type your message…"
                                         rows="1"
                                         aria-label="Type your message"
                                     ></textarea>
@@ -997,8 +1006,13 @@
                 <div class="history-layout">
                     <!-- Channel List Sidebar -->
                     <aside class="history-sidebar">
+                        <!-- "Channels", not "AI History": this rail lists channels
+                             (its filter says "Filter channels…", its empty state says
+                             "No channels loaded"), and the page already carries the
+                             name twice above — eyebrow + h1. Titling the panel after
+                             its contents mirrors the chat page's "Conversations". -->
                         <div class="history-sidebar-header">
-                            <h2><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg> AI History</h2>
+                            <h2><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg> Channels</h2>
                             <button class="btn btn-sm" id="ai-history-refresh" title="Refresh channel list" aria-label="Refresh AI history channel list"><svg class="ic" aria-hidden="true"><use href="#i-restart"/></svg> Refresh</button>
                         </div>
                         <!-- tabindex=0: this is an overflow:auto scroll container,
@@ -1023,7 +1037,7 @@
                              sentence twice). updateHeader() in
                              history-manager.ts maintains the class from here on. -->
                         <div class="history-header is-placeholder" id="ai-history-header">
-                            <h2>AI History</h2>
+                            <h2>No channel selected</h2>
                         </div>
                         <!-- role="log": an aria-label on a bare (role-less) div
                              is ignored by AT — same fix as #chat-tags / #chat-messages.
@@ -1072,16 +1086,6 @@
                             <button class="btn btn-danger btn-small hidden" id="btn-remove-ai-avatar" title="Remove AI avatar" aria-label="Remove AI avatar"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
                             <input type="file" id="ai-avatar-input" accept="image/*" hidden>
                         </div>
-                    </div>
-                    <div class="setting-row">
-                        <label for="setting-density">
-                            <svg class="ic" aria-hidden="true"><use href="#i-reflow"/></svg> Compact Density
-                            <span class="setting-hint-inline">(tighter spacing across cards and panels)</span>
-                        </label>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="setting-density">
-                            <span class="toggle-slider"></span>
-                        </label>
                     </div>
                 </div>
 
@@ -1133,19 +1137,32 @@
                 <div class="settings-card">
                     <h2><svg class="ic" aria-hidden="true"><use href="#i-palette"/></svg> Appearance</h2>
                     <div class="setting-row">
-                        <span class="setting-label">Theme</span>
+                        <span class="setting-label"><svg class="ic" aria-hidden="true"><use href="#i-palette"/></svg> Theme</span>
                         <div class="setting-control">
                             <button class="btn" id="theme-toggle-settings" aria-label="Toggle theme">
                                 <span id="theme-icon-settings"><svg class="ic" aria-hidden="true"><use href="#i-moon"/></svg></span> Toggle Theme (Ctrl+T)
                             </button>
                         </div>
                     </div>
+                    <!-- Density lives HERE, not under "AI Appearance". It is app-wide
+                         spacing — it has nothing to do with how the AI looks, and the
+                         card next to Theme is where someone hunting for it will look. -->
+                    <div class="setting-row">
+                        <label for="setting-density">
+                            <svg class="ic" aria-hidden="true"><use href="#i-reflow"/></svg> Compact Density
+                            <span class="setting-hint-inline">(tighter spacing across cards and panels)</span>
+                        </label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="setting-density">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
                 </div>
 
                 <div class="settings-card">
                     <h2><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg> Refresh Settings</h2>
                     <div class="setting-row">
-                        <label for="refresh-interval">Auto-refresh Interval</label>
+                        <label for="refresh-interval"><svg class="ic" aria-hidden="true"><use href="#i-timer"/></svg> Auto-refresh Interval</label>
                         <select id="refresh-interval" class="setting-select">
                             <option value="1000">1 second</option>
                             <option value="2000" selected>2 seconds</option>
@@ -1154,7 +1171,7 @@
                         </select>
                     </div>
                     <div class="setting-row">
-                        <label for="notifications-toggle">Toast Notifications</label>
+                        <label for="notifications-toggle"><svg class="ic" aria-hidden="true"><use href="#i-bell"/></svg> Toast Notifications</label>
                         <label class="toggle-switch">
                             <input type="checkbox" id="notifications-toggle" checked>
                             <span class="toggle-slider"></span>
@@ -1201,36 +1218,49 @@
 
                 <div class="settings-card">
                     <h2><svg class="ic" aria-hidden="true"><use href="#i-keyboard"/></svg> Keyboard Shortcuts</h2>
+                    <!-- Must stay in sync with #shortcuts-modal below and with the
+                         <kbd class="shortcut"> chips in the nav rail — all three are
+                         the same reference, and tests-e2e/ui-invariants.spec.ts fails
+                         the build if they drift. This card used to omit ? and Esc, which
+                         was the worst pair to drop: ? is the ONLY way to discover the
+                         modal that lists them. Chip text matches the rail's compact
+                         form ("Ctrl+1"), not a spaced variant. -->
                     <div class="shortcuts-list">
                         <div class="shortcut-item">
-                            <kbd>Ctrl + 1</kbd> <span>Go to Status</span>
+                            <kbd>Ctrl+1</kbd> <span>Go to Status</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + 2</kbd> <span>Go to AI Chat</span>
+                            <kbd>Ctrl+2</kbd> <span>Go to AI Chat</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + 3</kbd> <span>Go to Logs</span>
+                            <kbd>Ctrl+3</kbd> <span>Go to Logs</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + 4</kbd> <span>Go to Database</span>
+                            <kbd>Ctrl+4</kbd> <span>Go to Database</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + 5</kbd> <span>Go to Settings</span>
+                            <kbd>Ctrl+5</kbd> <span>Go to Settings</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + 6</kbd> <span>Go to AI History</span>
+                            <kbd>Ctrl+6</kbd> <span>Go to AI History</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + R</kbd> <span>Refresh All Data</span>
+                            <kbd>Ctrl+R</kbd> <span>Refresh All Data</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + T</kbd> <span>Toggle Theme</span>
+                            <kbd>Ctrl+T</kbd> <span>Toggle Theme</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + Enter</kbd> <span>Send Message (in Chat)</span>
+                            <kbd>Ctrl+Enter</kbd> <span>Send Message (in Chat)</span>
                         </div>
                         <div class="shortcut-item">
-                            <kbd>Ctrl + F</kbd> <span>Search in Conversation</span>
+                            <kbd>Ctrl+F</kbd> <span>Search in Conversation</span>
+                        </div>
+                        <div class="shortcut-item">
+                            <kbd>?</kbd> <span>Show this help</span>
+                        </div>
+                        <div class="shortcut-item">
+                            <kbd>Esc</kbd> <span>Close modal / cancel</span>
                         </div>
                     </div>
                 </div>
@@ -1273,17 +1303,18 @@
                 <button class="modal-close" data-close-shortcuts aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
+                <!-- Mirror of the Settings card's list — see the note there. -->
                 <div class="shortcuts-list">
-                    <div class="shortcut-item"><kbd>Ctrl + 1</kbd><span>Go to Status</span></div>
-                    <div class="shortcut-item"><kbd>Ctrl + 2</kbd><span>Go to AI Chat</span></div>
-                    <div class="shortcut-item"><kbd>Ctrl + 3</kbd><span>Go to Logs</span></div>
-                    <div class="shortcut-item"><kbd>Ctrl + 4</kbd><span>Go to Database</span></div>
-                    <div class="shortcut-item"><kbd>Ctrl + 5</kbd><span>Go to Settings</span></div>
-                    <div class="shortcut-item"><kbd>Ctrl + 6</kbd><span>Go to AI History</span></div>
-                    <div class="shortcut-item"><kbd>Ctrl + R</kbd><span>Refresh All Data</span></div>
-                    <div class="shortcut-item"><kbd>Ctrl + T</kbd><span>Toggle Theme</span></div>
-                    <div class="shortcut-item"><kbd>Ctrl + Enter</kbd><span>Send Message (in Chat)</span></div>
-                    <div class="shortcut-item"><kbd>Ctrl + F</kbd><span>Search in Conversation</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl+1</kbd><span>Go to Status</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl+2</kbd><span>Go to AI Chat</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl+3</kbd><span>Go to Logs</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl+4</kbd><span>Go to Database</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl+5</kbd><span>Go to Settings</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl+6</kbd><span>Go to AI History</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl+R</kbd><span>Refresh All Data</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl+T</kbd><span>Toggle Theme</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl+Enter</kbd><span>Send Message (in Chat)</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl+F</kbd><span>Search in Conversation</span></div>
                     <div class="shortcut-item"><kbd>?</kbd><span>Show this help</span></div>
                     <div class="shortcut-item"><kbd>Esc</kbd><span>Close modal / cancel</span></div>
                 </div>

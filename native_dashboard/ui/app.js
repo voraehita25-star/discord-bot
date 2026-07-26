@@ -6,7 +6,7 @@
  * Chat & memory management extracted to chat-manager.ts.
  * Shared utilities in shared.ts.
  */
-import { invoke, escapeHtml, isSafeAvatarUrl, settings, loadSettings, saveSettings, initToastContainer, setup3DInteractions, animateNumber, setSkeleton, showToast, showConfirmDialog, icon, } from './shared.js';
+import { invoke, escapeHtml, isSafeAvatarUrl, settings, loadSettings, saveSettings, initToastContainer, setup3DInteractions, animateNumber, setSkeleton, showToast, showConfirmDialog, icon, countLabel, } from './shared.js';
 import { chatManager, initChatManager, } from './chat-manager.js';
 import { HistoryManager } from './history-manager.js';
 // ============================================================================
@@ -2509,7 +2509,7 @@ async function loadDbStats() {
                     leftDiv.appendChild(idSpan);
                     const valSpan = document.createElement('span');
                     valSpan.className = 'data-item-value';
-                    valSpan.textContent = `${ch.message_count.toLocaleString()} messages`;
+                    valSpan.textContent = countLabel(ch.message_count, 'message');
                     item.appendChild(leftDiv);
                     item.appendChild(valSpan);
                     // Click row to toggle checkbox
@@ -2541,7 +2541,7 @@ async function loadDbStats() {
                     idSpan.title = String(u.user_id); // ellipsized when long
                     const valSpan = document.createElement('span');
                     valSpan.className = 'data-item-value';
-                    valSpan.textContent = `${u.message_count.toLocaleString()} messages`;
+                    valSpan.textContent = countLabel(u.message_count, 'message');
                     item.appendChild(idSpan);
                     item.appendChild(valSpan);
                     usersList.appendChild(item);
@@ -2561,7 +2561,7 @@ async function clearHistory() {
     }
     try {
         const count = await invoke('clear_history');
-        showToast(`Deleted ${count.toLocaleString()} messages`, { type: 'success' });
+        showToast(`Deleted ${countLabel(count, 'message')}`, { type: 'success' });
         dataCache.invalidate('dbStats');
         loadDbStats();
     }
@@ -2597,7 +2597,7 @@ async function deleteSelectedChannels() {
     try {
         // Pass channel IDs as strings to avoid JavaScript Number precision loss for Discord Snowflake IDs
         const count = await invoke('delete_channels_history', { channelIds: channelIds });
-        showToast(`Deleted ${count.toLocaleString()} messages from ${channelIds.length} channel(s)`, { type: 'success' });
+        showToast(`Deleted ${countLabel(count, 'message')} from ${countLabel(channelIds.length, 'channel')}`, { type: 'success' });
         dataCache.invalidate('dbStats');
         loadDbStats();
     }

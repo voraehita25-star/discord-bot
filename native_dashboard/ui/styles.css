@@ -1019,6 +1019,12 @@ html[data-theme="light"] .log-line.info {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    /* column-gap, not just space-between: once .data-item-left has shrunk to
+       fill the row (a long unbroken id, ellipsized), there is no free space
+       left for space-between to distribute and the truncated id butted
+       straight into the count — "…12345678…1 messages", where you cannot tell
+       where the id stops. A gap is the floor space-between cannot provide. */
+    column-gap: 20px;
     padding: 14px 18px;
     background: rgba(50, 25, 80, 0.4);
     border-radius: 12px;
@@ -1052,8 +1058,11 @@ html[data-theme="light"] .log-line.info {
 }
 
 .data-item-checkbox {
-    width: 18px;
-    height: 18px;
+    /* 24px, not 18: this checkbox arms "Delete Selected", and WCAG 2.5.8 (AA)
+       puts the floor for a pointer target at 24x24. axe does not implement
+       2.5.8, so nothing in the suite was measuring it. */
+    width: 24px;
+    height: 24px;
     accent-color: var(--accent-cyan);
     cursor: pointer;
     flex-shrink: 0;
@@ -2626,7 +2635,9 @@ margin-bottom: 8px;
     display: block;
     font-size: 11px;
     color: var(--text-secondary);
-    opacity: 0.7;
+    /* opacity:0.7 removed — orbital.css recolors this to --text-muted and the
+       0.7 layer composited that down to 2.52:1. Same reasoning as
+       .nav-item .shortcut: keep the quietness in the colour token. */
     font-weight: normal;
     margin-top: 2px;
     margin-left: 6px;
@@ -4102,17 +4113,31 @@ html[data-theme="light"] .thinking-content .md-hr {
 }
 
 .thinking-container {
-    /* Hidden by default (no inline style= attribute, so style-src 'self' needs
-       no 'unsafe-inline'). showThinkingIndicator() reveals it via CSSOM
-       (el.style.display='block'), which overrides this non-!important rule and
-       is itself exempt from CSP. */
-    display: none;
+    /* Visible by default. buildMessageHtml() only emits this block when the
+       message actually carries saved reasoning (msg.thinking), so its presence
+       IS the signal to show it.
+       It used to default to `display:none` with showThinkingIndicator() as the
+       only thing that ever revealed it — and that only ever targets
+       `#streaming-message .thinking-container`. The live bubble was therefore
+       fine, but every re-render from this.messages (switching conversations,
+       reload, loading history) rebuilt the block with no inline style and it
+       vanished for good, with the toggle handler bound to something the user
+       could never see or click. The streaming skeleton keeps the old
+       hidden-until-revealed behaviour via the #streaming-message rule below. */
+    display: block;
     margin-bottom: 12px;
     border: 1px solid var(--cyan-300);
     border-radius: 8px;
     overflow: hidden;
     background: var(--cyan-50);
 }
+
+/* The streaming skeleton ships its thinking shell up-front and empty;
+   showThinkingIndicator() sets inline display:block on it the moment the first
+   reasoning token lands (CSSOM, so style-src 'self' still needs no
+   'unsafe-inline'). finalizeStreamingMessage() strips the id but leaves that
+   inline style, so the block stays put when the bubble settles. */
+#streaming-message .thinking-container { display: none; }
 
 .thinking-header {
     padding: 8px 12px;

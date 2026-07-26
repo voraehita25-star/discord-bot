@@ -16,6 +16,7 @@ import {
     icon,
     normalizeSqliteUtc,
     refreshSendButtonGlow,
+    countLabel,
 } from './shared.js';
 
 // ============================================================================
@@ -2887,7 +2888,7 @@ export class ChatManager {
             // primitive value"). The typeof+isFinite guard never throws and matches
             // the safe pattern the other documents-frame handler already uses.
             const totalChars = docs.reduce((s, d) => s + chatFileCount(d.char_count), 0);
-            subtitle.textContent = `${docs.length} file(s), ${totalChars.toLocaleString()} chars in persistent memory.`;
+            subtitle.textContent = `${countLabel(docs.length, 'file')}, ${totalChars.toLocaleString()} chars in persistent memory.`;
         }
 
         list.innerHTML = docs.map(d => {

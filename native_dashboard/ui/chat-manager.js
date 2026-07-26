@@ -2,7 +2,7 @@
  * AI Chat Manager - WebSocket Client
  * Extracted from app.ts for modularity.
  */
-import { invoke, errorLogger, escapeHtml, isSafeAvatarUrl, safeAvatarUrl, showToast, showConfirmDialog, settings, saveSettings, icon, normalizeSqliteUtc, refreshSendButtonGlow, } from './shared.js';
+import { invoke, errorLogger, escapeHtml, isSafeAvatarUrl, safeAvatarUrl, showToast, showConfirmDialog, settings, saveSettings, icon, normalizeSqliteUtc, refreshSendButtonGlow, countLabel, } from './shared.js';
 import { highlightCodeBlocks } from './chat/prism.js';
 import { formatMessage, formatStreamingMessage, stripThinkTags } from './chat/formatter.js';
 import { ChatSearch } from './chat/search.js';
@@ -2709,7 +2709,7 @@ export class ChatManager {
             // primitive value"). The typeof+isFinite guard never throws and matches
             // the safe pattern the other documents-frame handler already uses.
             const totalChars = docs.reduce((s, d) => s + chatFileCount(d.char_count), 0);
-            subtitle.textContent = `${docs.length} file(s), ${totalChars.toLocaleString()} chars in persistent memory.`;
+            subtitle.textContent = `${countLabel(docs.length, 'file')}, ${totalChars.toLocaleString()} chars in persistent memory.`;
         }
         list.innerHTML = docs.map(d => {
             // Coerce file_kind/filename before calling string methods: `docs`

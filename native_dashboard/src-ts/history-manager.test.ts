@@ -756,8 +756,11 @@ describe('delete flow', () => {
         const pane = document.getElementById('ai-history-messages')!;
         expect(pane.textContent).not.toContain('first message');
         expect(pane.textContent).toContain('second message');
+        // Singular: the noun agrees with the total, so one message left reads
+        // "1 of 1 message". This used to assert the ungrammatical "1 of 1
+        // messages" the old hardcoded plural produced.
         expect(document.getElementById('ai-history-header')!.textContent)
-            .toContain('1 of 1 messages');
+            .toContain('1 of 1 message');
         expect(document.getElementById('toast-container')!.textContent)
             .toContain('Message deleted');
         // The in-flight flag cleared — the next mutation goes straight out.

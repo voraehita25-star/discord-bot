@@ -22,6 +22,7 @@ import {
     showToast,
     showConfirmDialog,
     icon,
+    countLabel,
 } from './shared.js';
 import {
     chatManager,
@@ -2730,7 +2731,7 @@ async function loadDbStats(): Promise<void> {
 
                     const valSpan = document.createElement('span');
                     valSpan.className = 'data-item-value';
-                    valSpan.textContent = `${ch.message_count.toLocaleString()} messages`;
+                    valSpan.textContent = countLabel(ch.message_count, 'message');
 
                     item.appendChild(leftDiv);
                     item.appendChild(valSpan);
@@ -2765,7 +2766,7 @@ async function loadDbStats(): Promise<void> {
                     idSpan.title = String(u.user_id); // ellipsized when long
                     const valSpan = document.createElement('span');
                     valSpan.className = 'data-item-value';
-                    valSpan.textContent = `${u.message_count.toLocaleString()} messages`;
+                    valSpan.textContent = countLabel(u.message_count, 'message');
                     item.appendChild(idSpan);
                     item.appendChild(valSpan);
                     usersList.appendChild(item);
@@ -2787,7 +2788,7 @@ async function clearHistory(): Promise<void> {
 
     try {
         const count = await invoke<number>('clear_history');
-        showToast(`Deleted ${count.toLocaleString()} messages`, { type: 'success' });
+        showToast(`Deleted ${countLabel(count, 'message')}`, { type: 'success' });
         dataCache.invalidate('dbStats');
         loadDbStats();
     } catch (error) {
@@ -2827,7 +2828,10 @@ async function deleteSelectedChannels(): Promise<void> {
     try {
         // Pass channel IDs as strings to avoid JavaScript Number precision loss for Discord Snowflake IDs
         const count = await invoke<number>('delete_channels_history', { channelIds: channelIds });
-        showToast(`Deleted ${count.toLocaleString()} messages from ${channelIds.length} channel(s)`, { type: 'success' });
+        showToast(
+            `Deleted ${countLabel(count, 'message')} from ${countLabel(channelIds.length, 'channel')}`,
+            { type: 'success' },
+        );
         dataCache.invalidate('dbStats');
         loadDbStats();
     } catch (error) {

@@ -36,9 +36,11 @@
     "@tauri-apps/api": "^2.11.1",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^26.1.1",
+    "@types/pngjs": "^6.0.5",
     "@vitest/coverage-v8": "^4.1.9",
     "dompurify": "^3.4.10",
     "jsdom": "^29.1.1",
+    "pngjs": "^7.0.0",
     "prismjs": "^1.30.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"

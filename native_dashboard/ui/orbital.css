@@ -81,7 +81,11 @@
     --text-primary: #f5edf4;
     --text-secondary: #c9b7cd;
     --text-tertiary: #ab97b2;
-    --text-muted: #7d6d88;
+    /* #7d6d88 measured 3.85–3.97:1 on the page/rail surfaces — under AA. axe
+       never caught it: every one of these surfaces carries a ::before or a
+       gradient, so color-contrast came back `incomplete`, not `pass` (see the
+       pixel-sampled guard in tests-e2e/contrast.spec.ts). 4.6–5.1:1 now. */
+    --text-muted: #8f8099;
 
     /* borders / surfaces */
     --border-color: rgba(255, 161, 194, 0.15);
@@ -221,7 +225,9 @@ html[data-theme="light"],
     --text-primary: #231423;
     --text-secondary: #4d3550;
     --text-tertiary: #69566f;
-    --text-muted: #84718a;
+    /* light counterpart of the dark-theme fix above: #84718a measured 4.16–4.40:1
+       on the tinted paper of the rail and cards. 4.9–5.3:1 now. */
+    --text-muted: #77657c;
 
     --border-color: rgba(163, 37, 93, 0.20);
     --border-strong: rgba(163, 37, 93, 0.40);
@@ -2867,7 +2873,10 @@ html[data-theme="light"] #bot-status-text.is-online { color: var(--accent-green)
     background: transparent;
     border-color: transparent;
     color: var(--text-muted);
-    opacity: 0.75;
+    /* NO opacity here. A 0.75 layer on top of --text-muted composited down to
+       2.71:1 against the rail — the token alone was never the whole story, and
+       an opacity multiplier is invisible to any check that reads `color`.
+       Quietness belongs in the token, where it can be measured. */
 }
 .nav-item:hover { background: var(--cyan-50); }
 .nav-item.active {
@@ -2878,7 +2887,7 @@ html[data-theme="light"] #bot-status-text.is-online { color: var(--accent-green)
     border-color: transparent;
     box-shadow: none;
 }
-.nav-item.active .shortcut { color: var(--text-tertiary); opacity: 1; }
+.nav-item.active .shortcut { color: var(--text-tertiary); }
 html[data-theme="light"] .nav-item { color: var(--text-secondary); }
 html[data-theme="light"] .nav-item.active { color: var(--text-primary); border-color: transparent; }
 html[data-theme="light"] .nav-item .shortcut {
@@ -3140,8 +3149,21 @@ html[data-theme="light"] .toggle-slider::before {
 .setting-row > .toggle-switch { justify-self: start; }
 .setting-row .setting-control { width: 100%; max-width: 420px; }
 .setting-row .avatar-control { width: auto; }
-/* a row holding only an action (Save Profile) spans both columns */
-.setting-row > .btn:only-child { grid-column: 1 / -1; justify-self: start; }
+/* One measure for every field, whatever its tag or nesting depth.
+   The wrapper was already capped at 420px, but a control dropped STRAIGHT into
+   the grid (the auto-refresh <select>) had no cap and stretched the full 1fr —
+   614px for a menu whose longest option is "10 seconds", while the Display Name
+   input beside it was 200px. Seven different right edges down the page
+   (538/657/805/811/859/1005/1219) now collapse to one. */
+.setting-row > .setting-input,
+.setting-row > .setting-textarea,
+.setting-row > .setting-select { justify-self: start; width: 100%; max-width: 420px; }
+.setting-row .setting-control > .setting-input,
+.setting-row .setting-control > .setting-textarea,
+.setting-row .setting-control > .setting-select { width: 100%; max-width: none; }
+/* A row holding only an action (Save Profile) sits in the CONTROL column, not
+   spanning from the label edge — it lines up with the fields it saves. */
+.setting-row > .btn:only-child { grid-column: 2; justify-self: start; }
 .setting-hint-inline {
     display: block;
     margin-top: 2px;

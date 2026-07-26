@@ -58,6 +58,17 @@ export function normalizeSqliteUtc(iso) {
     const hasTz = /Z$|[+-]\d{2}:?\d{2}$/.test(iso);
     return (hasTz ? iso : iso + 'Z').replace(' ', 'T');
 }
+/**
+ * Group-separated count plus a noun that agrees with it: `1 message`,
+ * `42 messages`, `1,234,567 messages`.
+ *
+ * Every count in the UI used to be interpolated as `${n.toLocaleString()}
+ * messages`, so a channel with a single message read "1 messages". Only regular
+ * -s plurals are covered — pass `plural` explicitly for anything else.
+ */
+export function countLabel(n, singular, plural = `${singular}s`) {
+    return `${n.toLocaleString()} ${n === 1 ? singular : plural}`;
+}
 // ============================================================================
 // Error Logger - Logs frontend errors to file for debugging
 // ============================================================================

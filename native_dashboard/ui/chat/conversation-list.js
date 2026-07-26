@@ -20,7 +20,7 @@
  *
  * That read model is a snapshot so we don't couple to the caller's object identity.
  */
-import { escapeHtml, icon, safeAvatarUrl, settings } from '../shared.js';
+import { countLabel, escapeHtml, icon, safeAvatarUrl, settings } from '../shared.js';
 /** Conversations beyond this count are not rendered until the user narrows the filter. */
 const RENDER_CAP = 200;
 export class ConversationList {
@@ -78,7 +78,7 @@ export class ConversationList {
                     ${avatarHtml}
                     <div class="conv-info">
                         <span class="conv-title">${escapeHtml(conv.title || 'New Chat')}</span>
-                        <span class="conv-meta">${Number(conv.message_count) || 0} messages</span>
+                        <span class="conv-meta">${countLabel(Number(conv.message_count) || 0, 'message')}</span>
                     </div>
                     ${conv.is_starred ? `<span class="conv-star">${icon('star')}</span>` : ''}
                 </div>

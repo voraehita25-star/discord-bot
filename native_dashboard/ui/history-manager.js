@@ -37,7 +37,7 @@
  * ONE delegated container-level click handler stored on the element and
  * replaced each render.
  */
-import { escapeHtml, icon, normalizeSqliteUtc, showConfirmDialog, showToast } from './shared.js';
+import { countLabel, escapeHtml, icon, normalizeSqliteUtc, showConfirmDialog, showToast } from './shared.js';
 /** Channels beyond this count are not rendered (overflow note instead). */
 const CHANNEL_RENDER_CAP = 200;
 /** Message rows beyond this count are not rendered (newest kept). */
@@ -1665,15 +1665,18 @@ export class HistoryManager {
             // "Select a channel" — the same sentence twice, 190px apart. With
             // nothing picked it now carries a quiet mono eyebrow instead and
             // lets the empty state below own the instruction.
+            // It says "No channel selected", not "AI History": the eyebrow and
+            // the h1 above already say the page's name, and this slot naming
+            // itself a fourth time told the reader nothing about its state.
             header.classList.add('is-placeholder');
-            header.innerHTML = '<h2>AI History</h2>';
+            header.innerHTML = '<h2>No channel selected</h2>';
             return;
         }
         header.classList.remove('is-placeholder');
         const ch = this.channels.find(c => c.channel_id === this.currentChannelId);
         const name = ch?.name || `Channel ${this.currentChannelId}`;
         const meta = this.messages.length > 0
-            ? `${this.messages.length} of ${this.totalCount} messages`
+            ? `${this.messages.length} of ${countLabel(this.totalCount, 'message')}`
             : '';
         header.innerHTML = `
             <h2>${escapeHtml(name)}</h2>
