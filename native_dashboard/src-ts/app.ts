@@ -1204,63 +1204,119 @@ function initSakuraAnimation(): void {
     const BLOSSOM_LOBE_ROUND =
         'M20 20 C14.6 15.2 13 9 16 5.6 C17.8 3.6 19.4 5 20 7.4 C20.6 5 22.2 3.6 24 5.6 C27 9 25.4 15.2 20 20 Z';
 
-    // A petal is a translucent membrane, thinnest at the notched outer rim and
-    // thickest at the base where it met the flower — so it does not paint as one
-    // flat swatch of pink. The gradient runs along each shape's own axis (y=0 is
-    // the outer tip, y=1 the base) in objectBoundingBox units, which means the
-    // five rotated lobes of a blossom each fade toward THEIR own tip for free.
-    // Opacity, not a second colour: fading toward transparent reads as "thin and
-    // backlit" on the midnight canvas and on dawn paper alike, where a hardcoded
-    // lighter stop would only have worked on one of them.
+    // A petal is a curved translucent membrane, and the previous paint — one
+    // opacity ramp along the long axis — could not say so. A single value
+    // gradient in one direction is exactly what a piece of tinted paper looks
+    // like, which is what the field read as.
     //
-    // The id has to be unique per petal: several inline <svg> roots in one
+    // Three stacked fills of the SAME path say it instead:
+    //
+    //   1. currentColor — the flower's own hue, flat.
+    //   2. a white ramp along the petal's axis (y=0 is the notched outer tip,
+    //      y=1 the base). Real sakura are near-white at the rim and hold their
+    //      colour at the base; that value shift is most of the difference
+    //      between "petal" and "pink shape".
+    //   3. the CUP — shadow down one flank, a soft sheen up the other, across
+    //      the SHORT axis. This is the term that gives the surface a curve.
+    //      It rides in petal space, so it turns with the petal the way a real
+    //      surface's own shading does; the global light direction is handled
+    //      separately, by the normal-based brightness write in the sim loop.
+    //
+    // Both gradients are objectBoundingBox, so the five rotated lobes of a
+    // blossom each shade along THEIR own axis for free.
+    //
+    // The ids have to be unique per petal: several inline <svg> roots in one
     // document share an id namespace, and url(#…) resolves to the FIRST match —
-    // so every petal would inherit the first petal's currentColor.
+    // so every petal would inherit the first petal's gradients.
     let gradSeq = 0;
-    const petalPaint = (): { id: string; defs: string } => {
-        const id = `sk-g${gradSeq++}`;
+    const petalPaint = (): { tip: string; cup: string; defs: string } => {
+        const n = gradSeq++;
+        const tip = `sk-t${n}`;
+        const cup = `sk-c${n}`;
         return {
-            id,
+            tip,
+            cup,
             defs:
-                `<defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">` +
-                `<stop offset="0" stop-color="currentColor" stop-opacity="0.55"/>` +
-                `<stop offset="0.42" stop-color="currentColor" stop-opacity="0.88"/>` +
-                `<stop offset="1" stop-color="currentColor" stop-opacity="1"/>` +
-                `</linearGradient></defs>`,
+                `<defs>` +
+                `<linearGradient id="${tip}" x1="0" y1="0" x2="0" y2="1">` +
+                `<stop offset="0" stop-color="#fff" stop-opacity="0.40"/>` +
+                `<stop offset="0.38" stop-color="#fff" stop-opacity="0.13"/>` +
+                `<stop offset="0.82" stop-color="#fff" stop-opacity="0"/>` +
+                `</linearGradient>` +
+                // Six stops, not four: with the shadow zeroed at 0.32 and the
+                // sheen only starting at 0.70, the untouched band between them
+                // met the sheen at a visible vertical seam down the middle of
+                // the petal — a crease, which is the one thing a smooth curved
+                // surface must not have. The extra stops carry the shadow out
+                // and bring the sheen in gradually, and the drop at the far rim
+                // is the edge rolling away from the light.
+                `<linearGradient id="${cup}" x1="0" y1="0" x2="1" y2="0">` +
+                `<stop offset="0" stop-color="#4a1428" stop-opacity="0.30"/>` +
+                `<stop offset="0.26" stop-color="#4a1428" stop-opacity="0.08"/>` +
+                `<stop offset="0.46" stop-color="#4a1428" stop-opacity="0"/>` +
+                `<stop offset="0.66" stop-color="#fff" stop-opacity="0.12"/>` +
+                `<stop offset="0.86" stop-color="#fff" stop-opacity="0.22"/>` +
+                `<stop offset="1" stop-color="#fff" stop-opacity="0.05"/>` +
+                `</linearGradient>` +
+                `</defs>`,
         };
     };
     const blossom = (lobe: string, center: string): string => {
-        const { id, defs } = petalPaint();
-        return `<svg viewBox="0 0 40 40">${defs}<g fill="url(#${id})">` +
-            [0, 72, 144, 216, 288]
-                .map(a => `<path d="${lobe}" transform="rotate(${a} 20 20)"/>`)
-                .join('') +
-            `</g>${center}</svg>`;
+        const { tip, cup, defs } = petalPaint();
+        const lobes = [0, 72, 144, 216, 288]
+            .map(a => `<path d="${lobe}" transform="rotate(${a} 20 20)"/>`)
+            .join('');
+        return `<svg viewBox="0 0 40 40">${defs}` +
+            `<g fill="currentColor">${lobes}</g>` +
+            `<g fill="url(#${tip})">${lobes}</g>` +
+            `<g fill="url(#${cup})">${lobes}</g>` +
+            `${center}</svg>`;
     };
     const single = (d: string): string => {
-        const { id, defs } = petalPaint();
-        return `<svg viewBox="0 0 40 40">${defs}<path d="${d}" fill="url(#${id})"/></svg>`;
+        const { tip, cup, defs } = petalPaint();
+        return `<svg viewBox="0 0 40 40">${defs}` +
+            `<path d="${d}" fill="currentColor"/>` +
+            `<path d="${d}" fill="url(#${tip})"/>` +
+            `<path d="${d}" fill="url(#${cup})"/>` +
+            `</svg>`;
     };
-    // Built per petal, not once: each call mints a fresh gradient id.
+    // Built per petal, not once: each call mints a fresh pair of gradient ids.
     const makeShape = (): string => {
         // Whole blossoms do come off the tree, but the overwhelming majority of
-        // what falls is single petals. The old uniform pick made 2 shapes in 5
-        // — 40% — a complete flower, which is the main reason the field read as
-        // confetti rather than petal-fall.
-        if (Math.random() < 0.14) {
+        // what falls is single petals — and now that a petal is ~14px at the
+        // near plane instead of 26px, a five-lobe flower has fewer pixels to
+        // read as one, so it is rarer still.
+        if (Math.random() < 0.08) {
             return Math.random() < 0.5
                 // full blossom with a pale stamen dot
                 ? blossom(BLOSSOM_LOBE, '<circle cx="20" cy="20" r="2.2" fill="rgba(255,255,255,0.8)"/>')
                 // full blossom, rounder lobes, no center
                 : blossom(BLOSSOM_LOBE_ROUND, '');
         }
+        // SILHOUETTE — the single thing that decides whether these read as
+        // sakura. The previous set was 24 units wide over 32 tall with the notch
+        // cut 6 units deep between two round shoulders, and that combination
+        // does not draw a petal: it draws a HEART. Rendered at 100px the whole
+        // field was little apple shapes.
+        //
+        // A somei-yoshino petal is spatulate — it tapers to a narrow point where
+        // it met the flower, carries its width high, and the famous notch is a
+        // small nick in an otherwise round end, roughly a tenth of the petal's
+        // length. These are ~20 wide over ~31 tall (ratio 1.6, vs the old 1.3)
+        // with a 3-unit notch, which is the shape everyone actually pictures.
         const singles = [
-            // single wide petal (notched tip)
-            'M20 37 C10.5 30.5 6.8 20.5 9.2 12.5 C11.2 6 16 3 18.7 5.6 C19.8 6.7 20 9.2 20 11.2 C20 9.2 20.2 6.7 21.3 5.6 C24 3 28.8 6 30.8 12.5 C33.2 20.5 29.5 30.5 20 37 Z',
-            // single narrow petal (notched tip)
-            'M20 37 C14.3 30.6 11.8 21.4 13.1 13.6 C14.2 7 17 4 18.9 5.9 C19.7 6.8 20 9.3 20 11.4 C20 9.3 20.3 6.8 21.1 5.9 C23 4 25.8 7 26.9 13.6 C28.2 21.4 25.7 30.6 20 37 Z',
-            // single petal fluttering edge-on (asymmetric)
-            'M23 35.5 C13 32 7.5 23.5 9.5 15 C11.2 8 16 4.2 19.3 6.4 C20.8 7.5 21.1 10 20.5 12.3 C21.6 10.3 23.6 8.9 25.6 9.8 C29.6 11.6 30.6 17.6 28.6 23.8 C26.9 29.2 25.2 32.8 23 35.5 Z',
+            // wide petal — the canonical one
+            'M20 36.5 C16.2 32 11.4 25.4 10.2 17.6 C9.3 11.4 12.4 5.6 16.4 5.2 C18.2 5 19.4 6.4 20 8.4 C20.6 6.4 21.8 5 23.6 5.2 C27.6 5.6 30.7 11.4 29.8 17.6 C28.6 25.4 23.8 32 20 36.5 Z',
+            // narrow petal — same anatomy, slimmer (ratio 2.2)
+            'M20 36.8 C17.2 31.6 13.8 24.6 13 17.2 C12.3 11.2 14.8 5.8 17.6 5.4 C18.9 5.2 19.6 6.6 20 8.6 C20.4 6.6 21.1 5.2 22.4 5.4 C25.2 5.8 27.7 11.2 27 17.2 C26.2 24.6 22.8 31.6 20 36.8 Z',
+            // leaning petal — the flank curves harder on one side, so it reads
+            // as one caught mid-flutter rather than a symmetric cut-out
+            'M21.8 36.2 C16.4 31.4 11.6 24.2 11.2 16.6 C10.9 10.4 14.2 5.4 18 5.6 C19.6 5.7 20.4 7 20.6 8.9 C21.5 7.1 23.2 5.9 25 6.6 C28.4 7.9 30 13.4 28.6 19.4 C27.2 25.6 24.8 31.6 21.8 36.2 Z',
+            // curling petal — the right flank has already rolled toward the
+            // viewer, so the outline pinches in at the waist and swells again
+            // below it. The cup gradient lands across that pinch and reads as
+            // the roll rather than as a flat shadow.
+            'M20 36.6 C16.4 31.6 12.2 24.6 11.6 17.2 C11.1 11 14 5.6 17.8 5.4 C19.4 5.3 20.4 6.6 20.8 8.6 C21.6 6.8 23 5.6 24.6 6.2 C27.2 7.2 28.4 11.6 27.6 16.4 C26.9 20.6 25 23.4 23.2 24 C25.4 26.8 25.2 31.4 23.4 34.6 C22.6 36 21.4 36.6 20 36.6 Z',
         ];
         return single(singles[Math.floor(Math.random() * singles.length)]);
     };
@@ -1277,7 +1333,11 @@ function initSakuraAnimation(): void {
         '#ffc2d6',
         '#ffb0c9',
         '#ff9dbd',
-        '#fff1f5', // the near-white one — real sakura is mostly white at the tip
+        // The pale one. Was #fff1f5, which is white to within a rounding error —
+        // and the tip ramp whitens the top of every petal anyway, so those came
+        // out as featureless white blobs. Keeping a little pink in the base is
+        // what lets the ramp read as a gradient at all.
+        '#ffdce8',
     ];
     const DAWN_COLORS: string[] = [
         '#ef8fb1',
@@ -1297,9 +1357,13 @@ function initSakuraAnimation(): void {
     // Density scales with the window: a fixed 30 was a blizzard at the 800x600
     // floor and a drizzle on a wide monitor. Petals are recycled in place once
     // the sky is full, so this is also the total DOM node count for the effect.
-    const MAX_PETALS = Math.max(14, Math.min(38, Math.round(
+    // Density is per unit AREA, so halving the petal size leaves the same count
+    // covering a quarter of the ink and the sky reads empty. The divisor comes
+    // down to hold the composition, not to make it busier: 1280x800 goes from
+    // 31 petals to 37.
+    const MAX_PETALS = Math.max(16, Math.min(44, Math.round(
         ((container.clientWidth || window.innerWidth) *
-         (container.clientHeight || window.innerHeight)) / 33000,
+         (container.clientHeight || window.innerHeight)) / 28000,
     )));
 
     /** Per-petal physical state — integrated per frame by the simulation loop
@@ -1363,7 +1427,11 @@ function initSakuraAnimation(): void {
         // faster, is more solid, and renders in FRONT of the deck rather than
         // behind it. Very slightly biased near so the front layer is populated.
         const depth = Math.pow(Math.random(), 0.9);
-        const size = 9 + depth * 17;
+        // 7-17px, down from 9-26px. At the old near size a petal was a
+        // palm-sized object drifting across a dashboard. The floor matters as
+        // much as the ceiling though: below ~7px the far tier stops being a
+        // shape at all and becomes a speck of dust.
+        const size = 7 + depth * 10;
         const speed = 0.72 + depth * 0.55;
 
         p.depth = depth;
@@ -1386,47 +1454,76 @@ function initSakuraAnimation(): void {
         // overwhelmingly flutterers, so that is the mix here too.
         // The flip axis is not a fixed hinge: it precesses slowly, so the petal
         // wobbles in three dimensions instead of pivoting like a shop sign.
+        // Slowly is the operative word — at the old rate the axis swung far
+        // enough DURING a flip that the petal appeared to gyrate, which is a
+        // large part of what read as "spinning stupidly". A real plate carries
+        // angular momentum and holds its axis; it only drifts.
         p.axisAngle = Math.random() * Math.PI;
-        p.precess = (Math.random() - 0.5) * 0.42;
+        p.precess = (Math.random() - 0.5) * 0.15;
         p.axisX = Math.cos(p.axisAngle);
         p.axisY = Math.sin(p.axisAngle);
         p.sway = Math.random() * TAU;
         p.swayBoost = 0;
-        p.vane = 0.25 + Math.random() * 0.5;
+        // Weathervaning now owns the in-plane angle almost entirely (see p.spin
+        // below), so it is pulled up to match.
+        p.vane = 0.38 + Math.random() * 0.5;
         p.shade = -1;
         // Depth of field, near end. The far tier already gets it for free from
         // .app's backdrop-filter; without the matching cue at the near end the
         // closest petals looked pasted onto the glass instead of passing in
-        // front of it.
-        p.blur = depth > 0.87 ? 'blur(0.6px) ' : '';
+        // front of it. Scaled with the smaller petal — 0.6px on a 14px shape is
+        // a smear, not a focus cue.
+        p.blur = depth > 0.87 ? 'blur(0.4px) ' : '';
         // No two petals are cut from the same die: a little stretch along the
         // long axis, and a coin-flip mirror so the asymmetric shape does not
         // always lean the same way.
         p.sx = (Math.random() < 0.5 ? -1 : 1) * (0.92 + Math.random() * 0.16);
         p.sy = 0.9 + Math.random() * 0.24;
-        if (Math.random() < 0.76) {
-            // flutterer: rocks up to ~40-72°, so it always reads as a petal
-            p.tumbleAmp = 0.7 + Math.random() * 0.56;
-            p.swayFreq = 0.42 + Math.random() * 0.58;
+        if (Math.random() < 0.93) {
+            // Flutterer: rocks about broadside and never turns over. Raised from
+            // 76% — one petal in four doing continuous revolutions is far more
+            // than a real fall shows, and a revolving petal is the one that
+            // catches the eye and looks wrong.
+            // Slower and much shallower than before: the rock now takes
+            // 1.4-3.3s instead of 1.0-2.4s, and reaches 26-49° instead of
+            // 40-72°.
+            //
+            // The amplitude is the important one. tumble = amp·sin(sway) is a
+            // sinusoid, and a sinusoid is SLOWEST at its turning points — so a
+            // petal spends most of its life near maximum tilt, not near
+            // broadside. At 72° maximum that meant most petals, most of the
+            // time, were foreshortened to a third of their width: a sky of thin
+            // slivers, which is the "flat paper" read. Keeping the extreme
+            // shallow means even the dwell attitude still shows a petal.
+            p.tumbleAmp = 0.45 + Math.random() * 0.40;
+            p.swayFreq = 0.30 + Math.random() * 0.42;
             p.tumble = p.tumbleAmp * Math.sin(p.sway);
             p.tumbleBase = 0;
             p.tumbleRate = 0;
         } else {
-            // tumbler: full rotation, either direction
+            // Tumbler: turns over continuously — but at 17-43°/s, not the old
+            // 46-132°/s. A petal that takes ~10s to complete a revolution reads
+            // as a heavy one turning over; one that took 3s read as a coin flip.
             p.tumbleAmp = 0;
             p.swayFreq = 0.1 + Math.random() * 0.16;
             p.tumble = Math.random() * TAU;
-            p.tumbleBase = (Math.random() < 0.5 ? -1 : 1) * (0.8 + Math.random() * 1.5);
+            p.tumbleBase = (Math.random() < 0.5 ? -1 : 1) * (0.30 + Math.random() * 0.45);
             p.tumbleRate = p.tumbleBase;
         }
 
         // Fall speeds at the two extremes of the plate's attitude. A real petal
         // held broadside sinks; turned edge-on it drops nearly three times as
-        // fast. That ratio IS the falling-leaf motion.
-        p.vBroad = (26 + Math.random() * 12) * speed;
-        p.vEdge = (86 + Math.random() * 38) * speed;
+        // fast. That ratio IS the falling-leaf motion. Eased down with the size:
+        // a smaller object crossing the screen at the same px/s reads as moving
+        // faster, and these are meant to drift.
+        p.vBroad = (20 + Math.random() * 10) * speed;
+        p.vEdge = (64 + Math.random() * 28) * speed;
         p.lift = 0.9 + Math.random() * 0.7;
-        p.spin = (Math.random() - 0.5) * 42;
+        // In-plane spin, ±5.5°/s — was ±21°/s. A petal turning steadily in the
+        // screen plane is a pinwheel, and nothing about falling blossom looks
+        // like a pinwheel. What little is left is a bias the weathervane term
+        // fights, so the petal leans into its path instead of spinning in it.
+        p.spin = (Math.random() - 0.5) * 11;
     }
 
     /**
@@ -1522,6 +1619,11 @@ function initSakuraAnimation(): void {
     const CURSOR_SWIRL = 560;       // px/s² tangential component — the vortex
     const CURSOR_WIND = 0.85;       // fraction of cursor velocity entrained
     const SPAWN_RATE = 1.4;         // petals/s (jittered, see the spawn accumulator)
+    // Key light, screen space, y down: upper-left and in front of the deck.
+    // Unit length, so the Lambert term below needs no normalising per frame.
+    const LIGHT_X = -0.46;
+    const LIGHT_Y = -0.56;
+    const LIGHT_Z = 0.69;
 
     let pointerX = -9999;
     let pointerY = -9999;
@@ -1615,8 +1717,12 @@ function initSakuraAnimation(): void {
                 p.tumble = p.tumbleAmp * Math.sin(p.sway);
             } else {
                 p.tumbleRate += (p.tumbleBase - p.tumbleRate) * TUMBLE_RELAX * dt;
+                // The sway term rides ON TOP of a continuous revolution, so it
+                // is a wobble in the flip, not a flip of its own — at 0.35 it
+                // was comparable to the revolution itself and the two beat
+                // against each other into something that looked broken.
                 p.tumble += (p.tumbleRate * (0.5 + 0.5 * (p.vy / p.vEdge))
-                    + 0.35 * Math.sin(p.sway)) * dt;
+                    + 0.16 * Math.sin(p.sway)) * dt;
             }
 
             // Wind is faster aloft, and a broadside petal is pushed by it far
@@ -1652,7 +1758,10 @@ function initSakuraAnimation(): void {
                     // harder, a tumbler turns faster. Both decay back out.
                     p.swayBoost += fall * fall * 26 * dt;
                     if (p.tumbleAmp === 0) {
-                        p.tumbleRate += Math.sign(p.tumbleBase) * fall * fall * 9 * dt;
+                        // Halved with the tumble rates themselves — a cursor
+                        // sweep used to spin a tumbler up far past anything the
+                        // relaxation could pull back in a readable time.
+                        p.tumbleRate += Math.sign(p.tumbleBase) * fall * fall * 4 * dt;
                     }
                 }
             }
@@ -1696,22 +1805,43 @@ function initSakuraAnimation(): void {
 
             // Depth sets how solid a petal is; turning edge-on dims it further,
             // which sells the flip on top of the geometric foreshortening.
+            // The depth term is raised so the far tier stays a shape rather than
+            // fading to a smudge at the new smaller size, and the area term is
+            // left generous: the petals no longer tilt far enough for a hard
+            // edge-on fade to be the effect it was, and stacking a steep alpha
+            // ramp on top of the geometric foreshortening only greys them out.
             const fadeIn = Math.min(1, p.life * 1.6);
-            const alpha = (0.28 + 0.66 * p.depth) * (0.46 + 0.54 * area) * fadeIn;
+            const alpha = (0.38 + 0.60 * p.depth) * (0.34 + 0.66 * area) * fadeIn;
             petal.style.opacity = alpha.toFixed(3);
 
-            // Shading. A petal has two faces and only one of them is toward the
-            // light: as it flips you should see the lit face brighten, dim to
-            // nothing edge-on, then come back MUTED because you are now looking
-            // at its shadowed back. Tracking that is what makes the flip read as
-            // a solid object turning over rather than a sprite being squashed.
-            // Quantised + coalesced: brightness is a GPU colour matrix on an
+            // Shading, from the plate's actual normal rather than from |cos|.
+            // The old term was a function of projected area alone, so every
+            // petal at a given attitude was lit identically no matter which way
+            // it was facing — brightness that tracks nothing but foreshortening
+            // reads as a sprite being squashed, not a surface turning in light.
+            //
+            // rotate3d(axisX, axisY, 0, θ) carries the face normal (0,0,1) to
+            // (axisY·sinθ, −axisX·sinθ, cosθ). Dotting that with a fixed light
+            // gives a petal that brightens as it rolls its face toward the lamp
+            // and darkens as it rolls away — the same petal, at the same
+            // projected area, can now be lit or shadowed depending on its
+            // heading, which is what sells it as a solid thing.
+            const nx = p.axisY * sinT;
+            const ny = -p.axisX * sinT;
+            const lambert = Math.max(0, nx * LIGHT_X + ny * LIGHT_Y + cosT * LIGHT_Z);
+            // Front face catches the key light; the back is lit only by what
+            // comes through the membrane, so it is dimmer AND more saturated
+            // (transmitted colour), which is how a backlit petal actually looks.
+            const front = cosT >= 0;
+            const shade = (front ? 0.86 : 0.66) + 0.42 * lambert;
+            // Quantised + coalesced: filter is a GPU colour matrix on an
             // already-composited layer, but there is no point writing it 60x a
             // second for a change nobody can see.
-            const shade = (cosT >= 0 ? 1 : 0.7) * (0.8 + 0.36 * area);
             if (Math.abs(shade - p.shade) > 0.02) {
                 p.shade = shade;
-                petal.style.filter = `${p.blur}brightness(${shade.toFixed(2)})`;
+                const sat = front ? 1 : 1.3;
+                petal.style.filter =
+                    `${p.blur}brightness(${shade.toFixed(2)}) saturate(${sat.toFixed(2)})`;
             }
             petal.style.transform =
                 `perspective(520px) translate3d(${p.x.toFixed(2)}px, ${p.y.toFixed(2)}px, 0) ` +
