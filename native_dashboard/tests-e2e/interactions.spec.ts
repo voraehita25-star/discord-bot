@@ -451,6 +451,58 @@ test.describe('Forced-colors keyboard focus (WCAG 2.4.7)', () => {
             `#chat-input: outline-width is 0 (${JSON.stringify(ring)})`,
         ).not.toBe('0px');
     });
+
+    // -----------------------------------------------------------------------
+    // The <select> was the one control class this describe never asked about,
+    // and it was the one that failed. The authoritative focus block reaches
+    // selects only through the bare TYPE selector — `select:focus-visible`
+    // (0,1,1) — while styles.css sets `.setting-select:focus{outline:none}` at
+    // (0,2,0) and `#log-filter:focus{outline:none}` at (1,1,0). Specificity
+    // beats source order, so both selects were left with box-shadow as their
+    // only focus indicator, and forced-colors strips box-shadow.
+    //
+    // Text inputs passed by accident: their rule is
+    // `input[type="text"]:focus-visible`, and the attribute selector carries
+    // them to (0,2,1). Nothing about the select's own styling changed to make
+    // this happen — it was one selector's weight, which is exactly the class of
+    // regression a test has to hold.
+    //
+    // .focus() rather than a Tab walk: <select> reliably flags :focus-visible
+    // on programmatic focus (it is a keyboard-operated control), and the walk
+    // to the Logs filter crosses a page switch.
+    // -----------------------------------------------------------------------
+    const selects: Array<[string, string, string]> = [
+        ['settings', '#refresh-interval', 'Settings → Auto-refresh Interval'],
+        ['logs', '#log-filter', 'Logs → level filter'],
+    ];
+    for (const [pageName, selector, label] of selects) {
+        test(`${label} shows a non-none outline on keyboard focus`, async ({ page }) => {
+            await page.click(`[data-page="${pageName}"]`);
+            const el = page.locator(selector);
+            await el.waitFor({ state: 'visible', timeout: 3000 });
+            await el.focus();
+            const ring = await el.evaluate((node) => {
+                const cs = getComputedStyle(node, null);
+                return {
+                    focusVisible: node.matches(':focus-visible'),
+                    outlineStyle: cs.outlineStyle,
+                    outlineWidth: cs.outlineWidth,
+                    boxShadow: cs.boxShadow,
+                };
+            });
+            expect(ring.focusVisible, `${label}: :focus-visible did not match`).toBe(true);
+            expect(
+                ring.outlineStyle,
+                `${label}: outline-style is "${ring.outlineStyle}" (${JSON.stringify(ring)}) — `
+                + 'forced-colors keyboard focus invisible (a .setting-select/#log-filter '
+                + '`outline:none` rule outranks the bare `select:focus-visible` block).',
+            ).not.toBe('none');
+            expect(
+                ring.outlineWidth,
+                `${label}: outline-width is 0 (${JSON.stringify(ring)})`,
+            ).not.toBe('0px');
+        });
+    }
 });
 
 test.describe('Responsive layout', () => {

@@ -928,3 +928,206 @@ test('the chat dialogs honour the Esc the app advertises', async ({ page }) => {
     expect(await page.evaluate(() => document.activeElement?.id),
         'focus was not returned to the trigger').toBe('btn-new-chat');
 });
+
+// ---------------------------------------------------------------------------
+// v8 audit — geometry, cascade and information-architecture invariants found by
+// a second pass over every page at 800/900/1000/1280 in both themes.
+// ---------------------------------------------------------------------------
+
+// The sidebar's sakura sprig is a 178px-wide masked drawing pinned to the gap
+// above the footer. Below 1100px the rail collapses to a 64px icon strip and
+// the mask did not follow: 114px of it was cut off, leaving one branch stub and
+// half a blossom hard against the rail edge — a paint artifact, not a
+// watermark. It already yields on short windows (max-height:720px); it has to
+// yield on narrow ones too.
+test('the sidebar watermark is not cropped by the collapsed rail', async ({ page }) => {
+    await boot(page);
+    const read = async (): Promise<{ rail: number; sprig: number; mask: number }> =>
+        page.evaluate(() => {
+            const nav = document.querySelector('.nav-items') as HTMLElement;
+            const cs = getComputedStyle(nav, '::after');
+            const maskSize = cs.maskSize || cs.getPropertyValue('-webkit-mask-size');
+            return {
+                rail: Math.round(
+                    (document.querySelector('.sidebar') as HTMLElement).getBoundingClientRect().width,
+                ),
+                sprig: parseFloat(cs.height) || 0,
+                mask: parseFloat(maskSize) || 0,
+            };
+        });
+
+    // Expanded rail: the sprig is drawn, and it fits.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.waitForTimeout(150);
+    const wide = await read();
+    expect(wide.rail).toBeGreaterThan(200);
+    expect(wide.sprig, 'the sprig should still be drawn on a wide rail').toBeGreaterThan(0);
+    expect(
+        wide.mask,
+        `sprig mask ${wide.mask}px does not fit the ${wide.rail}px rail`,
+    ).toBeLessThanOrEqual(wide.rail);
+
+    // Collapsed rail: either it fits, or it is not drawn at all. Never cropped.
+    for (const width of [1100, 1000, 900]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.waitForTimeout(150);
+        const s = await read();
+        expect(s.rail, `rail did not collapse at ${width}px`).toBeLessThan(120);
+        expect(
+            s.sprig === 0 || s.mask <= s.rail,
+            `at ${width}px the ${s.mask}px sprig is drawn ${s.sprig}px tall in a ${s.rail}px rail — cropped`,
+        ).toBe(true);
+    }
+});
+
+// AI History is a two-pane layout and each pane opens with a panel header that
+// closes on a 1px rule. They share `padding: 12px 16px`, but the left header
+// wraps a 30px Refresh button and the right one only a 19.4px <h2>, so the two
+// rules landed 10.6px apart — a visible step across a seam the eye follows the
+// whole height of the page.
+test('the two AI History panes close their headers on one line', async ({ page }) => {
+    await boot(page);
+    await freezeMotion(page);
+    await show(page, 'history');
+
+    const rules = (): Promise<{ left: number; right: number }> =>
+        page.evaluate(() => {
+            const l = document.querySelector('.history-sidebar-header') as HTMLElement;
+            const r = document.getElementById('ai-history-header') as HTMLElement;
+            return {
+                left: l.getBoundingClientRect().bottom,
+                right: r.getBoundingClientRect().bottom,
+            };
+        });
+
+    const empty = await rules();
+    expect(
+        Math.abs(empty.left - empty.right),
+        `no channel picked: headers end at ${empty.left.toFixed(1)} and ${empty.right.toFixed(1)} — the rules do not meet`,
+    ).toBeLessThanOrEqual(1);
+
+    // ...and once a channel IS picked. The right header is rewritten by
+    // updateHeader() in history-manager.ts, which swaps the placeholder <h2>
+    // for `<h2>name</h2><span class="history-header-meta">N of M messages</span>`.
+    // `.history-header` is a baseline flex ROW, so that stays one line and the
+    // shared min-height still governs — but a future switch to a column, or a
+    // taller control landing in either header, would part the rules again.
+    await page.evaluate(() => {
+        const r = document.getElementById('ai-history-header') as HTMLElement;
+        r.classList.remove('is-placeholder');
+        const h2 = document.createElement('h2');
+        h2.textContent = 'general';
+        const meta = document.createElement('span');
+        meta.className = 'history-header-meta';
+        meta.textContent = '50 of 1,337 messages';
+        r.replaceChildren(h2, meta);
+    });
+    await page.waitForTimeout(100);
+    const picked = await rules();
+    expect(
+        Math.abs(picked.left - picked.right),
+        `channel picked: headers end at ${picked.left.toFixed(1)} and ${picked.right.toFixed(1)} — the rules do not meet`,
+    ).toBeLessThanOrEqual(1);
+});
+
+// `.sidebar .theme-toggle` sets `background: none` on purpose: the footer is a
+// status pill with a near-invisible theme row beneath it. A light-theme rule at
+// (0,2,1) then filled that row with --cyan-100 and won on specificity, so in
+// daylight the theme toggle was painted MORE strongly than the active nav item
+// (a 9% gradient) and the rail read as if "Toggle Theme" were the current page.
+test('the theme toggle stays quieter than the active nav item, in both themes', async ({ page }) => {
+    await boot(page);
+    await freezeMotion(page);
+    for (const theme of ['dark', 'light'] as const) {
+        await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+        await page.waitForTimeout(150);
+        const paint = await page.evaluate(() => {
+            const fill = (sel: string): { color: string; image: string } => {
+                const cs = getComputedStyle(document.querySelector(sel) as HTMLElement);
+                return { color: cs.backgroundColor, image: cs.backgroundImage };
+            };
+            return { toggle: fill('.sidebar .theme-toggle'), active: fill('.nav-item.active') };
+        });
+        const alpha = (c: string): number => {
+            const m = /rgba?\(([^)]+)\)/.exec(c);
+            if (!m) return 0;
+            const parts = m[1].split(/[,\s/]+/).map(Number);
+            return parts.length > 3 ? parts[3] : 1;
+        };
+        expect(
+            alpha(paint.toggle.color) === 0 && paint.toggle.image === 'none',
+            `[${theme}] the resting theme toggle is painted (${paint.toggle.color} / `
+            + `${paint.toggle.image}) while the active nav item uses ${paint.active.image} — `
+            + 'the footer ghost row is competing with the current page',
+        ).toBe(true);
+    }
+});
+
+// Chromium spellchecks <input type=search> and text inputs by default. Every
+// filter, find and identifier field in this app therefore drew red squiggles
+// under half-typed queries, conversation titles, channel names and the user's
+// own name — inside a dark UI that reads as an error state on a control with no
+// error state. Prose fields are excluded on purpose: there, spellcheck IS the
+// feature.
+test('search, filter and name fields do not run the spellchecker', async ({ page }) => {
+    await boot(page);
+    // Visit the pages whose fields are injected by TS so they exist by now.
+    await show(page, 'history');
+    await show(page, 'chat');
+    const PROSE = ['chat-input', 'user-bio-input', 'user-preferences-input'];
+    const offenders = await page.evaluate((prose: string[]) => {
+        const skip = new Set(prose);
+        return Array.from(
+            document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea'),
+        )
+            .filter((el) => ['text', 'search', 'textarea'].includes(el.type))
+            .filter((el) => !skip.has(el.id))
+            .filter((el) => el.spellcheck)
+            .map((el) => `#${el.id || `(${el.className})`}`);
+    }, PROSE);
+    expect(offenders, `spellchecked non-prose fields: ${offenders.join(', ')}`).toEqual([]);
+
+    // ...and the one field that identifies the user declares its purpose
+    // (WCAG 1.3.5 Identify Input Purpose).
+    expect(
+        await page.getAttribute('#user-name-input', 'autocomplete'),
+        'the display-name field collects the user name and must say so',
+    ).toBe('name');
+});
+
+// A settings heading has to be true of everything under it. "Refresh Settings"
+// carried six rows and described one: the others were a petal animation, three
+// feedback channels, and the crash-report opt-out — the only setting in the app
+// with a consequence outside this window, filed where nobody auditing what the
+// app sends off the machine would look.
+test('every settings card heading covers the rows beneath it', async ({ page }) => {
+    await boot(page);
+    await show(page, 'settings');
+    const cardOf = (id: string): Promise<string> =>
+        page.evaluate(
+            (i) =>
+                (
+                    document.getElementById(i)?.closest('.settings-card')
+                        ?.querySelector('h2')?.textContent || ''
+                )
+                    .replace(/\s+/g, ' ')
+                    .trim(),
+            id,
+        );
+
+    // The petal animation is decoration — it belongs with Theme and Density.
+    expect(await cardOf('sakura-toggle')).toBe('Appearance');
+    // Telemetry is named for what it is, and stands alone.
+    expect(await cardOf('telemetry-toggle')).toBe('Privacy');
+    // What is left under the behaviour card is behaviour.
+    for (const id of ['refresh-interval', 'notifications-toggle', 'sound-toggle', 'haptic-toggle']) {
+        expect(await cardOf(id), `${id} is not under the behaviour card`).toBe('Behavior');
+    }
+    // No heading may claim a scope narrower than its contents ever again.
+    const headings = await page.evaluate(() =>
+        Array.from(document.querySelectorAll<HTMLElement>('#page-settings .settings-card h2')).map(
+            (h) => (h.textContent || '').replace(/\s+/g, ' ').trim(),
+        ),
+    );
+    expect(headings).not.toContain('Refresh Settings');
+});

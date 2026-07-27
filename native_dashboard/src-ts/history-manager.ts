@@ -334,8 +334,13 @@ export class HistoryManager {
         const wrap = document.createElement('div');
         wrap.className = 'history-channel-filter';
         wrap.setAttribute('role', 'search');
+        // spellcheck=false / autocomplete=off — see the note on
+        // #conversation-filter-input in index.html: Chromium spellchecks search
+        // inputs, and a channel name is never a dictionary word, so every row of
+        // this filter wore a red squiggle.
         wrap.innerHTML =
             `<input type="search" id="ai-history-channel-filter" class="history-filter-input"`
+            + ` spellcheck="false" autocomplete="off"`
             + ` placeholder="Filter channels…" aria-label="Filter AI history channels by name">`;
         parent.insertBefore(wrap, list);
         const input = wrap.querySelector('#ai-history-channel-filter') as HTMLInputElement;
@@ -362,7 +367,7 @@ export class HistoryManager {
         bar.id = 'ai-history-search-bar';
         bar.setAttribute('role', 'search');
         bar.innerHTML =
-            `<input type="text" id="ai-history-search-input" placeholder="Find in transcript…" aria-label="Find in transcript">`
+            `<input type="text" id="ai-history-search-input" spellcheck="false" autocomplete="off" placeholder="Find in transcript…" aria-label="Find in transcript">`
             + `<span class="history-search-count" id="ai-history-search-count" role="status" aria-live="polite">0 / 0</span>`
             + `<button class="btn btn-icon" id="ai-history-search-prev" type="button" title="Previous match" aria-label="Previous match">${icon('chevron-up')}</button>`
             + `<button class="btn btn-icon" id="ai-history-search-next" type="button" title="Next match" aria-label="Next match">${icon('chevron-down')}</button>`

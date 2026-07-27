@@ -4034,3 +4034,95 @@ html[data-theme] .btn.btn[disabled] .ic { color: var(--text-muted); }
     .page-header h1,
     .page > h1:first-child { letter-spacing: 0.02em; }
 }
+
+/* ============================================================================
+   v8 — THE SECOND AUDIT LAYER
+   A geometry + focus + cascade pass over every page, both themes, at 800/900/
+   1000/1280, plus forced-colors. Appended last so source order alone decides.
+   ============================================================================ */
+
+/* ---------------------------------------------------------------------------
+   The one control class whose keyboard focus is invisible in High Contrast.
+   The authoritative focus block above matches selects through the bare TYPE
+   selector — `select:focus-visible` (0,1,1). styles.css then sets
+   `.setting-select:focus { outline: none }` at (0,2,0) and
+   `#log-filter:focus { outline: none }` at (1,1,0), and specificity beats
+   source order: both selects end up with box-shadow as their ONLY focus
+   indicator. Text inputs escaped by accident — their rule is
+   `input[type="text"]:focus-visible`, and the attribute selector carries them
+   to (0,2,1).
+
+   Under `forced-colors: active` (Windows High Contrast, which a Windows-only
+   app will meet) the OS drops every box-shadow, so a keyboard user tabbing
+   through Settings → Auto-refresh Interval or the Logs level filter got NO
+   focus indicator at all. Same failure the .data-item-checkbox / #modal-thinking
+   / #crop-zoom block above was written for; these two were simply never added
+   to it.
+
+   Restated at matching specificity so source-order-LAST wins, which also gives
+   the selects the same outline+ring every other control already draws.
+   --------------------------------------------------------------------------- */
+.setting-select:focus-visible,
+#log-filter:focus-visible {
+    outline: 2px solid var(--accent-cyan);
+    outline-offset: 2px;
+    box-shadow: var(--focus-ring);
+}
+@media (forced-colors: active) {
+    .setting-select:focus-visible,
+    #log-filter:focus-visible {
+        outline: 2px solid;
+        outline-offset: 2px;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   The sprig watermark, cropped to a smear.
+   `.nav-items::after` masks a 178px-wide sakura sprig into the empty gap above
+   the sidebar footer. Below 1100px the rail collapses to a 64px icon strip and
+   the mask does not: 114px of the drawing is cut off, leaving a fragment of one
+   branch and half a blossom hard against the rail's edge — it reads as a paint
+   artifact, not a watermark. There is no legible way to draw this asymmetric
+   sprig at 64px, so it yields, exactly as it already does on short windows
+   (the max-height:720px block above).
+   --------------------------------------------------------------------------- */
+@media (max-width: 1100px) {
+    .nav-items::after { height: 0; margin-top: auto; }
+}
+
+/* ---------------------------------------------------------------------------
+   The two-pane header rules that did not meet.
+   AI History puts a panel header at the top of BOTH panes and each closes with
+   a 1px rule. They share `padding: 12px 16px`, but the left one wraps a 30px
+   Refresh button and the right one only a 19.4px <h2> — so the rules landed at
+   169.9px and 159.3px, a visible 10.6px step across a seam the eye follows.
+   A shared min-height sized to the taller of the two (12 padding + 30 button +
+   12 padding + 1 rule = 55) lines them up and survives either pane gaining or
+   losing a control. `box-sizing` is border-box app-wide, so this is the outer
+   height including the rule. If the button's own metrics ever change, the
+   ui-invariants "close their headers on one line" test is what says so.
+   --------------------------------------------------------------------------- */
+.history-sidebar-header,
+#ai-history-header {
+    min-height: 55px;
+}
+
+/* ---------------------------------------------------------------------------
+   The quiet ghost row that is only quiet in the dark.
+   `.sidebar .theme-toggle` (0,2,0) deliberately sets `background: none` — the
+   footer design is a status pill with a near-invisible theme row beneath it.
+   `html[data-theme="light"] .theme-toggle` (0,2,1) then fills it with
+   --cyan-100, and specificity wins: in daylight the theme toggle is painted
+   MORE strongly than the active nav item (a 9% gradient), so the rail looks
+   like "Toggle Theme" is the page you are on. Restated at (0,3,1) to put the
+   light rail back on the dark rail's hierarchy; hover still lights it.
+   --------------------------------------------------------------------------- */
+html[data-theme="light"] .sidebar .theme-toggle {
+    background: none;
+    border: 1px solid var(--edge);
+    color: var(--text-tertiary);
+}
+html[data-theme="light"] .sidebar .theme-toggle:hover {
+    background: var(--cyan-50);
+    color: var(--text-primary);
+}

@@ -627,9 +627,22 @@
                                 <span><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg> New</span>
                             </button>
                         </div>
+                        <!-- spellcheck=false + autocomplete=off on EVERY search /
+                             filter / identifier field in the app. Chromium
+                             spellchecks <input type=search> and text inputs by
+                             default, so a half-typed filter ("conv", "faus") and
+                             every conversation or channel name that is not a
+                             dictionary word wore a red squiggle — inside a dark
+                             UI that reads as an error state on a control that has
+                             no error state. autocomplete=off keeps WebView2 from
+                             dropping its own history list over the rail. Prose
+                             fields (#chat-input, About You, Preferences) are
+                             deliberately NOT in this group: there, spellcheck is
+                             the feature. -->
                         <div class="conversation-filter">
                             <input type="search" id="conversation-filter-input"
                                    placeholder="Filter conversations…"
+                                   spellcheck="false" autocomplete="off"
                                    aria-label="Filter conversations by title">
                         </div>
                         <!-- tabindex=0 + role/label: this is an overflow:auto scroll
@@ -725,7 +738,7 @@
                                 <div class="chat-tags-bar" id="chat-tags" role="group" aria-label="Conversation tags"></div>
                                 <!-- In-conversation search bar (Ctrl+F) -->
                                 <div class="chat-search-bar hidden" id="chat-search-bar" role="search">
-                                    <input type="search" id="chat-search-input" placeholder="Search in conversation…" aria-label="Search in conversation">
+                                    <input type="search" id="chat-search-input" placeholder="Search in conversation…" spellcheck="false" autocomplete="off" aria-label="Search in conversation">
                                     <!-- role=status + aria-live: focus never leaves
                                          #chat-search-input during a search, so this label
                                          was the ONLY signal of the result and it was a
@@ -887,7 +900,7 @@
                         <div class="modal-body">
                             <div class="form-group">
                                 <label for="rename-input">Conversation Name</label>
-                                <input type="text" id="rename-input" class="form-input" placeholder="Enter new name..." maxlength="100">
+                                <input type="text" id="rename-input" class="form-input" placeholder="Enter new name..." maxlength="100" spellcheck="false" autocomplete="off">
                             </div>
                         </div>
                         <div class="modal-footer">
@@ -932,7 +945,7 @@
                                 <div class="setting-row">
                                     <label for="chat-files-edit-name">Filename</label>
                                     <div class="setting-control">
-                                        <input type="text" id="chat-files-edit-name" class="setting-input" maxlength="200" placeholder="character_sheet.pdf">
+                                        <input type="text" id="chat-files-edit-name" class="setting-input" maxlength="200" placeholder="character_sheet.pdf" spellcheck="false" autocomplete="off">
                                     </div>
                                 </div>
                                 <div class="setting-row">
@@ -1211,7 +1224,12 @@
                     <div class="setting-row">
                         <label for="user-name-input">Display Name</label>
                         <div class="setting-control">
-                            <input type="text" id="user-name-input" class="setting-input" placeholder="Enter your name..." maxlength="32">
+                            <!-- autocomplete="name" is the WCAG 1.3.5 (Identify
+                                 Input Purpose) token for this field — it collects
+                                 the user's own name. spellcheck=false because a
+                                 person's name is not a dictionary word and the
+                                 squiggle under it is pure noise. -->
+                            <input type="text" id="user-name-input" class="setting-input" placeholder="Enter your name..." maxlength="32" autocomplete="name" spellcheck="false">
                         </div>
                     </div>
                     <div class="setting-row">
@@ -1261,10 +1279,28 @@
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
+                    <!-- Sakura lives HERE, not under the old "Refresh Settings".
+                         It is a decorative animation — the single most Appearance
+                         thing in the app — and someone turning the petals off is
+                         looking under the card that owns Theme and Density. -->
+                    <div class="setting-row">
+                        <label for="sakura-toggle"><svg class="ic" aria-hidden="true"><use href="#i-sparkle"/></svg> Sakura Petals Animation</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="sakura-toggle" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
                 </div>
 
+                <!-- "Behavior", not "Refresh Settings". That heading was true of
+                     exactly one of the six rows it carried: the other five were a
+                     petal animation, three feedback channels, and a crash-report
+                     opt-out. A heading that describes one sixth of its contents is
+                     how a setting becomes unfindable. What is left here is what the
+                     app DOES in response to events — how often it polls, and the
+                     three ways it tells you something happened. -->
                 <div class="settings-card">
-                    <h2><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg> Refresh Settings</h2>
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-bolt"/></svg> Behavior</h2>
                     <div class="setting-row">
                         <label for="refresh-interval"><svg class="ic" aria-hidden="true"><use href="#i-timer"/></svg> Auto-refresh Interval</label>
                         <select id="refresh-interval" class="setting-select">
@@ -1278,13 +1314,6 @@
                         <label for="notifications-toggle"><svg class="ic" aria-hidden="true"><use href="#i-bell"/></svg> Toast Notifications</label>
                         <label class="toggle-switch">
                             <input type="checkbox" id="notifications-toggle" checked>
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </div>
-                    <div class="setting-row">
-                        <label for="sakura-toggle"><svg class="ic" aria-hidden="true"><use href="#i-sparkle"/></svg> Sakura Petals Animation</label>
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="sakura-toggle" checked>
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
@@ -1308,6 +1337,22 @@
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
+                </div>
+
+                <!-- Telemetry gets its own card. It was the last row of a card
+                     called "Refresh Settings", which is the one place nobody
+                     auditing what this app sends off the machine would look. It is
+                     also the only setting here with a consequence outside the
+                     window, so it is named for what it is and stands alone. -->
+                <div class="settings-card">
+                    <h2><svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg> Privacy</h2>
+                    <!-- Says exactly what main.rs::log_frontend_error() forwards —
+                         `[error_type] message` to sentry::capture_message, and
+                         only that. Not "nothing leaves your machine", which would
+                         be false of the app as a whole (the AI chat plainly talks
+                         to a model) and is the kind of over-broad reassurance that
+                         makes the honest parts less believable. -->
+                    <p class="settings-hint">When on, a crash sends its error message — and nothing else — to Sentry.</p>
                     <div class="setting-row">
                         <label for="telemetry-toggle">
                             <svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg> Send Anonymous Crash Reports
@@ -1372,7 +1417,7 @@
                 <div class="settings-card">
                     <h2><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg> About</h2>
                     <p><strong lang="ko">디스코드 봇 대시보드</strong></p>
-                    <p>Version 3.5.0 - Enhanced Edition</p>
+                    <p>Version 3.5.0 — Enhanced Edition</p>
                     <p>Built with Tauri + Rust + TypeScript</p>
                     <div class="features-list">
                         <!-- h3 (was h4): keeps the heading outline contiguous under the card's h2 -->
