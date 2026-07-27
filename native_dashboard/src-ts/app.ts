@@ -23,6 +23,7 @@ import {
     showConfirmDialog,
     icon,
     countLabel,
+    prefersReducedMotion,
 } from './shared.js';
 import {
     chatManager,
@@ -910,9 +911,25 @@ export function drawChart(canvasId: string, data: ChartDataPoint[], color: strin
         data = data.filter(p => p.timestamp >= staleCutoff && p.timestamp <= futureCutoff);
     }
 
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
+    // Assigning canvas.width/height ALWAYS throws away and re-allocates the
+    // backing store — even when the value is identical. This ran on every draw,
+    // i.e. ~2x/second for as long as the Status page is open (repaint timer +
+    // status tick) plus a burst per hover sample, discarding ~1MB of bitmap each
+    // time for a size that never changes. Only touch the bitmap when the target
+    // dimensions genuinely differ. Round FIRST and assign the rounded integers:
+    // the setter truncates, so comparing a raw `rect.width * dpr` against
+    // canvas.width would never match and the guard would never hold.
+    const targetW = Math.round(rect.width * dpr);
+    const targetH = Math.round(rect.height * dpr);
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+    }
+    // setTransform, NOT scale(): scale() multiplies into the current matrix, and
+    // the only thing that used to reset that matrix was the per-draw bitmap
+    // re-allocation above. With the realloc gone, scale() would compound every
+    // draw and the chart would zoom itself off the canvas.
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const width = rect.width;
     const height = rect.height;
@@ -1218,7 +1235,7 @@ function initSakuraAnimation(): void {
     // Respect prefers-reduced-motion: the CSS zeroes animation durations, but
     // without this the JS would still run a physics loop for zero visible
     // payoff. Bail entirely so reduced-motion users pay no animation cost.
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (prefersReducedMotion()) return;
     sakuraRunning = true;
 
     // Colour, as RGB triples the renderer hands straight to the shader. Two
@@ -1645,6 +1662,9 @@ function initSakuraAnimation(): void {
     // no allocation in the loop.
     const draw: PetalDraw[] = [];
 
+    // Undebounced ON PURPOSE: SakuraRenderer.resize applies the CSS size (which
+    // the shader needs immediately, or petals in the newly exposed strip map off
+    // screen) and defers only the drawing-buffer reallocation internally.
     const syncRendererSize = (): void => {
         renderer.resize(
             container.clientWidth || window.innerWidth,
@@ -1656,6 +1676,19 @@ function initSakuraAnimation(): void {
     window.addEventListener('resize', resizeHandler);
     sakuraDisposers.push(() => window.removeEventListener('resize', resizeHandler));
 
+    // A GPU reset (Windows TDR, driver update, RDP session change, hybrid-GPU
+    // handoff) kills the context; the layers' programs and buffers die with it,
+    // so recovery is a full teardown + rebuild, once, off the restore event.
+    // Doing it from the frame loop instead would create and destroy two contexts
+    // per frame for the whole length of the reset.
+    renderer.onContextRestored(() => {
+        // Ignore a late event from a renderer that has already been replaced or
+        // switched off (the Settings toggle, a page teardown).
+        if (!sakuraEnabled || sakuraRenderer !== renderer) return;
+        stopSakura();
+        initSakuraAnimation();
+    });
+
     let simTime = 0;
     let spawnAcc = 0;
     let lastThemeLight = isLight();
@@ -1666,6 +1699,13 @@ function initSakuraAnimation(): void {
         lastFrame = now;
         if (dt <= 0) return;
         if (dt > 0.05) dt = 0.05; // clamp tab-switch / hidden-window spikes
+        // The GL context is gone (driver reset). Idle the frame — the loop stays
+        // alive so the webglcontextrestored handler above can rebuild, but there
+        // is no point integrating 44 bodies that nothing can draw. Rebuilding
+        // from HERE is what must not happen: during a TDR a fresh context
+        // usually creates and is immediately lost, which turns a per-frame retry
+        // into a context create/destroy loop.
+        if (!renderer.ok) return;
         simTime += dt;
 
         // the cursor's gust decays between mouse events
@@ -1988,6 +2028,13 @@ function initNavigation(): void {
                 { type: 'info', duration: 3000 },
             );
         } catch (err) {
+            // Unlike every other toggle here, this one is NOT mirrored in
+            // localStorage — it is a file on disk the Python bot reads. A failed
+            // write (file locked by the running bot, read-only install dir, IPC
+            // busy) used to leave the switch sitting in the position the backend
+            // rejected, so a privacy-relevant control reported the opposite of
+            // the truth until the user navigated away and back. Put it back.
+            (e.target as HTMLInputElement).checked = !enabled;
             console.error('set_telemetry_enabled failed:', err);
             showToast('Failed to update telemetry preference', { type: 'error' });
         }
@@ -2294,9 +2341,26 @@ async function populatePathsCard(): Promise<void> {
             invoke<string>('get_logs_path'),
             invoke<string>('get_data_path'),
         ]);
-        if (botScript && base) botScript.textContent = `${base}\\bot.py`;
-        if (logFile && logsDir) logFile.textContent = `${logsDir}\\bot.log`;
-        if (database && dataDir) database.textContent = `${dataDir}\\bot_database.db`;
+        // title mirrors textContent on every row: the card is capped at 780px and a
+        // Windows path is one unbreakable run for CSS line breaking (UAX#14 LB24
+        // forbids a break after `\`), so a deep install path was chopped flat at the
+        // card edge with no ellipsis and no way to read the rest. The tooltip keeps
+        // the full value reachable whatever the stylesheet does with the overflow.
+        if (botScript && base) {
+            const p = `${base}\\bot.py`;
+            botScript.textContent = p;
+            botScript.title = p;
+        }
+        if (logFile && logsDir) {
+            const p = `${logsDir}\\bot.log`;
+            logFile.textContent = p;
+            logFile.title = p;
+        }
+        if (database && dataDir) {
+            const p = `${dataDir}\\bot_database.db`;
+            database.textContent = p;
+            database.title = p;
+        }
         pathsCardPopulated = true;
     } catch (error) {
         // Backend unreachable — keep the static defaults and retry next visit.
@@ -2668,6 +2732,47 @@ export function classifyLogLines(
     return out;
 }
 
+/**
+ * The Logs panel's empty state, as markup.
+ *
+ * Iconographic empty state (SHARED CONTRACT #2): fixed, trusted markup — no
+ * user content, no inline style. Classes only; the .empty-state / .ic sizing
+ * lives in orbital.css.
+ * <h2>, not <h3>: this state is injected directly under the page's
+ * <h1>Log Viewer</h1> with no intervening section heading, so an h3 skipped a
+ * level (axe: moderate heading-order). The other empty states in index.html DO
+ * sit under an <h2> and correctly use h3.
+ *
+ * Two distinct states, because "the bot has logged nothing" and "the bot has
+ * logged plenty, none of it at this level" are different problems with
+ * different next steps. Telling someone who filtered to CRITICAL on a healthy
+ * bot to wait for it to start running is a lie, and it was the ONLY message
+ * this panel had. Now that the menu offers CRITICAL and DEBUG the empty result
+ * is the common case, so it names the filter and points at the way out.
+ * `filter` is one of the fixed option values, never user text — safe to
+ * interpolate, and escapeHtml() is applied anyway rather than relying on that
+ * staying true.
+ *
+ * Lives in one function because clearLogs() paints it too: it used to just
+ * blank the <pre>, which left a featureless black box whenever the feed was
+ * paused (the poll that would have repainted is deliberately stopped then).
+ */
+function logsEmptyState(filter: string, logCount: number): string {
+    const filtered = filter !== 'all' && logCount > 0;
+    return filtered
+        ? '<div class="empty-state">' +
+          '<svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg>' +
+          `<h2>No ${escapeHtml(filter)} lines</h2>` +
+          `<p>${countLabel(logCount, 'log line')} loaded, none at this level. ` +
+          'Pick <em>All Levels</em> to see everything.</p>' +
+          '</div>'
+        : '<div class="empty-state">' +
+          '<svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg>' +
+          '<h2>No logs found</h2>' +
+          '<p>Logs will appear here once the bot starts running.</p>' +
+          '</div>';
+}
+
 async function loadLogs(): Promise<void> {
     try {
         const logs = await invoke<string[]>('get_logs', { count: 200 });
@@ -2710,45 +2815,23 @@ async function loadLogs(): Promise<void> {
         container.appendChild(fragment);
 
         if (!container.firstChild) {
-            // Iconographic empty state (SHARED CONTRACT #2): fixed, trusted
-            // markup — no user content, no inline style. Classes only; the
-            // .empty-state / .ic sizing lives in orbital.css.
-            // <h2>, not <h3>: this state is injected directly under the page's
-            // <h1>Log Viewer</h1> with no intervening section heading, so an h3
-            // skipped a level (axe: moderate heading-order). The other empty
-            // states in index.html DO sit under an <h2> and correctly use h3.
-            //
-            // Two distinct states, because "the bot has logged nothing" and "the
-            // bot has logged plenty, none of it at this level" are different
-            // problems with different next steps. Telling someone who filtered
-            // to CRITICAL on a healthy bot to wait for it to start running is a
-            // lie, and it was the ONLY message this panel had. Now that the menu
-            // offers CRITICAL and DEBUG the empty result is the common case, so
-            // it names the filter and points at the way out.
-            // `filter` is one of the fixed option values, never user text — safe
-            // to interpolate, and escapeHtml() is applied anyway rather than
-            // relying on that staying true.
-            const filtered = filter !== 'all' && logs.length > 0;
-            container.innerHTML = filtered
-                ? '<div class="empty-state">' +
-                  '<svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg>' +
-                  `<h2>No ${escapeHtml(filter)} lines</h2>` +
-                  `<p>${countLabel(logs.length, 'log line')} loaded, none at this level. ` +
-                  'Pick <em>All Levels</em> to see everything.</p>' +
-                  '</div>'
-                : '<div class="empty-state">' +
-                  '<svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg>' +
-                  '<h2>No logs found</h2>' +
-                  '<p>Logs will appear here once the bot starts running.</p>' +
-                  '</div>';
+            container.innerHTML = logsEmptyState(filter, logs.length);
         }
 
         // Auto-scroll on new logs OR when the filter changes — switching from
         // ERROR to ALL with auto-scroll on previously left the view on a
         // mid-scroll position from the prior filter instead of snapping back
         // to the bottom of the rebuilt list.
+        //
+        // Scroll the CONTAINER, not the <pre>. #log-content has the default
+        // `overflow: visible`, so its scrollHeight equals its clientHeight and
+        // the assignment clamped to 0 — the tail-following that is the whole
+        // point of a log viewer never happened, and neither did the
+        // filter-change snap-back described above. #log-container is the element
+        // that actually owns the overflow.
         if (logsAutoScrollEnabled && (hasNewLogs || filterChanged)) {
-            container.scrollTop = container.scrollHeight;
+            const scroller = document.getElementById('log-container');
+            if (scroller) scroller.scrollTop = scroller.scrollHeight;
         }
     } catch (error) {
         console.error('Failed to load logs:', error);
@@ -2861,6 +2944,17 @@ export function toggleAutoScroll(): void {
 }
 
 async function clearLogs(): Promise<void> {
+    // Confirm first. This truncates logs/bot.log ON DISK — the only record of a
+    // crash, a bad DISCORD_TOKEN or a failed Discord connection — and the button
+    // sits between Pause and Refresh, the two harmless controls a reader clicks
+    // constantly. Every other destructive action in this app already confirms
+    // (clearHistory, deleteSelectedChannels); this one was a single unguarded
+    // click with no undo.
+    const confirmed = await showConfirmDialog(
+        'Clear the log file? logs/bot.log is truncated on disk and cannot be recovered.',
+    );
+    if (!confirmed) return;
+
     // Pause the 1s logs poller so an in-flight loadLogs() tick cannot
     // re-read the not-yet-truncated backend tail and repopulate stale
     // logs while the backend clear is in flight.
@@ -2868,7 +2962,17 @@ async function clearLogs(): Promise<void> {
     try {
         const result = await invoke('clear_logs');
         const container = document.getElementById('log-content');
-        if (container) container.innerHTML = '';
+        if (container) {
+            // Paint the empty state rather than just blanking. With the feed
+            // paused (Pause also stops the poll, by design) nothing would ever
+            // repaint, so Clear left a featureless black rectangle with no
+            // explanation until the user happened to press Resume or Refresh.
+            // Painting it here instead of calling loadLogs() keeps the Pause
+            // contract: we must not re-render lines the bot wrote after the
+            // clear.
+            const filterElement = document.getElementById('log-filter') as HTMLSelectElement | null;
+            container.innerHTML = logsEmptyState(filterElement?.value || 'all', 0);
+        }
         lastLogSignature = null;
         showToast(String(result), { type: 'success', duration: 1500 });
     } catch (err) {
@@ -2883,12 +2987,42 @@ async function clearLogs(): Promise<void> {
 // ============================================================================
 
 async function loadDbStats(): Promise<void> {
+    // Declared OUTSIDE the try: a `const` inside it is not in scope in the
+    // catch, which is where the failure state needs them.
+    const DB_TILES = ['db-messages', 'db-channels', 'db-entities', 'db-rag'];
+    // Cold = the very first load, before animateNumber has stamped
+    // dataset.animValue on the tiles. A background refresh must never blank
+    // numbers that are already live and correct — only the first paint gets the
+    // skeleton, and only the first paint falls back to the em-dash placeholder.
+    const cold = !document.getElementById('db-messages')?.dataset.animValue;
+    // get_recent_channels / get_top_users share this try and run AFTER the tiles
+    // were filled, so a rejection there would otherwise reset four freshly
+    // correct numbers to '—'. This flag scopes the tile reset to a genuine
+    // get_db_stats failure.
+    let statsOk = false;
+    // The skeleton markup has always existed (.is-loading in styles.css) and
+    // nothing ever switched it on, so a cold fetch that was still in flight —
+    // or one that rejected outright — was indistinguishable from a healthy but
+    // genuinely empty database: four honest-looking zeros.
+    if (cold) DB_TILES.forEach(id => setSkeleton(id, true));
+    /** Stop the shimmer and say "unknown" rather than "zero". Nothing polls this
+     *  page, so a skeleton left running after a failed fetch would shimmer until
+     *  the user navigates away and back. */
+    const failTiles = (): void => {
+        DB_TILES.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) { setSkeleton(el, false); el.textContent = '—'; }
+        });
+    };
     try {
         const stats = await invoke<DbStats>('get_db_stats');
         // Same defensive guard as updateStatus: backend can legitimately
         // return null before the DB is initialized; treat as "no data yet"
-        // and let the next poll fill it in instead of crashing the page.
-        if (!stats) return;
+        // and let the next load fill it in instead of crashing the page.
+        if (!stats) {
+            if (cold) failTiles();
+            return;
+        }
 
         batchDOMUpdate([
             () => {
@@ -2906,6 +3040,7 @@ async function loadDbStats(): Promise<void> {
                 if (dbRag)      { setSkeleton(dbRag, false);      animateNumber(dbRag, stats.rag_memories); }
             }
         ]);
+        statsOk = true;
 
         // Load channels and users in parallel. Coerce nulls (which the
         // backend can return before the bot has indexed anything) to empty
@@ -3008,7 +3143,21 @@ async function loadDbStats(): Promise<void> {
 
     } catch (error) {
         console.error('Failed to load DB stats:', error);
-        showToast('Failed to load database stats', { type: 'error' });
+        // Only when the STATS call itself failed on a cold page: replace the
+        // shimmer with '—', the same honest placeholder the uptime/mode tiles
+        // use. animateNumber reads dataset.animValue (not textContent), so the
+        // next successful load overwrites this cleanly.
+        if (cold && !statsOk) failTiles();
+        // Surface the actual reason (SQLITE_BUSY, a failed open) like every
+        // other catch in this file does — the old bare message swallowed it, and
+        // it was also wrong whenever the stats succeeded and only the two list
+        // fetches rejected.
+        showToast(`Failed to load database stats: ${error}`, { type: 'error' });
+        const retry = '<p class="no-data">Could not load — press Ctrl+R to retry.</p>';
+        for (const id of ['channels-list', 'users-list']) {
+            const el = document.getElementById(id);
+            if (el && !el.childElementCount) el.innerHTML = retry;
+        }
     }
 }
 
@@ -3252,7 +3401,12 @@ function openAvatarCropModal(imageUrl: string): void {
         // subsequent crop calculation with NaN and silently saves a blank
         // canvas.
         if (cropImage.naturalWidth <= 0 || cropImage.naturalHeight <= 0) {
-            showToast('ไม่สามารถโหลดรูปภาพได้', { type: 'error' });
+            // English, like every other rendered string in this UI: the document
+            // is lang="en", so a Thai literal here was read out by a screen
+            // reader with an English pronunciation model and arrived as noise.
+            // (The Thai in this repo is the SOURCE COMMENTS, deliberately — not
+            // the UI copy.)
+            showToast('Could not read that image — it may be corrupt. Try another file.', { type: 'error' });
             closeCropModal();
             return;
         }
@@ -3460,7 +3614,8 @@ function saveCroppedAvatar(): void {
         cropImage.naturalWidth <= 0 ||
         cropImage.naturalHeight <= 0
     ) {
-        showToast('รูปภาพยังโหลดไม่เสร็จ กรุณาลองอีกครั้ง', { type: 'error' });
+        // English UI copy — see the matching note in openAvatarCropModal.
+        showToast('The image is still loading — try again in a moment.', { type: 'error' });
         return;
     }
 
@@ -3552,6 +3707,27 @@ function closeCropModal(): void {
     // The Escape handler is bound once for the page lifetime (see
     // setupCropEventListeners) and self-guards on ``.active``, so there is
     // nothing to detach here.
+
+    // Release the full-size source. The file is read as a data URL (base64 is
+    // ~1.37x the bytes, so ~27MB at the permitted 20MB maximum) and #crop-image
+    // is a STATIC element in index.html that stays in the document — so after a
+    // single avatar change, save or cancel, the window held two copies of that
+    // string for the rest of the session. Only the 200x200 PNG that
+    // saveCroppedAvatar already produced is needed downstream.
+    const cropImage = document.getElementById('crop-image') as HTMLImageElement | null;
+    if (cropImage) {
+        // Null the handlers BEFORE reassigning src: closeCropModal is itself
+        // called from inside onload's broken-image guard and from onerror, and
+        // the placeholder load would otherwise re-enter them.
+        cropImage.onload = null;
+        cropImage.onerror = null;
+        // The 1x1 placeholder rather than '' — an empty src re-requests the
+        // page URL.
+        cropImage.src = BLANK_AVATAR_GIF;
+    }
+    cropState.imageUrl = '';
+    cropState.imgWidth = 0;
+    cropState.imgHeight = 0;
 }
 
 function removeAvatar(target: 'user' | 'ai' = 'user'): void {
@@ -3701,7 +3877,7 @@ function renderApiFailoverUI(data: Record<string, unknown>): void {
     // no `available` key — treating that as unavailable hid the panel the
     // moment the user clicked a standby endpoint.
     if (data.available === false) {
-        section.style.display = 'none';
+        section.classList.add('hidden');
         return;
     }
     if (!Array.isArray(data.endpoints)) {
@@ -3710,7 +3886,16 @@ function renderApiFailoverUI(data: Record<string, unknown>): void {
         return;
     }
 
-    section.style.display = '';
+    // Toggle the CLASS, not an inline `display`. index.html ships this card as
+    // `class="api-failover-card hidden"`, and `.hidden` is `display:none
+    // !important` — so the old `style.display = ''` cleared an inline value that
+    // was never set and lost to the !important class every time. Nothing else in
+    // the file removes `.hidden` from this element, which meant the API Endpoint
+    // panel could not be shown at all: every endpoint list, every manual switch
+    // and every auto-failover broadcast rendered into a permanently invisible
+    // card. (The hide branch above had the mirror-image bug — an inline `none`
+    // on something the class already hid.)
+    section.classList.remove('hidden');
     const endpoints = data.endpoints as Array<Record<string, unknown>>;
     container.innerHTML = '';
 
@@ -3756,7 +3941,10 @@ function renderApiFailoverUI(data: Record<string, unknown>): void {
                 }
             };
             item.style.cursor = 'pointer';
-            item.title = `คลิกเพื่อสลับไปใช้ ${epType}`;
+            // English, matching the aria-label two lines down — the visible
+            // tooltip used to be Thai while the accessible name was English, so
+            // the two disagreed about the same control in a lang="en" document.
+            item.title = `Click to switch to ${epType}`;
             item.setAttribute('role', 'button');
             item.setAttribute('tabindex', '0');
             item.setAttribute('aria-label', `Switch to ${epType}`);

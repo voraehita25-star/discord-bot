@@ -37,7 +37,7 @@
  * ONE delegated container-level click handler stored on the element and
  * replaced each render.
  */
-import { countLabel, escapeHtml, icon, normalizeSqliteUtc, showConfirmDialog, showToast } from './shared.js';
+import { countLabel, escapeHtml, icon, normalizeSqliteUtc, scrollBehavior, showConfirmDialog, showToast } from './shared.js';
 /** Channels beyond this count are not rendered (overflow note instead). */
 const CHANNEL_RENDER_CAP = 200;
 /** Message rows beyond this count are not rendered (newest kept). */
@@ -191,11 +191,20 @@ export class HistoryManager {
      * through them — but uses its OWN #ai-history-search-* ids so it never
      * collides with the chat page's #chat-search-* nodes (duplicate ids would
      * break both). Self-contained here because chat/search.ts hardcodes the
-     * chat ids and exports no reusable helper. Lets the user reach content the
-     * 500-row render cap hides only by index, complementing the cap note.
+     * chat ids and exports no reusable helper. It walks the RENDERED rows only,
+     * so rows the 500-row cap keeps out of the DOM are NOT searchable — those
+     * are reached with the cap note's "Show older" button first.
      */
     findMatches = [];
     findIdx = -1;
+    /**
+     * Rows the user asked to see BEYOND the newest MESSAGE_RENDER_CAP, via the
+     * cap note's "Show older" button. Reset on every channel open and on every
+     * fresh load. Without it "Load all" was a trap: a 1,200-row channel put all
+     * 1,200 rows in this.messages, rendered the newest 500, and offered no
+     * control anywhere that could reach the other 700.
+     */
+    renderExtra = 0;
     /** True from openChannel() until the matching ai_history_loaded lands —
      *  drives the spinner/skeleton loading pane. */
     loading = false;
@@ -386,7 +395,10 @@ export class HistoryManager {
         this.findMatches.forEach(m => m.classList.remove('active'));
         const target = this.findMatches[idx];
         target.classList.add('active');
-        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        // scrollBehavior(), not a literal 'smooth' — see the note in
+        // shared.ts: the option wins over the CSS property, so a hard-coded
+        // 'smooth' walked straight past the reduced-motion override.
+        target.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
         this.findIdx = idx;
         const countEl = document.getElementById('ai-history-search-count');
         if (countEl)
@@ -631,6 +643,9 @@ export class HistoryManager {
                 // Optional flag: the server clipped the payload by content
                 // budget — re-requesting cannot return more rows.
                 this.truncated = data.truncated === true;
+                // A fresh window replaces the rows the "Show older" expansion
+                // was measured against — start again at the newest cap.
+                this.renderExtra = 0;
                 this.editingIdx = null;
                 this.editInFlight = false;
                 this.loading = false;
@@ -696,6 +711,10 @@ export class HistoryManager {
                     break;
                 }
                 const before = this.messages.length;
+                // Absolute index of the row about to go, captured pre-filter:
+                // after the removal the row that SLIDES INTO this index is the
+                // one focus should land on (see refocusRow).
+                const removedIdx = this.messages.findIndex(m => m.id === deletedId);
                 // Try the in-place row removal BEFORE mutating this.messages —
                 // removeRowInPlace reads the pre-removal length to decide whether
                 // the cap window would shift (in which case it bails to a full
@@ -722,6 +741,13 @@ export class HistoryManager {
                     if (container)
                         container.scrollTop = savedPos;
                 }
+                // AFTER the removal/re-render: the Delete button that had focus
+                // was just destroyed, so focus fell to <body>. (Deliberately not
+                // before — a native confirm dialog was up in between, and
+                // Chromium only restores window focus to an element that still
+                // exists.) Skipped when no visible row went away.
+                if (removedIdx >= 0)
+                    this.refocusRow(removedIdx);
                 this.updateHeader();
                 this.renderLoadAll();
                 this.notifyMutationOutcome(data, 'delete');
@@ -872,6 +898,15 @@ export class HistoryManager {
         // Switching channels drops any load queued for the previous one.
         this.pendingChannelLoad = null;
         this.truncated = false;
+        // Drop the PREVIOUS channel's rows/counters before painting the new
+        // one. Without this the header sat under the new channel's name showing
+        // the old channel's "200 of 200 messages" for the whole round-trip —
+        // and forever if the load was answered with an error envelope, since
+        // onError() paints the retry hint but never clears the model.
+        this.messages = [];
+        this.totalCount = 0;
+        this.hasMore = false;
+        this.renderExtra = 0;
         this.editingIdx = null;
         this.editInFlight = false;
         // A channel switch invalidates any open find (matches point at the
@@ -954,8 +989,12 @@ export class HistoryManager {
         if (!contentEl)
             return;
         const originalContent = msg.content;
+        // aria-label: this textarea is injected at runtime with no <label> and
+        // no placeholder, so AT announced a bare unnamed "edit text" field —
+        // no confirmation of WHICH message Save is about to overwrite in the
+        // bot's persisted history.
         contentEl.innerHTML = `
-            <textarea class="edit-textarea">${escapeHtml(originalContent)}</textarea>
+            <textarea class="edit-textarea" aria-label="Edit ${msg.role === 'user' ? 'user' : 'model'} message">${escapeHtml(originalContent)}</textarea>
             <div class="edit-actions">
                 <button class="edit-save-btn">Save</button>
                 <button class="edit-cancel-btn">Cancel</button>
@@ -1035,16 +1074,57 @@ export class HistoryManager {
         }
     }
     cancelEdit() {
+        // Captured before the reset so the row the editor occupied can take
+        // the focus back — the re-render below destroys the focused node.
+        const idx = this.editingIdx;
         this.editingIdx = null;
-        this.editInFlight = false;
+        // NOTE: editInFlight is deliberately NOT cleared here. Cancel/Esc is
+        // reachable while a save is still on the wire, and clearing the flag
+        // re-opened the one-mutation-at-a-time gate: a delete started in that
+        // window overwrote the single pendingUndoCandidate slot, so the
+        // just-saved edit arrived to a kind-mismatched candidate and became
+        // silently non-undoable. The flag is released by the ack, onError()
+        // or onConnected() — all three also close/unstick the editor.
         const container = document.getElementById('ai-history-messages');
         const savedPos = container?.scrollTop ?? 0;
         this.renderMessages();
         if (container)
             container.scrollTop = savedPos;
-        // cancelEdit clears editInFlight and is reachable while a save ack
-        // is in flight — re-render so the undo button reflects the gate.
+        // Only when an editor really was open: with no idx there is no
+        // destroyed focus to give back, and moving focus anyway would surprise.
+        if (idx !== null)
+            this.refocusRow(idx);
+        // Still re-render the undo button: cancelEdit is reachable while a
+        // save ack is in flight, and the editor's disappearance changes what
+        // the user can reach next.
         this.renderUndo();
+    }
+    /**
+     * Hand focus back to a stable anchor after a re-render or a row removal
+     * wiped the element that had it. Every exit from the inline editor (Esc,
+     * Cancel, the save ack's row patch) and the delete ack destroy the focused
+     * node, which dropped focus to <body>: this is a page, not a modal, so
+     * app.ts's Tab trap (`.modal.active` only) cannot rescue it and the next
+     * Tab restarted at the top of the document. Mirrors closeChatFileEditor's
+     * wasFocusInEditor handling in chat-manager.ts.
+     *
+     * The guard only reclaims focus when it really is sitting on <body> — if
+     * the user has meanwhile moved to the channel list, the find bar or Undo,
+     * yanking them back to a message row would be worse than the bug.
+     * (`.history-msg-actions` is opacity:0 until :focus-within, so the
+     * programmatic focus also makes the button visible.)
+     */
+    refocusRow(idx) {
+        const container = document.getElementById('ai-history-messages');
+        if (!container)
+            return;
+        const ae = document.activeElement;
+        if (ae && ae !== document.body)
+            return;
+        const target = container.querySelector(`.history-msg[data-idx="${idx}"] .history-edit-btn`)
+            ?? container.querySelector('.history-msg .history-edit-btn')
+            ?? container;
+        target.focus();
     }
     // ------------------------------------------------------------------
     // Delete flow (confirm → delete_ai_history_message → ack removes the
@@ -1301,19 +1381,73 @@ export class HistoryManager {
             container.innerHTML = '<p class="no-data">Not connected — channels will load once the connection is up.</p>';
         }
     }
+    /**
+     * Find (or create once) an overflow note that describes `anchor` but must
+     * NOT live inside it. Both list containers take a role at render time —
+     * #ai-channel-list becomes a listbox, #ai-history-messages a list — and a
+     * note rendered as their last child is a non-option / non-listitem child,
+     * i.e. an aria-required-children violation. Injected from here rather than
+     * declared in index.html for the same reason the find bar is (buildFindBar):
+     * this page ships no static markup for it.
+     */
+    overflowNote(noteId, anchor, where) {
+        const existing = document.getElementById(noteId);
+        if (existing)
+            return existing;
+        const parent = anchor.parentElement;
+        if (!parent)
+            return null;
+        const note = document.createElement('div');
+        note.id = noteId;
+        note.className = 'history-overflow-note hidden';
+        note.setAttribute('role', 'status');
+        parent.insertBefore(note, where === 'before' ? anchor : anchor.nextSibling);
+        return note;
+    }
+    /**
+     * Write an overflow note's content, hiding it when there is nothing to say
+     * (an empty string) — a note left behind by a wider list would otherwise
+     * keep claiming rows are hidden. Identical content is not rewritten: the
+     * note is a live region, and re-assigning it every render re-announces it.
+     */
+    setOverflowNote(note, html) {
+        if (!note)
+            return;
+        if (note.innerHTML !== html)
+            note.innerHTML = html;
+        note.classList.toggle('hidden', html === '');
+    }
     renderChannelList() {
         const container = document.getElementById('ai-channel-list');
         if (!container)
             return;
-        // a11y: the list is a single-select listbox; rows are options. ATs then
-        // announce position-in-set and the active selection, and a roving
-        // tabindex makes the whole list one Tab stop with arrow-key traversal.
-        container.setAttribute('role', 'listbox');
+        // The accessible name belongs on the container in EVERY state (role
+        // group supports naming too), so it sits outside the per-branch role
+        // switch below.
         container.setAttribute('aria-label', 'AI history channels');
+        // The overflow note is a SIBLING of the list, not its last child: a
+        // role=status div inside a listbox is a non-option child (axe
+        // aria-required-children). Every branch below states what it shows, so
+        // a stale "N more channels hidden" can't survive the filter that
+        // narrowed the list past the cap.
+        const note = this.overflowNote('ai-channel-overflow', container, 'after');
+        // A rebuild destroys the focused option node — capture first. Pressing
+        // Enter on a row (or a Refresh landing while the list has focus) used
+        // to drop focus to <body>, undoing the whole roving-tabindex design.
+        // The container itself is EXCLUDED: it carries tabindex=0 as a
+        // focusable scroll region, and a user who tabbed in only to scroll must
+        // not be dragged onto an option.
+        const hadFocus = document.activeElement !== container
+            && container.contains(document.activeElement);
         if (this.channels.length === 0) {
             // Iconographic empty state (shared .empty-state recipe — classes
             // only, no inline style; #i-chat glyph). Heading keeps the literal
             // "No channels" that the smoke test asserts on.
+            // role=group, not listbox: a listbox whose only children are an
+            // <h3> and a <p> is invalid ARIA, and AT announced "listbox, 0
+            // items" instead of reading the empty state.
+            this.setOverflowNote(note, '');
+            container.setAttribute('role', 'group');
             container.removeAttribute('aria-activedescendant');
             container.innerHTML = `
                 <div class="empty-state">
@@ -1321,6 +1455,8 @@ export class HistoryManager {
                     <h3>No channels yet</h3>
                     <p>Channels with saved AI history will appear here.</p>
                 </div>`;
+            if (hadFocus)
+                container.focus();
             return;
         }
         // Apply the debounced channel filter (name match, case-insensitive).
@@ -1330,7 +1466,12 @@ export class HistoryManager {
             : this.channels;
         if (matched.length === 0) {
             // Non-empty source but the filter excluded everything — searchable
-            // empty state (keeps the user's filter text visible).
+            // empty state (keeps the user's filter text visible). Same
+            // role=group reasoning as the no-channels branch above; this is the
+            // branch an ordinary filter typo lands on, and it used to leave a
+            // listbox with a heading and a paragraph inside it.
+            this.setOverflowNote(note, '');
+            container.setAttribute('role', 'group');
             container.removeAttribute('aria-activedescendant');
             container.innerHTML = `
                 <div class="empty-state">
@@ -1338,6 +1479,8 @@ export class HistoryManager {
                     <h3>No matching channels</h3>
                     <p>No channels match "${escapeHtml(this.channelFilter)}".</p>
                 </div>`;
+            if (hadFocus)
+                container.focus();
             return;
         }
         const visible = matched.slice(0, CHANNEL_RENDER_CAP);
@@ -1347,6 +1490,11 @@ export class HistoryManager {
         const activeId = this.currentChannelId;
         const hasActiveVisible = visible.some(ch => ch.channel_id === activeId);
         const focusId = hasActiveVisible ? activeId : visible[0].channel_id;
+        // Only NOW is the container a real listbox: every child it is about to
+        // get is a role=option row. ATs announce position-in-set and the active
+        // selection, and the roving tabindex makes the whole list one Tab stop
+        // with arrow-key traversal.
+        container.setAttribute('role', 'listbox');
         container.innerHTML = visible.map(ch => {
             const isActive = activeId === ch.channel_id;
             const isFocusable = ch.channel_id === focusId;
@@ -1366,8 +1514,9 @@ export class HistoryManager {
                     </div>
                 </div>
             `;
-        }).join('') + (overflow > 0
-            ? `<div class="history-overflow-note" role="status">${overflow} more channels hidden — narrow the filter</div>`
+        }).join('');
+        this.setOverflowNote(note, overflow > 0
+            ? `${overflow} more channels hidden — narrow the filter`
             : '');
         // Point aria-activedescendant at the selected option when one is shown.
         if (hasActiveVisible && activeId) {
@@ -1375,6 +1524,12 @@ export class HistoryManager {
         }
         else {
             container.removeAttribute('aria-activedescendant');
+        }
+        // Restore the focus the innerHTML swap above destroyed. The roving
+        // anchor has already moved to the newly active row, so focus follows it.
+        if (hadFocus) {
+            container.querySelector('.history-channel-item[tabindex="0"]')
+                ?.focus();
         }
         // One delegated CLICK handler per container; replace rather than stack
         // (innerHTML wipes descendants but leaves container listeners).
@@ -1444,9 +1599,28 @@ export class HistoryManager {
         target.focus();
     }
     /** The viewer is the start index (into this.messages) of the rendered cap
-     *  window — the newest MESSAGE_RENDER_CAP rows are kept. */
+     *  window — the newest MESSAGE_RENDER_CAP rows are kept, plus whatever
+     *  older rows the "Show older" button has since unlocked. */
     renderStart() {
-        return Math.max(0, this.messages.length - MESSAGE_RENDER_CAP);
+        return Math.max(0, this.messages.length - MESSAGE_RENDER_CAP - this.renderExtra);
+    }
+    /**
+     * "Show older" — extend the rendered window by one more cap of older rows.
+     * Before this existed, a "Load all" of 1,200 rows left 700 of them in
+     * memory with no control that could ever put them on screen (the find bar
+     * only walks rendered nodes).
+     */
+    showOlderMessages() {
+        const container = document.getElementById('ai-history-messages');
+        const heightBefore = container?.scrollHeight ?? 0;
+        this.renderExtra += MESSAGE_RENDER_CAP;
+        this.renderMessages();
+        if (container) {
+            // The older rows are PREPENDED, so what the user was reading moved
+            // down by exactly the height they added. `+=`, not `=`: assigning
+            // the delta outright is only correct at scrollTop 0.
+            container.scrollTop += container.scrollHeight - heightBefore;
+        }
     }
     /** One message row's markup. Shared by renderMessages() (full build) and
      *  the in-place insert helper so a re-inserted row is byte-identical. */
@@ -1475,24 +1649,46 @@ export class HistoryManager {
         const container = document.getElementById('ai-history-messages');
         if (!container)
             return;
-        // a11y: the viewer is a live log of list items; ATs announce new rows
-        // and can navigate it as a list. (Set every render so a fresh test DOM
-        // / hot reload still gets the roles.)
-        container.setAttribute('role', 'log');
-        container.setAttribute('aria-live', 'polite');
-        container.setAttribute('aria-relevant', 'additions');
+        // a11y: the role is set PER BRANCH below, not once here. This container
+        // used to be a permanent role="log" + aria-live="polite" +
+        // aria-relevant="additions", which was wrong twice over: every full
+        // render replaces up to 500 children at once, so opening a channel
+        // queued the whole transcript for announcement instead of one row; and
+        // role=listitem children inside a `log` lose their list semantics
+        // entirely (no "item 3 of 200" navigation). It is bulk-rendered, never
+        // appended to, so it is a list — announcements come from the toasts.
+        // (Set every render so a fresh test DOM / hot reload still gets it.)
+        //
+        // The cap note is a SIBLING (see overflowNote), so EVERY branch below
+        // has to say what it shows — an early return that just leaves it alone
+        // strands a "newest 500 of…" above an empty state. It is written once
+        // per render (never cleared-then-refilled) because it is a live region.
+        const note = this.overflowNote('ai-history-overflow', container, 'before');
+        if (note && !note.dataset.historyBound) {
+            note.dataset.historyBound = '1';
+            note.addEventListener('click', (e) => {
+                if (!e.target.closest('#ai-history-show-older'))
+                    return;
+                this.showOlderMessages();
+            });
+        }
         if (this.currentChannelId === null) {
-            // Iconographic "pick a channel" empty state.
+            // Iconographic "pick a channel" empty state. Not a list: its
+            // children are a heading and a paragraph.
+            this.setOverflowNote(note, '');
+            container.setAttribute('role', 'group');
             container.innerHTML = `
                 <div class="empty-state">
                     ${icon('history')}
                     <h3>No channel selected</h3>
-                    <p>Pick a channel on the left to view its AI chat history.</p>
+                    <p>Pick a channel on the left to read, edit, or delete its saved AI chat history.</p>
                 </div>`;
             return;
         }
         if (this.loading) {
             // Spinner + skeleton rows while the load is in flight.
+            this.setOverflowNote(note, '');
+            container.setAttribute('role', 'group');
             container.innerHTML = `
                 <div class="history-loading" role="status" aria-live="polite">
                     <div class="loading-spinner" aria-hidden="true"></div>
@@ -1504,6 +1700,8 @@ export class HistoryManager {
             return;
         }
         if (this.messages.length === 0) {
+            this.setOverflowNote(note, '');
+            container.setAttribute('role', 'group');
             container.innerHTML = `
                 <div class="empty-state">
                     ${icon('inbox')}
@@ -1514,12 +1712,18 @@ export class HistoryManager {
         }
         // Cap the render at the newest rows; messages arrive ascending by id
         // so the slice keeps the most recent ones. The cap note is a status
-        // region so ATs announce that older rows are hidden.
+        // region so ATs announce that older rows are hidden — and it carries
+        // the only control that can reach them.
         const start = this.renderStart();
-        const note = start > 0
-            ? `<div class="history-overflow-note" role="status">Showing the newest ${MESSAGE_RENDER_CAP} of ${this.messages.length} loaded messages</div>`
-            : '';
-        container.innerHTML = note + this.messages.slice(start)
+        this.setOverflowNote(note, start > 0
+            ? `<span>Showing the newest ${this.messages.length - start}`
+                + ` of ${this.messages.length} loaded messages</span> `
+                + `<button type="button" class="btn btn-sm" id="ai-history-show-older">`
+                + `Show ${MESSAGE_RENDER_CAP} older</button>`
+            : '');
+        // Only the rows branch is a real list — every child is a role=listitem.
+        container.setAttribute('role', 'list');
+        container.innerHTML = this.messages.slice(start)
             .map((m, i) => this.messageRowHtml(m, start + i))
             .join('');
         this.bindMessageHandlers(container);
@@ -1575,6 +1779,9 @@ export class HistoryManager {
         const actionsEl = row.querySelector('.history-msg-actions');
         if (actionsEl)
             actionsEl.style.removeProperty('display');
+        // The textContent write above destroyed the editor the user's focus was
+        // in (the Save button, or the textarea itself) — take it back.
+        this.refocusRow(Number(row.dataset.idx));
         return true;
     }
     /**

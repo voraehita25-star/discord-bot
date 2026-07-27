@@ -286,6 +286,37 @@ describe('ContextWindowIndicator persistent-document footprint', () => {
         expect(document.getElementById('context-bar-fill')!.style.width).toBe('25%');
     });
 
+    it('shrinks the pending attach estimate when a document is deleted', () => {
+        const cw = new ContextWindowIndicator();
+        cw.update('c1', mkUsage(25_000, 100_000));               // real reading -> 25%
+        cw.addPendingDocumentChars('c1', 100_000);               // attach -> +25k estimate -> 50%
+        cw.setDocumentFootprint('c1', 100_000, 100_000, true);   // authoritative footprint agrees
+        expect(document.getElementById('context-bar-fill')!.style.width).toBe('50%');
+
+        cw.setDocumentFootprint('c1', 0, 100_000, true);         // that document is deleted
+        // Used to stay at 50%: restore() takes the cached branch and overlaid the
+        // pending estimate, which nothing ever decremented.
+        expect(document.getElementById('context-bar-fill')!.style.width).toBe('25%');
+    });
+
+    it('shrinks the estimate by only the deleted document, keeping the rest', () => {
+        const cw = new ContextWindowIndicator();
+        cw.update('c1', mkUsage(10_000, 100_000));               // real reading -> 10%
+        cw.addPendingDocumentChars('c1', 80_000);                // +20k estimate -> 30%
+        cw.setDocumentFootprint('c1', 80_000, 100_000, true);    // 20k footprint
+        cw.setDocumentFootprint('c1', 40_000, 100_000, true);    // one of two docs deleted (-10k)
+        // 10k reading + 10k surviving estimate = 20%.
+        expect(document.getElementById('context-bar-fill')!.style.width).toBe('20%');
+    });
+
+    it('leaves the estimate alone when the footprint GROWS (a new attach)', () => {
+        const cw = new ContextWindowIndicator();
+        cw.update('c1', mkUsage(25_000, 100_000));
+        cw.addPendingDocumentChars('c1', 100_000);               // +25k -> 50%
+        cw.setDocumentFootprint('c1', 400_000, 100_000, true);   // footprint grew to 100k
+        expect(document.getElementById('context-bar-fill')!.style.width).toBe('50%');
+    });
+
     it('forget() drops the footprint so restore() no longer paints it', () => {
         const cw = new ContextWindowIndicator();
         cw.setDocumentFootprint('c1', 100_000, 100_000, false);

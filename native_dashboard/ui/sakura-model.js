@@ -74,6 +74,10 @@ const U_SEGS = 26;
 const V_SEGS = 20;
 /** Floats per instance; must match the attribute layout in the constructor. */
 const INSTANCE_FLOATS = 24;
+/** How long a window drag has to settle before the two multisampled drawing
+ *  buffers are re-allocated. Matches the 150-250ms the rest of the app uses for
+ *  its resize work (see the chart redraw's debounce in app.ts). */
+const BUFFER_RESIZE_DELAY_MS = 150;
 const VERT = `#version 300 es
 precision highp float;
 
@@ -347,6 +351,21 @@ class PetalLayer {
         if (!gl)
             return;
         this.gl = gl;
+        // A Windows TDR, a driver update, an RDP session change or a
+        // hybrid-graphics handoff all fire `webglcontextlost` on this canvas.
+        // With no listener the default action stands — the context can NEVER be
+        // restored — while `ok` stayed true, so the physics loop kept
+        // integrating 44 petals and issuing gl.clear + drawElementsInstanced
+        // into a dead context every frame, forever. The user saw the field
+        // vanish for good and paid the simulation cost indefinitely; restarting
+        // the app was the only way back. preventDefault() is what makes the
+        // browser willing to hand a restored context back at all.
+        // (dispose() calls loseContext(), so this also fires on normal teardown
+        // — harmless, `ok` is going false there anyway.)
+        this.canvas.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            this.ok = false;
+        });
         const vs = compile(gl, gl.VERTEX_SHADER, VERT);
         const fs = compile(gl, gl.FRAGMENT_SHADER, FRAG);
         const prog = gl.createProgram();
@@ -510,7 +529,21 @@ export class SakuraRenderer {
     nearList = [];
     cssW = 0;
     cssH = 0;
-    ok;
+    /** Pending drawing-buffer reallocation — see resize(). */
+    bufferTimer = null;
+    /** False until the buffers have been sized once, so the FIRST resize is
+     *  applied synchronously and the field never opens through a 300x150
+     *  default buffer stretched over the window. */
+    buffersSized = false;
+    restoreFired = false;
+    restoreCleanup = null;
+    /** Live, not a constructor snapshot: a lost GL context flips a layer's `ok`
+     *  to false at any moment, and render()/resize() must stop feeding a dead
+     *  context. It used to be `readonly ok: boolean` assigned once, which meant
+     *  nothing could ever observe the loss. */
+    get ok() {
+        return this.far.ok && this.near.ok;
+    }
     /** Cheap probe so callers can fall back before building anything. */
     static isSupported() {
         try {
@@ -526,7 +559,6 @@ export class SakuraRenderer {
         // panels; z-index 2 passes in front. That occlusion IS the parallax.
         this.far = new PetalLayer(0);
         this.near = new PetalLayer(2);
-        this.ok = this.far.ok && this.near.ok;
         if (!this.ok) {
             this.far.dispose();
             this.near.dispose();
@@ -535,16 +567,70 @@ export class SakuraRenderer {
         container.appendChild(this.far.canvas);
         container.appendChild(this.near.canvas);
     }
+    /**
+     * Fires once when a lost GL context comes back.
+     *
+     * Everything the layers own — program, VAO, buffers, uniform locations —
+     * died with the context, so there is nothing to patch up in place: the owner
+     * has to dispose this renderer and build a new one. It has to happen HERE
+     * and not from the frame loop, because a context created during a driver
+     * reset usually creates fine and is then immediately lost again — retrying
+     * per frame would be a create/destroy loop over two WebGL contexts for the
+     * whole length of the reset.
+     */
+    onContextRestored(cb) {
+        const once = () => {
+            // Both canvases lose and regain their context together; the owner
+            // rebuilds the whole renderer, so the second event must be ignored.
+            if (this.restoreFired)
+                return;
+            this.restoreFired = true;
+            cb();
+        };
+        this.far.canvas.addEventListener('webglcontextrestored', once);
+        this.near.canvas.addEventListener('webglcontextrestored', once);
+        this.restoreCleanup = () => {
+            this.far.canvas.removeEventListener('webglcontextrestored', once);
+            this.near.canvas.removeEventListener('webglcontextrestored', once);
+        };
+    }
     resize(cssW, cssH) {
         if (!this.ok)
             return;
+        // The CSS size is applied IMMEDIATELY: it is handed to the shader as
+        // uViewport, and the simulation already uses the live container size
+        // every frame. Deferring it would map petals in the newly exposed strip
+        // past NDC 1, so they would blink out of existence until the timer fired.
         this.cssW = cssW;
         this.cssH = cssH;
+        // The drawing buffers are what get deferred. `resize` fires roughly once
+        // per frame while a window edge is dragged and both contexts are
+        // antialias:true, so every single event threw away and re-created two
+        // MULTISAMPLED buffers (~66MB at 1920x1080 dpr 1) — GB/s of VRAM churn
+        // for the length of the drag, a visibly stuttering resize, and a real
+        // risk of context loss on a constrained GPU. Between the event and the
+        // timer the canvases (width/height:100%) simply stretch: a decorative
+        // blur, the same trade the chart redraw already makes.
+        if (!this.buffersSized) {
+            this.buffersSized = true;
+            this.applyBufferSize();
+            return;
+        }
+        if (this.bufferTimer !== null)
+            clearTimeout(this.bufferTimer);
+        this.bufferTimer = window.setTimeout(() => {
+            this.bufferTimer = null;
+            this.applyBufferSize();
+        }, BUFFER_RESIZE_DELAY_MS);
+    }
+    applyBufferSize() {
+        if (!this.ok)
+            return;
         // Cap the device ratio: the field is decorative and a 3× buffer on a
         // 4K panel costs far more than it shows.
         const dpr = Math.min(2, window.devicePixelRatio || 1);
-        this.far.resize(cssW, cssH, dpr);
-        this.near.resize(cssW, cssH, dpr);
+        this.far.resize(this.cssW, this.cssH, dpr);
+        this.near.resize(this.cssW, this.cssH, dpr);
     }
     render(list, light, ambient) {
         if (!this.ok)
@@ -562,6 +648,16 @@ export class SakuraRenderer {
         this.near.draw(this.nearList, this.cssW, this.cssH, light, ambient);
     }
     dispose() {
+        // Drop the pending buffer resize with the layers. A late fire is
+        // already a no-op (PetalLayer.resize early-returns once `ok` is false),
+        // but leaving a live timer holding this renderer after teardown keeps
+        // two dead canvases reachable until it expires.
+        if (this.bufferTimer !== null) {
+            clearTimeout(this.bufferTimer);
+            this.bufferTimer = null;
+        }
+        this.restoreCleanup?.();
+        this.restoreCleanup = null;
         this.far.dispose();
         this.near.dispose();
     }

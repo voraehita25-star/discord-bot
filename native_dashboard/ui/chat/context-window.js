@@ -243,17 +243,40 @@ export class ContextWindowIndicator {
         if (!conversationId)
             return;
         const chars = Number.isFinite(totalChars) && totalChars > 0 ? totalChars : 0;
-        if (chars <= 0 || !Number.isFinite(contextWindow) || contextWindow <= 0) {
+        // Same ~4-chars/token heuristic as addPendingDocumentChars so the two
+        // doc estimates agree; a real reading supersedes both. Computed ONCE and
+        // reused by both the shrink math and the footprint write below, so the
+        // two can never disagree about how many tokens this frame represents
+        // (0 here means exactly the old delete-branch condition: no chars, or an
+        // unusable context window).
+        const newTokens = (chars > 0 && Number.isFinite(contextWindow) && contextWindow > 0)
+            ? Math.ceil(chars / 4)
+            : 0;
+        // A shrinking footprint means a document was DELETED. The pending
+        // estimate added by addPendingDocumentChars on attach used to survive
+        // that: restore() takes the `cached` branch and overlays the stale
+        // estimate, so the bar kept reporting the deleted document's tokens
+        // until the next real token_usage frame (i.e. the next message sent).
+        // Shrink the estimate by the same delta the authoritative footprint lost.
+        const prevTokens = this.docFootprint.get(conversationId)?.total_tokens ?? 0;
+        if (newTokens < prevTokens) {
+            // Clamped, not trusted: the ~4-chars/token ceil is applied per-attach
+            // in addPendingDocumentChars but over the whole total here, so the
+            // delta can overshoot by a token or two.
+            const pending = Math.max(0, (this.pendingDocTokens.get(conversationId) ?? 0) - (prevTokens - newTokens));
+            if (pending > 0)
+                this.pendingDocTokens.set(conversationId, pending);
+            else
+                this.pendingDocTokens.delete(conversationId);
+        }
+        if (newTokens <= 0) {
             this.docFootprint.delete(conversationId);
         }
         else {
-            // Same ~4-chars/token heuristic as addPendingDocumentChars so the two
-            // doc estimates agree; a real reading supersedes both.
-            const tokens = Math.ceil(chars / 4);
             this.docFootprint.set(conversationId, {
-                input_tokens: tokens,
+                input_tokens: newTokens,
                 output_tokens: 0,
-                total_tokens: tokens,
+                total_tokens: newTokens,
                 context_window: contextWindow,
             });
         }

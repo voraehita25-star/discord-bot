@@ -235,15 +235,43 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
             .join('')}</div>`;
     }
 
-    // Thinking container (collapsed by default; click-to-expand is wired in ChatManager).
+    // Message identity. Computed HERE rather than next to the action buttons
+    // because the thinking container below needs it too, and a `const` read
+    // above its declaration is a use-before-declaration error, not a hoist.
+    //
+    // Coerce ``msg.id`` to a numeric string before interpolation — even though
+    // the WS schema types it as ``number``, a hostile or buggy server could
+    // ship a string with an embedded ``"`` that would break out of the
+    // ``data-msg-id="..."`` attribute and run inline event handlers.
+    const _rawId = msg.id;
+    const _idNum = typeof _rawId === 'number' ? _rawId : Number(_rawId);
+    const msgId: string = Number.isFinite(_idNum) && _idNum >= 0 ? String(Math.trunc(_idNum)) : '';
+    const msgIdxSafe: string = String(Math.trunc(Number(msgIdx) || 0));
+
+    // Thinking container (collapsed by default; the toggle is wired in ChatManager).
+    //
+    // ``data-thinking-id`` is the key ChatManager uses to re-open a section the
+    // user had expanded: the expand state lives only as a class on a node that
+    // the next ``container.innerHTML = …`` destroys, so every re-render (a send,
+    // a pin, an edit ack) used to slam every open thought process shut. Emitted
+    // ONLY for a real server id — a locally-pushed message (right after
+    // stream_end, before a reload) yields msgId === '', and every id-less block
+    // sharing that one empty key would expand as a group.
+    //
+    // The header was a bare <div class="thinking-header"> with nothing but
+    // cursor:pointer — no role, no tab stop, no announced state — so a keyboard
+    // user could not open it at all and a screen reader was never told the
+    // control existed. The ▼/▶ affordance is a CSS ::after glyph, invisible to
+    // AT, so aria-expanded is the only thing that can carry the state.
     let thinkingHtml = '';
     if (!isUser && msg.thinking) {
+        const thinkingIdAttr = msgId ? ` data-thinking-id="${msgId}"` : '';
         thinkingHtml = `
-            <div class="thinking-container">
-                <div class="thinking-header collapsible collapsed">
+            <div class="thinking-container"${thinkingIdAttr}>
+                <div class="thinking-header collapsible collapsed" role="button" tabindex="0" aria-expanded="false" aria-controls="thinking-${msgIdxSafe}">
                     Thought Process
                 </div>
-                <div class="thinking-content collapsed">${deps.formatMessage(msg.thinking)}</div>
+                <div class="thinking-content collapsed" id="thinking-${msgIdxSafe}">${deps.formatMessage(msg.thinking)}</div>
             </div>
         `;
     }
@@ -255,14 +283,7 @@ function renderSingleMessage(msg: ChatMessage, msgIdx: number, mctx: PerMessageC
 
     // Action buttons. All carry data-msg-id / data-msg-idx so the click
     // delegation bound in ChatManager.renderMessages can dispatch correctly.
-    // Coerce ``msg.id`` to a numeric string before interpolation — even though
-    // the WS schema types it as ``number``, a hostile or buggy server could
-    // ship a string with an embedded ``"`` that would break out of the
-    // ``data-msg-id="..."`` attribute and run inline event handlers.
-    const _rawId = msg.id;
-    const _idNum = typeof _rawId === 'number' ? _rawId : Number(_rawId);
-    const msgId: string = Number.isFinite(_idNum) && _idNum >= 0 ? String(Math.trunc(_idNum)) : '';
-    const msgIdxSafe: string = String(Math.trunc(Number(msgIdx) || 0));
+    // (msgId / msgIdxSafe are coerced above, next to the thinking container.)
     const copyBtn = `<button class="copy-message-btn" data-content="${escapeHtml(msg.content)}" title="Copy">${icon('copy')} Copy</button>`;
     const editBtn = `<button class="edit-message-btn" data-msg-id="${msgId}" data-msg-idx="${msgIdxSafe}" title="Edit">${icon('pencil')} Edit</button>`;
     const aiEditBtn = (!isUser && msgId)

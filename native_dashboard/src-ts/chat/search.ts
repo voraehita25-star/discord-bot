@@ -16,6 +16,8 @@
  * naturally on every re-render — callers don't need to call clear() first.
  */
 
+import { scrollBehavior } from '../shared.js';
+
 type GetContainer = () => HTMLElement | null;
 
 export class ChatSearch {
@@ -162,7 +164,10 @@ export class ChatSearch {
         this.matches.forEach(m => m.classList.remove('active'));
         const target = this.matches[idx];
         target.classList.add('active');
-        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        // behavior via scrollBehavior(), not a hard-coded 'smooth': the option
+        // beats the CSS `scroll-behavior` property, so 'smooth' here animated
+        // the whole transcript past the viewport even with reduce-motion on.
+        target.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
         this.currentIdx = idx;
         const countEl = document.getElementById('chat-search-count');
         if (countEl) countEl.textContent = this.formatCount(idx + 1);

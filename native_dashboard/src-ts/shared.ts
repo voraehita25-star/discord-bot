@@ -121,6 +121,43 @@ export function countLabel(n: number, singular: string, plural = `${singular}s`)
 }
 
 // ============================================================================
+// Motion preferences
+// ============================================================================
+
+/**
+ * True when the OS "reduce motion" setting is on.
+ *
+ * The one place this query lives. It was copy-pasted inline at every call
+ * site, so each new animation had to remember the incantation — and the
+ * programmatic scrolls simply never did.
+ *
+ * Fails OPEN (reports "no preference") when `matchMedia` is unavailable.
+ * WebView2 always has it, but this is now on the scroll hot path: a throw
+ * inside a scroll handler would break search-stepping and scroll-to-bottom
+ * outright, which is a far worse outcome than losing the motion preference —
+ * and 'smooth' is exactly what those call sites hard-coded before anyway.
+ */
+export function prefersReducedMotion(): boolean {
+    return typeof window.matchMedia === 'function'
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+/**
+ * The `behavior` to pass to `scrollIntoView()` / `scrollTo()`.
+ *
+ * CSS cannot cover this. Per CSSOM-View the `behavior` OPTION is consulted
+ * first and the CSS `scroll-behavior` property is only consulted when that
+ * option is `"auto"` — so a hard-coded `behavior: 'smooth'` bypasses the
+ * `scroll-behavior: auto !important` reduced-motion override in styles.css
+ * entirely. Stepping through search matches in a long transcript therefore
+ * still animated the whole conversation past the viewport, which is exactly
+ * the large-area motion the setting exists to suppress.
+ */
+export function scrollBehavior(): ScrollBehavior {
+    return prefersReducedMotion() ? 'auto' : 'smooth';
+}
+
+// ============================================================================
 // Error Logger - Logs frontend errors to file for debugging
 // ============================================================================
 
@@ -398,7 +435,8 @@ export function loadSettings(): void {
         const saved = localStorage.getItem('dashboard-settings');
         if (saved) {
             const defaultAiAvatar = settings.aiAvatar; // Keep default Faust avatar
-            settings = { ...settings, ...JSON.parse(saved) };
+            const parsed: unknown = JSON.parse(saved);
+            settings = { ...settings, ...(parsed as Partial<Settings>) };
             // Defensive: a corrupt/tampered localStorage blob must not poison
             // runtime. Coerce the fields that drive timers / the theme attr /
             // chart buffers, so e.g. a string or negative refreshInterval can't
@@ -426,9 +464,19 @@ export function loadSettings(): void {
             if (typeof settings.userName !== 'string') settings.userName = 'You';
             if (typeof settings.userAvatar !== 'string') settings.userAvatar = '';
             if (typeof settings.aiAvatar !== 'string') settings.aiAvatar = '';
-            // Migration: Only set default Faust avatar if saved aiAvatar is empty/undefined
-            // Don't override custom avatars that users have set
-            if (!settings.aiAvatar) {
+            // Migration: only hand back the default Faust avatar to a blob that
+            // predates the key. `!settings.aiAvatar` alone could not tell "this
+            // save is older than aiAvatar" from "the user pressed Remove AI
+            // Avatar", so Remove was silently undone on the next launch — the
+            // avatar came back and the removal looked like it had never
+            // happened. `'aiAvatar' in parsed` draws that line: an explicitly
+            // saved empty string is a deliberate choice and is left alone. The
+            // typeof guard is load-bearing, not decoration — `in` throws a
+            // TypeError on a primitive, and a tampered localStorage blob can
+            // parse to `"x"`, `7` or `null`, which would take the whole
+            // settings load down with it.
+            const hadAvatarKey = !!parsed && typeof parsed === 'object' && 'aiAvatar' in parsed;
+            if (!settings.aiAvatar && !hadAvatarKey) {
                 settings.aiAvatar = defaultAiAvatar;
                 saveSettings(); // Save the migration
             }
@@ -643,7 +691,7 @@ function setupButtonRipple(): void {
  */
 function setupCardTilt(): void {
     if (window.matchMedia('(hover: none)').matches) return;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (prefersReducedMotion()) return;
 
     const selector = '.stat-card, .role-card';
     // ``WeakMap<card, AbortController>`` so both the listeners AND the
@@ -831,7 +879,7 @@ export function animateNumber(
     el.dataset.animValue = String(to);
 
     // Respect reduced motion — just set the final value
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (prefersReducedMotion()) {
         el.textContent = prefix + formatN(to, decimals, useLocale) + suffix;
         return;
     }

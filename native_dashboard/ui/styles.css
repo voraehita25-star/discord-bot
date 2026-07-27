@@ -206,7 +206,14 @@ html[data-theme="light"] kbd {
     background: var(--accent-cyan);
     color: white;
     border: none;
-    box-shadow: var(--shadow-glow);
+    /* NO box-shadow. This rule matches every <kbd> on the page, including the
+       six `Ctrl+N` chips in the nav rail — and those are deliberately painted
+       flat (orbital.css neutralises their background, border and colour in both
+       themes). --shadow-glow is `0 12px 32px rgba(163,37,93,.14)`: a 32px bloom
+       cast 12px DOWN from a 20px-tall chip, so light theme grew six pink smudges
+       hanging under the rail that dark theme has never had. The glow was never
+       overridden alongside the other three properties because a box-shadow is
+       invisible to a check that reads `background`/`color`. */
 }
 
 /* Toast Notification System.
@@ -1665,11 +1672,15 @@ html[data-theme="light"] .log-line.info {
 /* (.overlay-icon rule removed — the overlay was refactored to the shared
    .empty-state recipe and nothing emits that class anymore.) */
 
-.chat-not-running-overlay h2 {
-    color: var(--text-primary);
-    margin-bottom: 0.5rem;
-    font-size: 1.5rem;
-}
+/* (.chat-not-running-overlay h2 removed. It was a leftover from before the
+   overlay was refactored onto the shared .empty-state recipe, and every
+   declaration in it was already being overridden from orbital.css at equal
+   specificity but later source order: font-size by `.empty-state h3,
+   .empty-state h2`, margin by `.empty-state h2, .empty-state h3 { margin: 0 }`
+   (the gap comes from .empty-state's flex `gap` now), and color is re-supplied
+   by `.empty-state h2, .empty-state h3` further down THIS file. Deleting it is
+   a visual no-op — and it was actively misleading, since the heading it named
+   had been an <h3> the whole time. */
 
 .chat-not-running-overlay p {
     color: var(--text-secondary);
@@ -2122,6 +2133,17 @@ html[data-theme="light"] .log-line.info {
      * whichever bound is tighter so the bubble never reaches into the
      * scrollbar gutter on small (sub-600px) viewports. */
     max-width: min(85%, calc(100% - 48px));
+}
+
+/* The entrance is opt-in per bubble (.is-new is stamped by chat-manager on the
+   one genuinely new node) and NOT on the bare .chat-message. renderMessages()
+   assigns container.innerHTML, so every bubble is a brand-new node and re-fired
+   messageIn: sending a single message made the entire visible history — up to
+   150 bubbles — fade in from opacity 0 and slide 10px at once, on every send,
+   retry, edit/delete ack, avatar change and pin/like click. It also promoted
+   that many elements to compositor layers for 300ms on top of the sakura rAF
+   loop. */
+.chat-message.is-new {
     animation: messageIn 0.3s ease;
 }
 
@@ -4089,6 +4111,17 @@ html[data-theme="light"] .thinking-content .md-hr {
     cursor: pointer;
 }
 
+/* The disclosure became a real tab stop (role=button + tabindex=0) — before that
+   `cursor: pointer` was its whole affordance and a keyboard user could not open
+   a thought process at all. A tab stop with no visible ring is the next defect
+   along, so give it one. Purple, not the house cyan, because the header sits on
+   a cyan-tinted panel; and the offset is NEGATIVE because .thinking-container is
+   `overflow: hidden` and would clip an outward ring on the header's top edge. */
+.thinking-header.collapsible:focus-visible {
+    outline: 2px solid var(--accent-purple);
+    outline-offset: -2px;
+}
+
 .thinking-header.collapsible::after {
     content: '▼';
     font-size: 0.7rem;
@@ -4797,10 +4830,14 @@ html[data-theme="light"] .toast::before {
     opacity: 0.8;
 }
 
-/* Edit/delete buttons — hidden until the row is hovered (matches .message-actions). */
+/* Edit/delete buttons — dimmed at rest, full on hover/focus (matches
+   .message-actions, which the old comment already claimed while sitting at
+   opacity 0). At 0 they were genuinely invisible: this page's entire reason to
+   exist is correcting what the bot remembers, and the only two sentences on it
+   say "view", so the capability was reachable only by accidental hovering. */
 .history-msg-actions {
     margin-left: auto;
-    opacity: 0;
+    opacity: 0.6;
     transition: opacity 0.2s ease;
 }
 

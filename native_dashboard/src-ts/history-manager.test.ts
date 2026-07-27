@@ -14,17 +14,19 @@ import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 // Tauri invoke is mocked at module-import time because shared.ts reads it.
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue('') }));
 
-// Minimal mirror of the #page-history DOM from ui/index.html.
+// Minimal mirror of the #page-history DOM from ui/index.html. Both scroll
+// containers keep their tabindex="0" from index.html — jsdom refuses focus() on
+// an element that isn't focusable, and the focus-restore behaviour depends on it.
 const HISTORY_DOM = `
     <div id="toast-container"></div>
     <section id="page-history" class="page">
         <aside class="history-sidebar">
             <button id="ai-history-refresh"></button>
-            <div id="ai-channel-list"></div>
+            <div id="ai-channel-list" tabindex="0"></div>
         </aside>
         <div class="history-main">
             <div id="ai-history-header"></div>
-            <div id="ai-history-messages"></div>
+            <div id="ai-history-messages" tabindex="0"></div>
             <div id="ai-history-load-all-container" class="hidden">
                 <button id="ai-history-load-all">Load all</button>
             </div>
@@ -145,8 +147,40 @@ describe('handleMessage — ai_channels_list', () => {
         hm.handleMessage({ type: 'ai_channels_list', channels });
         const list = document.getElementById('ai-channel-list')!;
         expect(list.querySelectorAll('.history-channel-item').length).toBe(200);
-        expect(list.querySelector('.history-overflow-note')!.textContent)
-            .toContain('1 more channels hidden');
+        // The note is a SIBLING of the listbox, never a child of it — a
+        // role=status div among role=option rows is an invalid listbox.
+        expect(list.querySelector('.history-overflow-note')).toBeNull();
+        const note = document.getElementById('ai-channel-overflow')!;
+        expect(note.textContent).toContain('1 more channels hidden');
+        expect(note.classList.contains('hidden')).toBe(false);
+    });
+
+    it('clears the overflow note once the filter narrows the list under the cap', () => {
+        vi.useFakeTimers();
+        try {
+            const { hm } = mountHistory();
+            hm.handleMessage({
+                type: 'ai_channels_list',
+                channels: Array.from({ length: 201 }, (_, i) => ({
+                    channel_id: String(100000 + i),
+                    name: i === 0 ? 'unique-one' : `channel ${i}`,
+                    message_count: 1,
+                    last_active: null,
+                })),
+            });
+            expect(document.getElementById('ai-channel-overflow')!.textContent)
+                .toContain('more channels hidden');
+            const input = document.getElementById('ai-history-channel-filter') as HTMLInputElement;
+            input.value = 'unique-one';
+            input.dispatchEvent(new Event('input'));
+            vi.advanceTimersByTime(120);
+            // Nothing is hidden any more — a surviving note would lie.
+            const note = document.getElementById('ai-channel-overflow')!;
+            expect(note.textContent).toBe('');
+            expect(note.classList.contains('hidden')).toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 
@@ -177,6 +211,40 @@ describe('openChannel', () => {
         hm.openChannel('918273645546372819'); // > Number.MAX_SAFE_INTEGER territory
         const frame = send.mock.calls[0][0] as { channel_id: unknown };
         expect(typeof frame.channel_id).toBe('string');
+    });
+
+    it('clears the previous channel\'s model, so a failed load cannot leave its counts behind', () => {
+        const { hm } = mountHistory();
+        hm.handleMessage({
+            type: 'ai_channels_list',
+            channels: [
+                { channel_id: CHANNEL_A, name: 'Guild / #a', message_count: 2, last_active: null },
+                { channel_id: CHANNEL_B, name: 'Guild / #b', message_count: 9, last_active: null },
+            ],
+        });
+        hm.openChannel(CHANNEL_A);
+        hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: [makeMessage({ id: 1 }), makeMessage({ id: 2 })],
+            total_count: 2,
+            has_more: true,
+        });
+        expect(document.getElementById('ai-history-header')!.textContent).toContain('2 of 2');
+        // Switch to B and let the load fail: the header used to keep reading
+        // "#b — 2 of 2 messages" (A's numbers) indefinitely, and hm.messages
+        // still held A's rows.
+        hm.openChannel(CHANNEL_B);
+        expect(hm.messages.length).toBe(0);
+        expect(hm.totalCount).toBe(0);
+        expect(hm.hasMore).toBe(false);
+        hm.onError('DB_UNAVAILABLE');
+        const header = document.getElementById('ai-history-header')!;
+        expect(header.textContent).toContain('Guild / #b');
+        expect(header.textContent).not.toContain('2 of 2');
+        // The stale "Load all (2)" affordance is gone too.
+        expect(document.getElementById('ai-history-load-all-container')!
+            .classList.contains('hidden')).toBe(true);
     });
 });
 
@@ -299,7 +367,10 @@ describe('handleMessage — ai_history_loaded', () => {
         const container = document.getElementById('ai-history-messages')!;
         const rows = container.querySelectorAll('.history-msg');
         expect(rows.length).toBe(500);
-        expect(container.querySelector('.history-overflow-note')!.textContent)
+        // The cap note sits OUTSIDE the list (a non-listitem child would break
+        // role="list"), so look for it as a sibling.
+        expect(container.querySelector('.history-overflow-note')).toBeNull();
+        expect(document.getElementById('ai-history-overflow')!.textContent)
             .toContain('newest 500');
         // The oldest row was sliced off, so the FIRST rendered row is
         // messages[1] (absolute idx 1). Clicking its edit button must open
@@ -515,6 +586,54 @@ describe('edit flow', () => {
         (document.querySelector('.edit-cancel-btn') as HTMLElement).click();
         expect(document.querySelector('.edit-textarea')).toBeNull();
         expect(document.getElementById('ai-history-messages')!.textContent).toContain('old text');
+    });
+
+    it('the injected textarea carries an accessible name naming the row it overwrites', () => {
+        const { hm } = mountHistory();
+        loadOneMessage(hm); // a MODEL row
+        (document.querySelector('.history-edit-btn') as HTMLElement).click();
+        expect((document.querySelector('.edit-textarea') as HTMLTextAreaElement)
+            .getAttribute('aria-label')).toBe('Edit model message');
+    });
+
+    it('cancel hands focus back to the row instead of dropping it on <body>', () => {
+        const { hm } = mountHistory();
+        loadOneMessage(hm);
+        (document.querySelector('.history-edit-btn') as HTMLElement).click();
+        // The editor owns focus; the re-render destroys that node.
+        expect(document.activeElement).toBe(document.querySelector('.edit-textarea'));
+        (document.querySelector('.edit-cancel-btn') as HTMLElement).click();
+        const active = document.activeElement as HTMLElement;
+        expect(active.classList.contains('history-edit-btn')).toBe(true);
+        expect(active.closest('.history-msg')!.getAttribute('data-idx')).toBe('0');
+    });
+
+    it('cancel does NOT steal focus the user has moved elsewhere', () => {
+        const { hm } = mountHistory();
+        loadOneMessage(hm);
+        (document.querySelector('.history-edit-btn') as HTMLElement).click();
+        const refresh = document.getElementById('ai-history-refresh') as HTMLElement;
+        refresh.focus();
+        hm.cancelEdit();
+        expect(document.activeElement).toBe(refresh);
+    });
+
+    it('the save ack hands focus back after the editor node is patched away', () => {
+        const { hm } = mountHistory();
+        loadOneMessage(hm);
+        (document.querySelector('.history-edit-btn') as HTMLElement).click();
+        (document.querySelector('.edit-textarea') as HTMLTextAreaElement).value = 'new text';
+        (document.querySelector('.edit-save-btn') as HTMLElement).click();
+        hm.handleMessage({
+            type: 'ai_history_message_edited',
+            channel_id: CHANNEL_A,
+            id: 7,
+            content: 'new text',
+            live_session: 'patched',
+            live_session_patched: true,
+        });
+        expect((document.activeElement as HTMLElement).classList.contains('history-edit-btn'))
+            .toBe(true);
     });
 
     it('rejects oversize content client-side (toast, no send, editor stays open)', () => {
@@ -1810,6 +1929,42 @@ describe('undo flow', () => {
             content: 'b original',
         });
     });
+
+    it('Cancel during an in-flight save keeps the mutation gate held (the edit stays undoable)', async () => {
+        const { hm, send } = mountHistory();
+        loadTwoMessages(hm);
+        (document.querySelectorAll('.history-edit-btn')[0] as HTMLElement).click();
+        (document.querySelector('.edit-textarea') as HTMLTextAreaElement).value = 'edited first';
+        (document.querySelector('.edit-save-btn') as HTMLElement).click();
+        // Esc / Cancel while the save is still on the wire: the editor closes,
+        // but the one-mutation-at-a-time gate must NOT be released. It used to
+        // be, and a delete started in that window overwrote the single
+        // pendingUndoCandidate slot — the just-saved edit then arrived to a
+        // kind-mismatched candidate and was silently non-undoable.
+        hm.cancelEdit();
+        expect(document.querySelector('.edit-textarea')).toBeNull();
+        send.mockClear();
+        await hm.requestDelete(1);
+        expect(send).not.toHaveBeenCalled();
+        // The edit's own ack still promotes its undo entry.
+        hm.handleMessage({
+            type: 'ai_history_message_edited',
+            channel_id: CHANNEL_A,
+            id: 7,
+            content: 'edited first',
+            live_session: 'patched',
+            live_session_patched: true,
+        });
+        expect(undoBtn().disabled).toBe(false);
+        send.mockClear();
+        undoBtn().click();
+        expect(send).toHaveBeenCalledWith({
+            type: 'edit_ai_history_message',
+            channel_id: CHANNEL_A,
+            id: 7,
+            content: 'first message',
+        });
+    });
 });
 
 // ============================================================================
@@ -1845,6 +2000,75 @@ describe('channel list — keyboard accessibility', () => {
             expect(o.getAttribute('aria-selected')).toBe('false');
             expect(o.hasAttribute('tabindex')).toBe(true);
         });
+    });
+
+    it('is a listbox ONLY while its children are options (group in both empty states)', () => {
+        vi.useFakeTimers();
+        try {
+            const { hm } = mountHistory();
+            const list = document.getElementById('ai-channel-list')!;
+            hm.handleMessage({ type: 'ai_channels_list', channels: [] });
+            // A listbox whose only children are an <h3> and a <p> is invalid
+            // ARIA — AT announced "listbox, 0 items" and never read the state.
+            expect(list.getAttribute('role')).toBe('group');
+            expect(list.getAttribute('aria-label')).toBe('AI history channels');
+            loadChannels(hm);
+            expect(list.getAttribute('role')).toBe('listbox');
+            // Filtering to zero matches is the ordinary interaction the e2e axe
+            // pass never reaches, so it is covered here instead.
+            const input = document.getElementById('ai-history-channel-filter') as HTMLInputElement;
+            input.value = 'zzzz-nope';
+            input.dispatchEvent(new Event('input'));
+            vi.advanceTimersByTime(120);
+            expect(list.getAttribute('role')).toBe('group');
+            // The name survives every role switch.
+            expect(list.getAttribute('aria-label')).toBe('AI history channels');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('keeps keyboard focus on the list when activating a row re-renders it', () => {
+        const { hm } = mountHistory();
+        loadChannels(hm);
+        const list = document.getElementById('ai-channel-list')!;
+        const row = list.querySelectorAll('[role="option"]')[1] as HTMLElement;
+        row.focus();
+        row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        // openChannel rebuilt the list, destroying the focused node. Focus must
+        // follow the roving anchor onto the row that replaced it — it used to
+        // fall to <body>, so the next Tab restarted at the top of the document.
+        const active = document.activeElement as HTMLElement;
+        expect(active.classList.contains('history-channel-item')).toBe(true);
+        expect(active.dataset.channelId).toBe('100001');
+        expect(active.getAttribute('tabindex')).toBe('0');
+    });
+
+    it('a rebuild while the CONTAINER holds focus leaves it there (scrolling, not picking)', () => {
+        const { hm } = mountHistory();
+        loadChannels(hm);
+        const list = document.getElementById('ai-channel-list') as HTMLElement;
+        list.focus(); // tabbed into the scroll region, no option focused
+        loadChannels(hm, 4); // e.g. a Refresh landing
+        expect(document.activeElement).toBe(list);
+    });
+
+    it('filtering down to zero matches keeps focus inside the list', () => {
+        vi.useFakeTimers();
+        try {
+            const { hm } = mountHistory();
+            loadChannels(hm);
+            const list = document.getElementById('ai-channel-list') as HTMLElement;
+            (list.querySelectorAll('[role="option"]')[0] as HTMLElement).focus();
+            const input = document.getElementById('ai-history-channel-filter') as HTMLInputElement;
+            input.value = 'zzzz-nope';
+            input.dispatchEvent(new Event('input'));
+            vi.advanceTimersByTime(120);
+            // No options left to focus, so the scroll container takes it.
+            expect(document.activeElement).toBe(list);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('uses a roving tabindex — exactly one option is tabbable', () => {
@@ -2076,7 +2300,7 @@ describe('transcript find', () => {
 // ============================================================================
 
 describe('message viewer semantics + states', () => {
-    it('the viewer is a role=log and rows are role=listitem with a role-conveying aria-label', () => {
+    it('the viewer is a role=list and rows are role=listitem with a role-conveying aria-label', () => {
         const { hm } = mountHistory();
         hm.openChannel(CHANNEL_A);
         hm.handleMessage({
@@ -2090,11 +2314,46 @@ describe('message viewer semantics + states', () => {
             has_more: false,
         });
         const container = document.getElementById('ai-history-messages')!;
-        expect(container.getAttribute('role')).toBe('log');
+        // role=list, NOT log: role=listitem children lose their list semantics
+        // inside a `log`, and a log's implicit aria-live re-announced all 500
+        // rows on every bulk render. No live semantics survive here.
+        expect(container.getAttribute('role')).toBe('list');
+        expect(container.hasAttribute('aria-live')).toBe(false);
+        expect(container.hasAttribute('aria-relevant')).toBe(false);
         const rows = container.querySelectorAll('.history-msg[role="listitem"]');
         expect(rows.length).toBe(2);
         expect(rows[0].getAttribute('aria-label')).toBe('User message');
         expect(rows[1].getAttribute('aria-label')).toBe('Model message');
+    });
+
+    it('the viewer is role=group in every non-row state (no list without listitems)', () => {
+        const { hm } = mountHistory();
+        const container = document.getElementById('ai-history-messages')!;
+        // Nothing picked: heading + paragraph, not list items. (cancelEdit is
+        // the shortest public path that re-renders the viewer as-is.)
+        hm.cancelEdit();
+        expect(container.getAttribute('role')).toBe('group');
+        // Loading skeleton.
+        hm.openChannel(CHANNEL_A);
+        expect(container.getAttribute('role')).toBe('group');
+        // Loaded, but the channel is empty.
+        hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: [],
+            total_count: 0,
+            has_more: false,
+        });
+        expect(container.getAttribute('role')).toBe('group');
+    });
+
+    it('the no-channel empty state names all three things the page can do', () => {
+        const { hm } = mountHistory();
+        hm.cancelEdit();  // re-render with nothing picked
+        // "view" alone hid the page's whole point: edit and delete are why the
+        // manager exists, and the row actions are invisible until hover.
+        expect(document.getElementById('ai-history-messages')!.textContent)
+            .toContain('Pick a channel on the left to read, edit, or delete its saved AI chat history.');
     });
 
     it('shows a spinner/skeleton loading pane while a channel load is in flight', () => {
@@ -2169,7 +2428,7 @@ describe('message viewer semantics + states', () => {
         expect(container.textContent).toContain('No messages');
     });
 
-    it('the overflow/cap note is a status region', () => {
+    it('the overflow/cap note is a status region OUTSIDE the list', () => {
         const { hm } = mountHistory();
         hm.openChannel(CHANNEL_A);
         const msgs = Array.from({ length: 501 }, (_, i) =>
@@ -2181,9 +2440,58 @@ describe('message viewer semantics + states', () => {
             total_count: 501,
             has_more: false,
         });
-        const note = document.querySelector('#ai-history-messages .history-overflow-note')!;
+        const note = document.getElementById('ai-history-overflow')!;
         expect(note.getAttribute('role')).toBe('status');
         expect(note.textContent).toContain('newest 500');
+        // Sibling of the viewer, not a child of it.
+        expect(note.parentElement).toBe(
+            document.getElementById('ai-history-messages')!.parentElement);
+    });
+
+    it('"Show older" renders the next 500 older rows; the note clears once none are left', () => {
+        const { hm } = mountHistory();
+        hm.openChannel(CHANNEL_A);
+        // 700 loaded rows: the newest 500 render, 200 were unreachable by any
+        // control before the note grew a button.
+        hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: Array.from({ length: 700 }, (_, i) =>
+                makeMessage({ id: i + 1, content: `m${i}` })),
+            total_count: 700,
+            has_more: false,
+        });
+        const container = document.getElementById('ai-history-messages')!;
+        expect(container.querySelectorAll('.history-msg').length).toBe(500);
+        expect(container.textContent).not.toContain('m0');
+        (document.getElementById('ai-history-show-older') as HTMLElement).click();
+        // All 700 are now rendered, including the oldest row…
+        expect(container.querySelectorAll('.history-msg').length).toBe(700);
+        expect(container.querySelector('.history-msg[data-idx="0"]')!.textContent)
+            .toContain('m0');
+        // …so the note (and its button) has nothing left to offer.
+        const note = document.getElementById('ai-history-overflow')!;
+        expect(note.textContent).toBe('');
+        expect(note.classList.contains('hidden')).toBe(true);
+        expect(document.getElementById('ai-history-show-older')).toBeNull();
+    });
+
+    it('a fresh load resets the "Show older" expansion back to the newest cap', () => {
+        const { hm } = mountHistory();
+        hm.openChannel(CHANNEL_A);
+        const msgs = Array.from({ length: 700 }, (_, i) =>
+            makeMessage({ id: i + 1, content: `m${i}` }));
+        hm.handleMessage({
+            type: 'ai_history_loaded', channel_id: CHANNEL_A,
+            messages: msgs, total_count: 700, has_more: false,
+        });
+        (document.getElementById('ai-history-show-older') as HTMLElement).click();
+        expect(document.querySelectorAll('.history-msg').length).toBe(700);
+        hm.handleMessage({
+            type: 'ai_history_loaded', channel_id: CHANNEL_A,
+            messages: msgs, total_count: 700, has_more: false,
+        });
+        expect(document.querySelectorAll('.history-msg').length).toBe(500);
     });
 });
 
@@ -2255,6 +2563,27 @@ describe('in-place row updates', () => {
         expect(row9.dataset.idx).toBe('1');
         (row9.querySelector('.history-edit-btn') as HTMLElement).click();
         expect((document.querySelector('.edit-textarea') as HTMLTextAreaElement).value).toBe('three');
+    });
+
+    it('a delete ack hands focus to the row that took the deleted one\'s place', async () => {
+        const { hm } = mountHistory();
+        loadFour(hm);
+        const container = document.getElementById('ai-history-messages')!;
+        (container.querySelector('.history-msg[data-id="8"] .history-delete-btn') as HTMLElement)
+            .focus();
+        await hm.requestDelete(1); // id 8
+        hm.handleMessage({
+            type: 'ai_history_message_deleted',
+            channel_id: CHANNEL_A,
+            id: 8,
+            live_session: 'patched',
+            live_session_patched: true,
+            total_count: 3,
+        });
+        // row.remove() destroyed the focused Delete button; focus must land on
+        // the row now occupying that index (id 9) rather than on <body>.
+        const active = document.activeElement as HTMLElement;
+        expect(active.closest('.history-msg')!.getAttribute('data-id')).toBe('9');
     });
 
     it('a restore ack inserts only the affected row at its id-sorted spot', async () => {

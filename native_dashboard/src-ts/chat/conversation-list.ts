@@ -58,14 +58,31 @@ export class ConversationList {
         // sibling node above it (see index.html).
         this.setupFilterInput();
 
+        // a11y: the rail is a single-select listbox and the rows are its
+        // options — the same contract #ai-channel-list already publishes in
+        // history-manager.ts. index.html declares role="group" for the pre-boot
+        // static markup; once we own the children we can be specific, so ATs
+        // announce position-in-set and which conversation is open.
+        //
+        // The role is set PER BRANCH, not once up front. The two empty states
+        // below fill the container with a <div class="no-conversations"> and
+        // nothing else, and a listbox whose children are not options is an
+        // aria-required-children violation — worse, AT announces "listbox, 0
+        // items" and the user filtering to zero matches never hears the
+        // message explaining why. role="group" still supports an accessible
+        // name, so the label stays outside the switch and every state keeps it.
+        container.setAttribute('aria-label', 'Conversations');
+
         if (ctx.conversations.length === 0) {
+            container.setAttribute('role', 'group');
+            container.removeAttribute('aria-activedescendant');
             container.innerHTML = `
                 <div class="no-conversations">
                     <p>No conversations yet</p>
                     <p>Start a new chat!</p>
                 </div>
             `;
-            this.detachClickHandler(container);
+            this.detachRowHandlers(container);
             return;
         }
 
@@ -75,18 +92,29 @@ export class ConversationList {
             : ctx.conversations;
 
         if (matches.length === 0) {
+            container.setAttribute('role', 'group');
+            container.removeAttribute('aria-activedescendant');
             container.innerHTML = `
                 <div class="no-conversations">
                     <p>No matches for "${escapeHtml(this.filter)}"</p>
                 </div>
             `;
-            this.detachClickHandler(container);
+            this.detachRowHandlers(container);
             return;
         }
 
         const visible = matches.slice(0, RENDER_CAP);
         const overflow = matches.length - visible.length;
         const safeAi = safeAvatarUrl(settings.aiAvatar);
+        // The roving-tabindex anchor: the open conversation if it survived the
+        // filter, else the first row. Exactly one option is tabbable at a time,
+        // so the rail costs the keyboard user ONE Tab stop, not one per chat.
+        const activeId = ctx.currentConversation?.id ?? null;
+        const hasActiveVisible = visible.some(c => c.id === activeId);
+        const focusId = hasActiveVisible ? activeId : visible[0].id;
+
+        // Only now are the children genuinely options.
+        container.setAttribute('role', 'listbox');
 
         container.innerHTML = visible.map(conv => {
             const preset = ctx.presets[conv.role_preset] || ({} as RolePreset);
@@ -98,6 +126,10 @@ export class ConversationList {
 
             return `
                 <div class="conversation-item ${isActive ? 'active' : ''} ${starClass}"
+                     id="conversation-opt-${escapeHtml(conv.id)}"
+                     role="option"
+                     aria-selected="${isActive ? 'true' : 'false'}"
+                     tabindex="${conv.id === focusId ? '0' : '-1'}"
                      data-id="${escapeHtml(conv.id)}">
                     ${avatarHtml}
                     <div class="conv-info">
@@ -108,8 +140,15 @@ export class ConversationList {
                 </div>
             `;
         }).join('') + (overflow > 0
-            ? `<div class="conversation-overflow-note">${overflow} more hidden — narrow your filter</div>`
+            ? `<div class="conversation-overflow-note" role="status">${overflow} more hidden — narrow your filter</div>`
             : '');
+
+        // Point aria-activedescendant at the open conversation when it is shown.
+        if (hasActiveVisible && activeId) {
+            container.setAttribute('aria-activedescendant', `conversation-opt-${activeId}`);
+        } else {
+            container.removeAttribute('aria-activedescendant');
+        }
 
         // Re-bind click delegation. One handler per container; we replace it
         // rather than stack because innerHTML wipes descendants but leaves
@@ -126,14 +165,72 @@ export class ConversationList {
         };
         slot._convClickHandler = handler;
         container.addEventListener('click', handler);
+
+        // One delegated KEYDOWN handler: Enter/Space open the focused row, ↑/↓
+        // (and Home/End) rove focus within the rail. Without this the rows were
+        // click-ONLY — plain <div>s carrying nothing but data-id — so a
+        // keyboard-only user could reach the filter box and the scroll
+        // container but could never actually open a conversation. The identical
+        // rail on the History page has been operable this whole time; this is
+        // that same contract, and roveConversationFocus mirrors
+        // HistoryManager.roveChannelFocus deliberately.
+        if (slot._convKeyHandler) {
+            container.removeEventListener('keydown', slot._convKeyHandler);
+        }
+        const keyHandler: EventListener = (e) => {
+            const ev = e as KeyboardEvent;
+            const row = (ev.target as HTMLElement).closest('.conversation-item[data-id]') as HTMLElement | null;
+            if (!row) return;
+            if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+                ev.preventDefault();
+                const id = row.dataset.id;
+                if (id) this.callbacks.onLoadConversation(id);
+                return;
+            }
+            if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp'
+                || ev.key === 'Home' || ev.key === 'End') {
+                ev.preventDefault();
+                this.roveConversationFocus(container, row, ev.key);
+            }
+        };
+        slot._convKeyHandler = keyHandler;
+        container.addEventListener('keydown', keyHandler);
     }
 
-    /** Drop the delegated click handler bound by render() (used by the empty/no-match early returns). */
-    private detachClickHandler(container: HTMLElement): void {
+    /**
+     * Move keyboard focus (and the tabindex=0 roving anchor) between rows.
+     * Arrowing does NOT open a conversation — only Enter/Space commits — so a
+     * keyboard user can survey the rail without firing a load for every row
+     * they pass over. Same "selection follows focus only on commit" rule the
+     * History channel rail uses.
+     */
+    private roveConversationFocus(container: HTMLElement, current: HTMLElement, key: string): void {
+        const rows = Array.from(
+            container.querySelectorAll<HTMLElement>('.conversation-item[data-id]'),
+        );
+        if (rows.length === 0) return;
+        const i = rows.indexOf(current);
+        let next: number;
+        if (key === 'Home') next = 0;
+        else if (key === 'End') next = rows.length - 1;
+        else if (key === 'ArrowDown') next = i < 0 ? 0 : Math.min(rows.length - 1, i + 1);
+        else next = i < 0 ? rows.length - 1 : Math.max(0, i - 1);
+        const target = rows[next];
+        rows.forEach(r => r.setAttribute('tabindex', '-1'));
+        target.setAttribute('tabindex', '0');
+        target.focus();
+    }
+
+    /** Drop the delegated row handlers bound by render() (used by the empty/no-match early returns). */
+    private detachRowHandlers(container: HTMLElement): void {
         const slot = container as unknown as Record<string, EventListener | undefined>;
         if (slot._convClickHandler) {
             container.removeEventListener('click', slot._convClickHandler);
             slot._convClickHandler = undefined;
+        }
+        if (slot._convKeyHandler) {
+            container.removeEventListener('keydown', slot._convKeyHandler);
+            slot._convKeyHandler = undefined;
         }
     }
 

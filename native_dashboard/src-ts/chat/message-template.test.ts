@@ -198,6 +198,75 @@ describe('renderMessagesHtml', () => {
         expect(result.html).toContain('[formatted]my reasoning[/formatted]');
     });
 
+    it('makes the thinking header a real keyboard control tied to its content', () => {
+        // The header used to be a bare <div> with cursor:pointer — no role, no
+        // tab stop, no announced state.
+        const result = renderMessagesHtml({
+            messages: [mkMsg(1, { role: 'assistant', thinking: 'my reasoning' })],
+            currentConversation: mkConv(),
+            visibleMessageCount: 0,
+            deps: fakeDeps,
+        });
+        const doc = new DOMParser().parseFromString(result.html, 'text/html');
+        const header = doc.querySelector('.thinking-header')!;
+        const content = doc.querySelector('.thinking-content')!;
+        expect(header.getAttribute('role')).toBe('button');
+        expect(header.getAttribute('tabindex')).toBe('0');
+        expect(header.getAttribute('aria-expanded')).toBe('false');
+        // aria-controls must resolve to the sibling it actually toggles.
+        expect(header.getAttribute('aria-controls')).toBe(content.id);
+        expect(content.id).not.toBe('');
+    });
+
+    it('tags the thinking container with the message id so expansion survives a re-render', () => {
+        const result = renderMessagesHtml({
+            messages: [mkMsg(1, { role: 'assistant', thinking: 'my reasoning' })],
+            currentConversation: mkConv(),
+            visibleMessageCount: 0,
+            deps: fakeDeps,
+        });
+        const doc = new DOMParser().parseFromString(result.html, 'text/html');
+        expect(doc.querySelector('.thinking-container')!.getAttribute('data-thinking-id')).toBe('1');
+    });
+
+    it('omits data-thinking-id for a message with no server id', () => {
+        // msgId is '' for a locally-pushed message; emitting the attribute would
+        // give every id-less block the same key, so they would all expand at once.
+        const msg: ChatMessage = {
+            role: 'assistant',
+            content: 'just streamed',
+            thinking: 'my reasoning',
+            created_at: '2026-04-01T00:00:00Z',
+        };
+        const result = renderMessagesHtml({
+            messages: [msg],
+            currentConversation: mkConv(),
+            visibleMessageCount: 0,
+            deps: fakeDeps,
+        });
+        const doc = new DOMParser().parseFromString(result.html, 'text/html');
+        const box = doc.querySelector('.thinking-container')!;
+        expect(box.hasAttribute('data-thinking-id')).toBe(false);
+        // The keyboard affordance does NOT depend on the id, so it stays.
+        expect(doc.querySelector('.thinking-header')!.getAttribute('role')).toBe('button');
+    });
+
+    it('gives each rendered thinking block a distinct content id', () => {
+        const result = renderMessagesHtml({
+            messages: [
+                mkMsg(1, { role: 'assistant', thinking: 'first' }),
+                mkMsg(3, { role: 'assistant', thinking: 'second' }),
+            ],
+            currentConversation: mkConv(),
+            visibleMessageCount: 0,
+            deps: fakeDeps,
+        });
+        const doc = new DOMParser().parseFromString(result.html, 'text/html');
+        const ids = Array.from(doc.querySelectorAll('.thinking-content')).map((el) => el.id);
+        expect(ids.length).toBe(2);
+        expect(new Set(ids).size).toBe(2);
+    });
+
     it('marks pinned messages in the pin button dataset', () => {
         // Use id=42 for a clearly persisted message. (id=0 also renders
         // correctly — msgId becomes the truthy string "0" via the

@@ -17,6 +17,7 @@ import {
     normalizeSqliteUtc,
     refreshSendButtonGlow,
     countLabel,
+    scrollBehavior,
 } from './shared.js';
 
 // ============================================================================
@@ -41,7 +42,12 @@ import type {
 } from './chat/types.js';
 
 import { highlightCodeBlocks } from './chat/prism.js';
-import { formatMessage, formatStreamingMessage, stripThinkTags } from './chat/formatter.js';
+import {
+    formatMessage,
+    formatStreamingMessage,
+    stripThinkTags,
+    stripThinkTagsStreaming,
+} from './chat/formatter.js';
 import { ChatSearch } from './chat/search.js';
 import { promptExportFormat } from './chat/export-picker.js';
 import { WebSocketClient } from './chat/ws-client.js';
@@ -264,6 +270,9 @@ export class ChatManager {
     messages: ChatMessage[] = [];
     selectedRole: string = 'general';
     isStreaming: boolean = false;
+    /** Set when setInputEnabled(false) blurred a focused composer; consumed by
+     *  the matching re-enable to hand the cursor back. See setInputEnabled(). */
+    private composerHadFocus: boolean = false;
     presets: Record<string, RolePreset> = {};
     currentMode: string = '';  // Store current mode for the streaming message
     // ``localStorage`` is tampering-trivial via devtools, so validate the
@@ -587,6 +596,16 @@ export class ChatManager {
                 this.messages = (data.messages as ChatMessage[]) || [];
                 // Reset virtualization window when switching conversations.
                 this.visibleMessageCount = VIRT_WINDOW_SIZE;
+                // Drop the previous conversation's expanded-thinking ids: message
+                // ids are per-conversation, so a carried-over id could re-open an
+                // unrelated section in the new thread (and the set would grow
+                // without bound over a long session).
+                this.expandedThinking.clear();
+                // Reset the entrance-animation baseline too. Without it, switching
+                // from a 50-message thread to a 100-message one animated a bubble
+                // that is not new, and switching the other way suppressed the
+                // animation for the next genuine send.
+                this.lastRenderedCount = 0;
                 this.showChatContainer();
                 this.updateChatHeader();
                 this.renderMessages();
@@ -739,10 +758,22 @@ export class ChatManager {
                 }
                 this.streamingConversationId = null;
                 this.isStreaming = false;
-                this.userScrolledUp = false;  // Reset scroll lock when stream ends
+                // NOTE: userScrolledUp is deliberately NOT cleared here. It used
+                // to be, and that yanked a user who had scrolled up to re-read
+                // earlier turns straight back to the bottom the instant the
+                // answer completed: with the lock already released,
+                // finalizeStreamingMessage's scrollToBottom() was no longer
+                // suppressed and the "N new" FAB — built for exactly this case —
+                // never appeared. Each terminal path below releases the lock
+                // itself, AFTER the scroll decision has been made.
 
                 if (this.isEditStreaming && data.is_edit) {
-                    // AI edit complete: finalize the edited message
+                    // AI edit complete: finalize the edited message.
+                    // Release the scroll lock first: finalizeEditStreaming saves
+                    // and restores scrollTop itself, so nothing here can yank the
+                    // viewport, and a lock left set would survive into the next
+                    // render and raise a phantom "N new" badge.
+                    this.userScrolledUp = false;
                     this.finalizeEditStreaming(typeof data.full_response === 'string' ? data.full_response : '', data.target_message_id as number);
                     this.isEditStreaming = false;
                     this.editTargetMessageId = null;
@@ -761,6 +792,7 @@ export class ChatManager {
                     this.editTargetMessageId = null;
                     this.editStreamContent = '';
                     this.setInputEnabled(true);
+                    this.userScrolledUp = false;  // no stream left to follow
                     this.renderMessages();
                     showToast('AI edit was interrupted', { type: 'error' });
                     break;
@@ -775,6 +807,13 @@ export class ChatManager {
                     // conversation.
                     this.clearStreamBuffers();
                     this.setInputEnabled(true);
+                    // The scroll listener also arms the lock during an EDIT
+                    // stream, and the conversation-switch teardown clears
+                    // isEditStreaming without clearing it — so this really is
+                    // reachable with the lock set. Left set it would stick until
+                    // the next stream_start and make every interim render bump
+                    // the "N new" counter behind a badge nothing is feeding.
+                    this.userScrolledUp = false;
                     break;
                 }
                 if (this.streamErrored) {
@@ -788,6 +827,7 @@ export class ChatManager {
                     this.streamErrored = false;
                     this.clearStreamBuffers();
                     this.setInputEnabled(true);
+                    this.userScrolledUp = false;  // dead turn — nothing to follow
                     break;
                 }
                 this.finalizeStreamingMessage(typeof data.full_response === 'string' ? data.full_response : '');
@@ -810,6 +850,10 @@ export class ChatManager {
                 if (data.user_message_id || data.assistant_message_id) {
                     this.renderMessages();
                 }
+                // Every scroll decision for this turn has now been made
+                // (finalizeStreamingMessage + the id-backfill render above both
+                // honoured the lock), so release it for the NEXT stream.
+                this.userScrolledUp = false;
                 // Update context window usage indicator
                 if (data.token_usage) {
                     this.updateContextWindowIndicator(data.token_usage as {
@@ -1222,7 +1266,13 @@ export class ChatManager {
                 // a full refetch — faster than round-tripping list again.
                 this.removeChatFileRow(data.id as number);
                 this.refreshChatFilesBadge();
-                showToast('Deleted', { type: 'info', duration: 1800 });
+                // Say WHAT was deleted and from where: the old bare "Deleted"
+                // info toast named neither the file nor the fact that the AI has
+                // stopped seeing it.
+                showToast('File removed from this conversation’s memory', {
+                    type: 'success',
+                    duration: 2200,
+                });
                 break;
 
             case 'document_memory_content':
@@ -1751,8 +1801,17 @@ export class ChatManager {
     appendStreamingMessage(mode: string = ''): void {
         const container = document.getElementById('chat-messages');
         const msgDiv = document.createElement('div');
-        msgDiv.className = 'chat-message assistant streaming';
+        // `.is-new` carries the entrance animation, which used to sit on every
+        // `.chat-message` unconditionally — see the note on lastRenderedCount.
+        // The live bubble genuinely IS new, so it keeps the fade-in.
+        msgDiv.className = 'chat-message assistant streaming is-new';
         msgDiv.id = 'streaming-message';
+        // #chat-messages is role="log" aria-live="polite": without this, every
+        // per-frame repaint of the partial answer re-announced the whole
+        // accumulated text, so a screen reader restarted the utterance ~60×/s
+        // and never finished it. A subtree marked busy is announced once, when
+        // finalizeStreamingMessage clears the flag on the settled answer.
+        msgDiv.setAttribute('aria-busy', 'true');
 
         const aiName = this.currentConversation?.role_name || 'AI';
         const timeStr = this.formatTime(new Date().toISOString());
@@ -1875,13 +1934,22 @@ export class ChatManager {
             // this file. Guard against double-binding via a data flag.
             if (!thinkingHeader.dataset.collapseBound) {
                 thinkingHeader.dataset.collapseBound = '1';
-                thinkingHeader.addEventListener('click', () => {
-                    thinkingContent?.classList.toggle('collapsed');
-                    thinkingHeader.classList.toggle('collapsed');
-                });
+                // The live-stream header was the same click-only <div> the
+                // template emitted: no role, no tab stop, no announced state,
+                // so the thought process could not be opened from the keyboard
+                // and AT was never told the control existed. textContent above
+                // rewrites the text, not the attributes, so setting them here
+                // survives every later finalize pass.
+                thinkingHeader.setAttribute('role', 'button');
+                thinkingHeader.setAttribute('tabindex', '0');
+                thinkingHeader.setAttribute('aria-expanded', 'false');
+                this.bindThinkingToggle(thinkingHeader);
             }
         }
         if (thinkingContent) {
+            // Collapsed content is only max-height:0, so it stays in the a11y
+            // tree — mark it hidden to match the header's aria-expanded.
+            thinkingContent.setAttribute('aria-hidden', 'true');
             // Render Markdown formatting (bold, italic, code, etc.)
             thinkingContent.innerHTML = this.formatMessage(fullThinking);
             // Syntax-highlight any fenced code blocks in the thinking text too —
@@ -1918,8 +1986,15 @@ export class ChatManager {
     private renderStreamingPartial(): void {
         const streamingText = document.querySelector('#streaming-message .streaming-text');
         if (!streamingText) return;
-        // stripThinkTags mirrors finalizeStreamingMessage so a <think> block
-        // that reaches this channel doesn't flash on screen mid-stream.
+        // stripThinkTagsStreaming mirrors finalizeStreamingMessage so a <think>
+        // block that reaches this channel doesn't flash on screen mid-stream.
+        // The plain stripThinkTags only matches CLOSED blocks, so a proxy that
+        // inlines reasoning into the `chunk` channel (CLAUDE_BACKEND=api) had
+        // its still-open `<think>` and the raw chain-of-thought painted verbatim
+        // into the answer bubble for as long as the reasoning ran — then the
+        // bubble visibly rewrote itself at stream_end. The streaming variant
+        // also drops the trailing unterminated block; see its doc comment for
+        // the deliberate literal-`<think>` trade-off that comes with that.
         //
         // innerHTML is safe here for the same reason it is in
         // finalizeStreamingMessage: the string is not model output, it is the
@@ -1928,7 +2003,7 @@ export class ChatManager {
         // and ALLOWED_URI_REGEXP=/^https:/i. Assigning the raw chunk text here
         // would be the bug.
         streamingText.innerHTML = formatStreamingMessage(
-            this.stripThinkTags(this.streamPartialChunks.join('')),
+            stripThinkTagsStreaming(this.streamPartialChunks.join('')),
         );
         // Prism is NOT run here: highlighting every code block on every frame is
         // far more expensive than the markdown pass, and finalizeStreamingMessage
@@ -1969,6 +2044,8 @@ export class ChatManager {
         if (streamingMsg) {
             streamingMsg.classList.remove('streaming');
             streamingMsg.removeAttribute('id');
+            // The answer is settled — let the live region announce it, once.
+            streamingMsg.removeAttribute('aria-busy');
 
             const content = streamingMsg.querySelector('.message-content');
             if (content) {
@@ -2200,6 +2277,45 @@ export class ChatManager {
         return true;
     }
 
+    /**
+     * Flip one "Thought Process" disclosure and keep its announced state honest.
+     *
+     * `.thinking-content.collapsed` is only `max-height: 0; overflow: hidden`,
+     * so the text never leaves the accessibility tree: aria-expanded alone would
+     * lie and a screen reader would still read the whole trace. Hence the paired
+     * aria-hidden. The `hidden` attribute / display:none is NOT usable here —
+     * it would kill the max-height transition the collapse animates on.
+     */
+    private toggleThinking(header: HTMLElement): void {
+        const collapsed = header.classList.toggle('collapsed');
+        header.setAttribute('aria-expanded', String(!collapsed));
+        const content = header.nextElementSibling as HTMLElement | null;
+        content?.classList.toggle('collapsed', collapsed);
+        content?.setAttribute('aria-hidden', String(collapsed));
+        // Remember the expansion by message id so the next full re-render can
+        // re-open it — the class it lives on dies with the innerHTML rebuild.
+        const id = (header.closest('.thinking-container') as HTMLElement | null)?.dataset.thinkingId;
+        if (id) {
+            if (collapsed) this.expandedThinking.delete(id);
+            else this.expandedThinking.add(id);
+        }
+    }
+
+    /** Wire one disclosure header for both pointer and keyboard. The header is
+     * a <div role="button">, so Enter/Space have to be implemented by hand —
+     * without this the thought process was unreachable without a mouse. */
+    private bindThinkingToggle(header: HTMLElement): void {
+        header.addEventListener('click', () => this.toggleThinking(header));
+        header.addEventListener('keydown', (e) => {
+            const key = (e as KeyboardEvent).key;
+            // 'Spacebar' is the legacy WebView/IE spelling; cheap to accept.
+            if (key === 'Enter' || key === ' ' || key === 'Spacebar') {
+                e.preventDefault();  // Space would otherwise scroll the transcript
+                this.toggleThinking(header);
+            }
+        });
+    }
+
     renderMessages(): void {
         const container = document.getElementById('chat-messages');
         if (!container) return;
@@ -2233,7 +2349,42 @@ export class ChatManager {
         // "show earlier" clicks grow from the correct baseline.
         this.visibleMessageCount = result.visibleMessageCount;
         this.visibleStartIdx = result.startIdx;
+        // #chat-messages is role="log" aria-live="polite" aria-relevant="additions",
+        // and an innerHTML assignment is a removal PLUS a re-addition of every
+        // child — so a pin, an ack or a conversation switch queued the entire
+        // virtualization window (up to 100 messages) for announcement. Marking
+        // the region busy across the swap suppresses that. The clear MUST be
+        // asynchronous: the live-region notification is computed after the
+        // current task finishes, so flipping it back on the same tick would be a
+        // no-op.
+        container.setAttribute('aria-busy', 'true');
         container.innerHTML = result.html;
+        requestAnimationFrame(() => container.setAttribute('aria-busy', 'false'));
+
+        // Tag ONLY a genuinely new tail bubble with the entrance animation.
+        // `.chat-message` used to carry it unconditionally, so every re-render
+        // made the whole visible history fade in and slide up at once — sending
+        // one message blinked the entire conversation.
+        if (this.messages.length > this.lastRenderedCount) {
+            (container.lastElementChild as HTMLElement | null)?.classList.add('is-new');
+        }
+        this.lastRenderedCount = this.messages.length;
+
+        // Re-open the thought processes the user had expanded. Their state lived
+        // only as a class on nodes the rebuild above just destroyed, so without
+        // this every open reasoning trace slammed shut on the next render (and
+        // Ctrl+F silently stopped matching inside them — search skips
+        // `.thinking-content.collapsed`). Only ids in the set are touched, so a
+        // first render still paints everything collapsed.
+        for (const id of this.expandedThinking) {
+            const box = container.querySelector(`.thinking-container[data-thinking-id="${id}"]`);
+            const header = box?.querySelector('.thinking-header');
+            const content = box?.querySelector('.thinking-content');
+            header?.classList.remove('collapsed');
+            header?.setAttribute('aria-expanded', 'true');
+            content?.classList.remove('collapsed');
+            content?.setAttribute('aria-hidden', 'false');
+        }
 
         if (this.messages.length === 0) return;  // no events to bind on the welcome card
 
@@ -2312,13 +2463,12 @@ export class ChatManager {
             });
         });
 
-        // Setup thinking header toggle clicks (replaces inline onclick blocked by CSP)
+        // Setup thinking header toggles (replaces inline onclick blocked by CSP).
+        // Click AND keydown: the header is a <div role="button">, which gets no
+        // Enter/Space activation for free, so before this a keyboard-only user
+        // could not open a thought process at all.
         container.querySelectorAll('.thinking-header.collapsible').forEach(header => {
-            header.addEventListener('click', () => {
-                header.classList.toggle('collapsed');
-                const content = header.nextElementSibling;
-                if (content) content.classList.toggle('collapsed');
-            });
+            this.bindThinkingToggle(header as HTMLElement);
         });
 
         // Setup copy button clicks (whole message)
@@ -2437,10 +2587,22 @@ export class ChatManager {
                 // otherwise drift the UI from the server until the next refresh.
                 const ok = this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
                 if (!ok) return;
-                // Optimistic local update — server confirmation will re-render.
+                // Optimistic local update. Use the SAME in-place button update the
+                // ack path uses: a full renderMessages() here rebuilt the whole
+                // virtualization window (~2,700 nodes, every Prism pass, every
+                // listener) before the server even answered — and destroyed the
+                // button the user just clicked, dropping focus to <body>. The
+                // full render stays as a fallback for the case where a queued
+                // render moved the button out of the window between click and
+                // update; the later ack repeats the same call idempotently.
                 const targetMsg = this.messages.find(m => String(m.id) === msgId);
                 if (targetMsg) targetMsg.is_pinned = nextPinned;
-                this.renderMessages();
+                if (!this.updateActionButton({
+                    btnClass: 'pin-message-btn', id: messageId, active: nextPinned,
+                    iconName: 'pin', stateClass: 'pinned', dataAttr: 'pinned',
+                    label: nextPinned ? 'Unpin' : 'Pin',
+                    ariaLabel: `${nextPinned ? 'Unpin' : 'Pin'} message`,
+                })) this.renderMessages();
             });
         });
 
@@ -2462,9 +2624,16 @@ export class ChatManager {
                 // UI from the server's view until the next list refresh.
                 const ok = this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
                 if (!ok) return;
+                // Same in-place update as the pin handler above (and as the
+                // like ack) — the full re-render was pure waste and stole focus.
                 const targetMsg = this.messages.find(m => String(m.id) === msgId);
                 if (targetMsg) targetMsg.liked = nextLiked;
-                this.renderMessages();
+                if (!this.updateActionButton({
+                    btnClass: 'like-message-btn', id: messageId, active: nextLiked,
+                    iconName: 'heart', stateClass: 'liked', dataAttr: 'liked',
+                    label: null, ariaLabel: `${nextLiked ? 'Unlike' : 'Like'} message`,
+                    title: nextLiked ? 'Unlike' : 'Like',
+                })) this.renderMessages();
             });
         });
     }
@@ -2597,6 +2766,11 @@ export class ChatManager {
         // dims it so the disabled state is visible.
         const attachBtn = document.getElementById('btn-attach') as HTMLButtonElement | null;
 
+        // Disabling the element the user is typing in blurs it — the browser
+        // moves focus to <body>. Note WHERE focus was before we do that, so the
+        // re-enable below can put it back.
+        const strandedByUs = !enabled && document.activeElement === input;
+
         if (input) input.disabled = !enabled;
         if (btn) btn.disabled = !enabled;
         if (attachBtn) {
@@ -2605,6 +2779,24 @@ export class ChatManager {
             // class for the dim so CSS owns the exact look (no inline style here,
             // matching the CSP-friendly no-inline-style posture in this file).
             attachBtn.classList.toggle('disabled', !enabled);
+        }
+
+        if (strandedByUs) this.composerHadFocus = true;
+
+        // Give the composer its cursor back when the turn ends. Every send ran
+        // input.focus() and then disabled the field a beat later, so focus fell
+        // to <body> and no re-enable path ever picked it up: after each reply a
+        // keyboard user had to Tab back across the whole composer toolbar to
+        // type again, and a screen-reader user was returned to the top of the
+        // document. Guarded three ways so this never STEALS focus — only if we
+        // are the ones who dropped it, only if it is still lying on <body> (the
+        // user has not deliberately moved to another control mid-stream), and
+        // only while the chat page is actually on screen.
+        if (enabled && this.composerHadFocus) {
+            this.composerHadFocus = false;
+            const idle = document.activeElement === null || document.activeElement === document.body;
+            const onChatPage = !!document.getElementById('page-chat')?.classList.contains('active');
+            if (idle && onChatPage && input && !input.disabled) input.focus();
         }
     }
 
@@ -2744,7 +2936,13 @@ export class ChatManager {
         if (fab && !fab.dataset.fabBound) {
             fab.dataset.fabBound = '1';
             fab.addEventListener('click', () => {
-                container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+                // scrollBehavior(), not a literal 'smooth': CSSOM-View consults
+                // this option FIRST and only falls back to the CSS
+                // `scroll-behavior` property when it is 'auto', so the
+                // reduced-motion override in the stylesheet could never reach
+                // this call. Jumping a whole transcript past the viewport is
+                // exactly the large-area motion that setting exists to suppress.
+                container.scrollTo({ top: container.scrollHeight, behavior: scrollBehavior() });
                 this.newMessagesWhileScrolledUp = 0;
                 // Clicking "jump to bottom" means: follow the stream again.
                 this.userScrolledUp = false;
@@ -2806,6 +3004,19 @@ export class ChatManager {
     // querySelectorAll('.chat-message')[absoluteIdx] is wrong — callers must
     // subtract this offset. Updated on every renderMessages().
     private visibleStartIdx: number = 0;
+    // Server ids of the "Thought Process" sections the user has EXPANDED. The
+    // expand state lived only as a class on a node that the next
+    // `container.innerHTML = …` destroys, so sending the next message (or a pin,
+    // or an edit ack) slammed every open reasoning trace shut and lost the
+    // scroll position inside it. renderMessages re-opens the ids in this set
+    // after the rebuild. Ids only — a message with no server id yet renders no
+    // data-thinking-id, and every id-less block would otherwise share one key.
+    private expandedThinking: Set<string> = new Set();
+    // Message count at the previous renderMessages(). `.chat-message` used to
+    // carry the entrance animation unconditionally, so a full rebuild made the
+    // WHOLE transcript fade+slide at once on every send/pin/ack. Only the tail
+    // bubble is tagged `.is-new` now, and only when the array actually grew.
+    private lastRenderedCount: number = 0;
 
     // Image attach manager — file picker, drag-drop, paste. Thin forwarders
     // keep the public method surface stable for callers (renderMessages uses
@@ -3018,9 +3229,25 @@ export class ChatManager {
         });
 
         list.querySelectorAll('.file-delete').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const id = parseInt((e.currentTarget as HTMLElement).dataset.id || '0', 10);
+            btn.addEventListener('click', async (e) => {
+                // Capture the element BEFORE the await: `e.currentTarget` is
+                // nulled once dispatch ends, so reading it after the dialog
+                // resolves would throw. Delete sits right beside Edit in this
+                // row and permanently destroys the document from the
+                // conversation's memory — including any extracted text the user
+                // hand-corrected in the built-in editor — with no undo. Every
+                // other destructive action in this app confirms first; this was
+                // the one that did not.
+                const el = e.currentTarget as HTMLElement;
+                const id = parseInt(el.dataset.id || '0', 10);
                 if (!id || !this.currentConversation) return;
+                const name = el.closest('.chat-file-row')?.querySelector('.file-name')?.textContent
+                    || 'this file';
+                const ok = await showConfirmDialog(
+                    `Remove "${name}" from this conversation's memory? Its extracted text is deleted and the AI will stop seeing it.`,
+                );
+                // Re-check the conversation: it can change while the dialog is up.
+                if (!ok || !this.currentConversation) return;
                 this.send({
                     type: 'delete_document_memory',
                     id,
@@ -3328,8 +3555,12 @@ export class ChatManager {
 
         // Replace content with textarea
         const originalContent = msg.content;
+        // aria-label: this textarea is injected at runtime with no <label> and no
+        // placeholder, so a screen reader announced an unnamed "edit text" field
+        // — no confirmation of what is about to be overwritten. Every other
+        // runtime-generated control in this app is named the same way.
         contentEl.innerHTML = `
-            <textarea class="edit-textarea">${escapeHtml(originalContent)}</textarea>
+            <textarea class="edit-textarea" aria-label="Edit message">${escapeHtml(originalContent)}</textarea>
             <div class="edit-actions">
                 <button class="edit-save-btn">Save</button>
                 <button class="edit-save-regen-btn${msg.role === 'user' ? '' : ' hidden'}">Save &amp; Regenerate</button>
@@ -3711,7 +3942,24 @@ export class ChatManager {
         }
     }
 
+    // "Export All" fires one export per conversation, 250 ms apart. Each ack used
+    // to raise its own 4 s toast, so ~16 identical toasts stacked at once in an
+    // uncapped column that ran off the bottom of the window, and a screen reader
+    // heard "Export sent to your downloads" once per conversation — while the one
+    // fact that matters, "the bulk run is done", was never stated. These two
+    // fields suppress the per-item toast for the duration of a bulk run and emit
+    // a single summary instead.
+    private bulkExportRemaining: number = 0;
+    private bulkExportTotal: number = 0;
+
     downloadExport(data: { id?: unknown; format?: unknown; data?: unknown }): void {
+        // Decrement FIRST, before the no-content bail below: a conversation that
+        // fails to export still consumed one slot of the bulk run, and leaving
+        // the counter above zero would swallow every later single-export toast
+        // and never print the summary.
+        const bulkItem = this.bulkExportRemaining > 0;
+        if (bulkItem) this.bulkExportRemaining--;
+
         const id = typeof data.id === 'string' ? data.id : '';
         const format = typeof data.format === 'string' ? data.format : 'txt';
         const content = typeof data.data === 'string' ? data.data : '';
@@ -3743,7 +3991,17 @@ export class ChatManager {
         // no download handler). Don't assert success we can't observe; a neutral
         // info toast states only what we actually did (handed the file to the
         // browser's download flow).
-        showToast('Export sent to your downloads.', { type: 'info' });
+        if (bulkItem) {
+            // One summary for the whole bulk run, on the last item only.
+            if (this.bulkExportRemaining === 0) {
+                showToast(
+                    `Exported ${countLabel(this.bulkExportTotal, 'conversation')} to your downloads.`,
+                    { type: 'info' },
+                );
+            }
+        } else {
+            showToast('Export sent to your downloads.', { type: 'info' });
+        }
     }
 
     init(): void {
@@ -3848,8 +4106,19 @@ export class ChatManager {
                 showToast('No conversations to export', { type: 'warning' });
                 return;
             }
+            // One bulk run at a time: a second run would overwrite the counters
+            // mid-flight, so the first run's remaining acks would decrement the
+            // second run's total and neither would report honestly.
+            if (this.bulkExportRemaining > 0) {
+                showToast('An export is already running', { type: 'warning' });
+                return;
+            }
             const format = await this.promptExportFormat();
             if (!format) return;
+            // Arm the per-item toast suppression (see downloadExport).
+            const total = this.conversations.length;
+            this.bulkExportTotal = total;
+            this.bulkExportRemaining = total;
             // Serialize: parallel forEach fires N export WS messages and N
             // synthetic <a>.click() downloads in the same event tick. Browsers
             // consolidate/block all but the first. Space them out so each
@@ -3858,6 +4127,20 @@ export class ChatManager {
                 this.exportConversation(conv.id, format);
                 await new Promise(resolve => setTimeout(resolve, 250));
             }
+            // Acks that never arrive (socket drop, backend error) would otherwise
+            // leave the counter above zero forever, silently swallowing every
+            // later single-export toast. Give the tail a generous grace period,
+            // then report what actually landed and re-open the gate.
+            window.setTimeout(() => {
+                if (this.bulkExportRemaining > 0) {
+                    const done = this.bulkExportTotal - this.bulkExportRemaining;
+                    showToast(
+                        `Exported ${done} of ${countLabel(this.bulkExportTotal, 'conversation')}.`,
+                        { type: 'warning' },
+                    );
+                    this.bulkExportRemaining = 0;
+                }
+            }, total * 250 + 5000);
         });
         document.getElementById('btn-delete-chat')?.addEventListener('click', () => {
             if (this.currentConversation) {

@@ -32,6 +32,30 @@ function getPurify() {
 export function stripThinkTags(content) {
     return content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 }
+/**
+ * Streaming variant of `stripThinkTags` for partially-received text.
+ *
+ * With CLAUDE_BACKEND=api a proxy backend can stream the model's inline
+ * reasoning through the `chunk` channel and only strip it from the final
+ * `full_response`. `stripThinkTags` matches CLOSED blocks only, so mid-stream
+ * the still-open `<think>` and the raw chain-of-thought behind it were painted
+ * verbatim into the answer bubble — for as long as the reasoning ran — and then
+ * vanished when stream_end repainted from the already-stripped text. Drop the
+ * closed blocks first, then any still-open trailing one.
+ *
+ * DELIBERATE side effect, do not "fix" it back: an answer that legitimately
+ * contains a literal `<think>` — the user asking about think tags, or one
+ * sitting inside a fenced code block — has everything after it hidden for the
+ * rest of the stream, reappearing at stream_end. That is the same trade-off
+ * the finalize path already makes; a streaming parser cannot tell an open
+ * reasoning block from a literal that has not been closed yet.
+ */
+export function stripThinkTagsStreaming(content) {
+    return content
+        .replace(/<think>[\s\S]*?<\/think>/g, '')
+        .replace(/<think>[\s\S]*$/, '')
+        .trim();
+}
 // Markdown-link + bare-autolink pass. Operates on ALREADY-escaped HTML (so the
 // captured URL/text are entity-safe) and emits raw <a> tags whose href is the
 // (escaped) URL. The emitted markup is still run through DOMPurify, which is the

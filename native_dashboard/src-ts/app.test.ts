@@ -233,6 +233,11 @@ describe('Chart hold-to-edge rendering (drawChart)', () => {
         const ctx = {
             calls,
             scale: record('scale'),
+            // drawChart only re-allocates the bitmap when the target size
+            // changed, so it resets the matrix with setTransform instead of
+            // compounding scale() — without this entry the shipped draw throws
+            // TypeError on the very first call.
+            setTransform: record('setTransform'),
             clearRect: record('clearRect'),
             beginPath: record('beginPath'),
             moveTo: record('moveTo'),
@@ -306,6 +311,71 @@ describe('Chart hold-to-edge rendering (drawChart)', () => {
             // Both closure points sit on the plot floor (height 200 − 22).
             expect(closure[0].args[1] as number).toBe(178);
             expect(closure[1].args[1] as number).toBe(178);
+        } finally {
+            window.requestAnimationFrame = originalRaf;
+            canvas.remove();
+            vi.useRealTimers();
+        }
+    });
+
+    it('re-allocates the bitmap only when the size changed, and resets the matrix instead of compounding it', () => {
+        // The regression this guards: drawChart used to assign canvas.width /
+        // canvas.height on EVERY draw. That always throws away and re-creates
+        // the backing store, so the Status page discarded ~1MB of bitmap twice a
+        // second forever for a size that never changes. Dropping the realloc
+        // also means ctx.scale() would no longer be reset between draws — hence
+        // setTransform.
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-07-11T18:22:05'));
+        const originalRaf = window.requestAnimationFrame;
+        window.requestAnimationFrame = ((): number => 0) as typeof window.requestAnimationFrame;
+        const canvas = document.createElement('canvas');
+        canvas.id = 'realloc-test-chart';
+        document.body.appendChild(canvas);
+        canvas.getBoundingClientRect = () =>
+            ({ width: 480, height: 200, top: 0, left: 0, right: 480, bottom: 200, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+        const ctx = makeRecordingCtx();
+        canvas.getContext = (() => ctx) as unknown as typeof canvas.getContext;
+
+        // Count genuine bitmap writes — jsdom's own width/height are plain
+        // properties, so intercept them.
+        let bitmapWrites = 0;
+        let w = 300;
+        let h = 150;
+        Object.defineProperty(canvas, 'width', {
+            configurable: true,
+            get: () => w,
+            set: (v: number) => { w = v; bitmapWrites++; },
+        });
+        Object.defineProperty(canvas, 'height', {
+            configurable: true,
+            get: () => h,
+            set: (v: number) => { h = v; bitmapWrites++; },
+        });
+
+        try {
+            const now = Date.now();
+            const series = [
+                { timestamp: now - 20_000, value: 210 },
+                { timestamp: now - 10_000, value: 220 },
+                { timestamp: now - 5_000, value: 214 },
+            ];
+            const spec = { decimals: 0, unit: '' };
+
+            drawChart('realloc-test-chart', series, '#b2a4ff', spec);
+            expect(bitmapWrites).toBe(2);          // sized once: width + height
+            expect(w).toBe(480);                   // rounded integers, so the…
+            expect(h).toBe(200);                   // …guard still matches next time
+
+            drawChart('realloc-test-chart', series, '#b2a4ff', spec);
+            expect(bitmapWrites).toBe(2);          // same size — no re-allocation
+
+            // The matrix is set absolutely on every draw; scale() would stack.
+            expect(ctx.calls.filter(c => c.method === 'scale')).toHaveLength(0);
+            const transforms = ctx.calls.filter(c => c.method === 'setTransform');
+            expect(transforms).toHaveLength(2);
+            const dpr = window.devicePixelRatio || 1;
+            expect(transforms[0].args).toEqual([dpr, 0, 0, dpr, 0, 0]);
         } finally {
             window.requestAnimationFrame = originalRaf;
             canvas.remove();

@@ -25,7 +25,7 @@ beforeAll(async () => {
 });
 
 // Import AFTER DOMPurify is attached.
-import { formatMessage, stripThinkTags } from './formatter.js';
+import { formatMessage, stripThinkTags, stripThinkTagsStreaming } from './formatter.js';
 
 describe('stripThinkTags', () => {
     it('removes a single <think> block', () => {
@@ -43,6 +43,41 @@ describe('stripThinkTags', () => {
 
     it('leaves text without <think> untouched (just trims)', () => {
         expect(stripThinkTags('  plain answer  ')).toBe('plain answer');
+    });
+
+    it('leaves an UNCLOSED block alone — the reason the streaming variant exists', () => {
+        expect(stripThinkTags('<think>still reasoning')).toBe('<think>still reasoning');
+    });
+});
+
+describe('stripThinkTagsStreaming', () => {
+    it('removes a still-open trailing <think> block (mid-stream leak)', () => {
+        expect(stripThinkTagsStreaming('answer so far<think>still reasoning')).toBe('answer so far');
+    });
+
+    it('removes the open block even when it is the whole partial chunk', () => {
+        expect(stripThinkTagsStreaming('<think>step 1\nstep 2')).toBe('');
+    });
+
+    it('removes closed blocks first, then the trailing open one', () => {
+        const partial = '<think>a</think>one<think>b</think>two<think>c';
+        expect(stripThinkTagsStreaming(partial)).toBe('onetwo');
+    });
+
+    it('matches stripThinkTags once every block is closed', () => {
+        const done = '<think>a</think>one<think>b</think>two';
+        expect(stripThinkTagsStreaming(done)).toBe(stripThinkTags(done));
+    });
+
+    it('leaves text without <think> untouched (just trims)', () => {
+        expect(stripThinkTagsStreaming('  plain answer  ')).toBe('plain answer');
+    });
+
+    it('hides the tail after a LITERAL <think> — the documented trade-off', () => {
+        // A code fence discussing think tags loses everything after it until
+        // stream_end repaints from the finalized text. Pinned deliberately so
+        // nobody "fixes" the trailing-open-block strip back out.
+        expect(stripThinkTagsStreaming('Use `<think>` like so:')).toBe('Use `');
     });
 });
 

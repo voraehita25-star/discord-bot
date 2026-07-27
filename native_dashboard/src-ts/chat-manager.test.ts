@@ -13,7 +13,7 @@
  * dispatcher + handler side-effects that the 11 extracted modules rely on.
  */
 
-import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from 'vitest';
 
 // Tauri invoke is mocked at module-import time because shared.ts reads it.
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue('') }));
@@ -1352,5 +1352,266 @@ describe('streaming renders markdown live, not raw source', () => {
         // buffered partial over the finished answer.
         await nextFrame();
         expect(document.getElementById('streaming-message')).toBeNull();
+    });
+
+    it('hides a still-OPEN <think> block instead of painting it as the answer', async () => {
+        // stripThinkTags matches CLOSED blocks only, so a backend that inlines
+        // reasoning into the `chunk` channel had its raw chain-of-thought
+        // rendered as the answer for as long as the reasoning ran, then wiped
+        // at stream_end. The streaming variant also drops the open tail.
+        const cm = startStream();
+        cm.handleMessage({ type: 'chunk', content: 'Answer. <think>secret reasoning' });
+        await nextFrame();
+
+        expect(streamText()!.textContent).toContain('Answer.');
+        expect(streamText()!.textContent).not.toContain('secret reasoning');
+        expect(streamText()!.textContent).not.toContain('<think>');
+    });
+});
+
+// ============================================================================
+// Regression: the transcript renderer's audit fixes.
+//
+// Five separate defects, all rooted in the same `container.innerHTML = …`
+// rebuild: pin/like CLICKS re-rendered the whole window, every re-render
+// re-triggered the entrance animation on every bubble and slammed every
+// expanded "Thought Process" shut, the disclosure was mouse-only, and
+// stream_end released the scroll lock BEFORE the final scroll decision.
+// ============================================================================
+
+function mountLoaded(
+    messages: Array<Record<string, unknown>>,
+): import('./chat-manager.js').ChatManager {
+    const cm = mountDomAndChat();
+    cm.wsClient.connected = true;
+    cm.wsClient.send = vi.fn().mockReturnValue(true);
+    cm.handleMessage({
+        type: 'conversation_loaded',
+        conversation: {
+            id: 'c1', title: 't', role_preset: 'general',
+            thinking_enabled: false, is_starred: false, created_at: '2026-04-01',
+        },
+        messages,
+    });
+    return cm;
+}
+
+describe('pin/like clicks update the button in place', () => {
+    const PAIR = [
+        { id: 1, role: 'user', content: 'hi', created_at: '2026-04-01' },
+        { id: 2, role: 'assistant', content: 'hello', created_at: '2026-04-01', is_pinned: false, liked: false },
+    ];
+
+    it('a pin click does NOT rebuild the window — the clicked button survives', () => {
+        const cm = mountLoaded(PAIR);
+        const container = document.getElementById('chat-messages')!;
+        const btn = container.querySelector('.pin-message-btn[data-msg-id="2"]') as HTMLButtonElement;
+        // Sentinel on the clicked node: a full innerHTML rebuild replaces it
+        // (which is also what dropped keyboard focus to <body>).
+        (btn as unknown as { __sentinel?: number }).__sentinel = 7;
+
+        btn.click();
+
+        const after = container.querySelector('.pin-message-btn[data-msg-id="2"]') as HTMLButtonElement;
+        expect((after as unknown as { __sentinel?: number }).__sentinel).toBe(7);
+        expect(after.classList.contains('pinned')).toBe(true);
+        expect(after.dataset.pinned).toBe('1');
+        expect(after.getAttribute('aria-label')).toBe('Unpin message');
+        expect(after.textContent).toContain('Unpin');
+        expect(cm.messages[1].is_pinned).toBe(true);
+    });
+
+    it('a like click updates the heart in place', () => {
+        const cm = mountLoaded(PAIR);
+        const container = document.getElementById('chat-messages')!;
+        const btn = container.querySelector('.like-message-btn[data-msg-id="2"]') as HTMLButtonElement;
+        (btn as unknown as { __sentinel?: number }).__sentinel = 9;
+
+        btn.click();
+
+        const after = container.querySelector('.like-message-btn[data-msg-id="2"]') as HTMLButtonElement;
+        expect((after as unknown as { __sentinel?: number }).__sentinel).toBe(9);
+        expect(after.classList.contains('liked')).toBe(true);
+        expect(after.dataset.liked).toBe('1');
+        expect(after.getAttribute('aria-label')).toBe('Unlike message');
+        expect(cm.messages[1].liked).toBe(true);
+    });
+});
+
+describe('"Thought Process" disclosure — keyboard operable, survives re-render', () => {
+    const THINKER = [
+        { id: 5, role: 'assistant', content: 'answer', thinking: 'because reasons', created_at: '2026-04-01' },
+    ];
+    const header = () => document.querySelector('.thinking-header') as HTMLElement;
+    const content = () => document.querySelector('.thinking-content') as HTMLElement;
+
+    it('Enter expands it — the header used to be a click-only <div>', () => {
+        mountLoaded(THINKER);
+        expect(header().classList.contains('collapsed')).toBe(true);
+
+        header().dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', bubbles: true, cancelable: true,
+        }));
+
+        expect(header().classList.contains('collapsed')).toBe(false);
+        expect(header().getAttribute('aria-expanded')).toBe('true');
+        expect(content().classList.contains('collapsed')).toBe(false);
+        // Collapsed content is only max-height:0, so it stays in the a11y tree
+        // unless aria-hidden tracks the state.
+        expect(content().getAttribute('aria-hidden')).toBe('false');
+    });
+
+    it('Space expands it too, and swallows the page scroll', () => {
+        mountLoaded(THINKER);
+        const evt = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+        header().dispatchEvent(evt);
+
+        expect(header().classList.contains('collapsed')).toBe(false);
+        expect(evt.defaultPrevented).toBe(true);
+    });
+
+    it('an expanded section stays open across a re-render', () => {
+        const cm = mountLoaded(THINKER);
+        header().click();
+        expect(header().classList.contains('collapsed')).toBe(false);
+
+        cm.renderMessages();  // e.g. a pin ack, an edit ack, the next send
+
+        expect(header().classList.contains('collapsed')).toBe(false);
+        expect(header().getAttribute('aria-expanded')).toBe('true');
+        expect(content().classList.contains('collapsed')).toBe(false);
+    });
+
+    it('a collapsed section stays shut across a re-render', () => {
+        const cm = mountLoaded(THINKER);
+        header().click();   // open
+        header().click();   // and close again
+        cm.renderMessages();
+
+        expect(header().classList.contains('collapsed')).toBe(true);
+        expect(header().getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('forgets the expanded ids when the conversation changes', () => {
+        const cm = mountLoaded(THINKER);
+        header().click();
+        expect((cm as unknown as { expandedThinking: Set<string> }).expandedThinking.size).toBe(1);
+
+        cm.handleMessage({
+            type: 'conversation_loaded',
+            conversation: {
+                id: 'c2', title: 'other', role_preset: 'general',
+                thinking_enabled: false, is_starred: false, created_at: '2026-04-02',
+            },
+            messages: THINKER,
+        });
+
+        // Ids are per-conversation: a carried-over id would re-open an unrelated
+        // section (and the set would grow without bound over a session).
+        expect((cm as unknown as { expandedThinking: Set<string> }).expandedThinking.size).toBe(0);
+        expect(header().classList.contains('collapsed')).toBe(true);
+    });
+});
+
+describe('entrance animation is scoped to genuinely new bubbles', () => {
+    it('tags only the tail bubble, and nothing at all on a plain re-render', () => {
+        const cm = mountLoaded([
+            { id: 1, role: 'user', content: 'hi', created_at: '2026-04-01' },
+            { id: 2, role: 'assistant', content: 'hello', created_at: '2026-04-01' },
+        ]);
+        const container = document.getElementById('chat-messages')!;
+
+        expect(container.querySelectorAll('.chat-message.is-new').length).toBe(1);
+        expect((container.lastElementChild as HTMLElement).classList.contains('is-new')).toBe(true);
+
+        // A pin/like/edit/avatar re-render adds no message — nothing animates.
+        cm.renderMessages();
+        expect(container.querySelectorAll('.chat-message.is-new').length).toBe(0);
+
+        // A genuinely new message animates again, alone.
+        cm.messages.push({ id: 3, role: 'user', content: 'more', created_at: '2026-04-01' });
+        cm.renderMessages();
+        expect(container.querySelectorAll('.chat-message.is-new').length).toBe(1);
+    });
+});
+
+describe('stream_end releases the scroll lock only AFTER the final scroll', () => {
+    it('does not yank a reader who scrolled up mid-stream back to the bottom', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = {
+            id: 'c1', title: 't', role_preset: 'general', thinking_enabled: false,
+            is_starred: false, created_at: '2026-04-01',
+        };
+        cm.handleMessage({ type: 'stream_start', mode: '', conversation_id: 'c1' });
+        cm.handleMessage({ type: 'chunk', content: 'partial' });
+        // The scroll listener would set this when the user scrolls up to re-read.
+        (cm as unknown as { userScrolledUp: boolean }).userScrolledUp = true;
+
+        cm.handleMessage({ type: 'stream_end', full_response: 'partial and done' });
+
+        // finalizeStreamingMessage's scrollToBottom() saw the lock still held, so
+        // it bumped the "N new" badge instead of moving the viewport. Clearing
+        // the flag first (the bug) skipped this branch entirely.
+        expect(cm.newMessagesWhileScrolledUp).toBe(1);
+        expect(document.getElementById('scroll-to-bottom-fab')!.classList.contains('hidden'))
+            .toBe(false);
+        // …and the lock is released for the NEXT stream.
+        expect((cm as unknown as { userScrolledUp: boolean }).userScrolledUp).toBe(false);
+    });
+});
+
+describe('Export All emits one summary toast, not one per conversation', () => {
+    let anchorClick: ReturnType<typeof vi.spyOn>;
+    const infoToasts = () =>
+        Array.from(document.querySelectorAll('#toast-container .toast-info'))
+            .map(t => t.textContent || '');
+
+    beforeEach(() => {
+        // jsdom implements none of these; downloadExport hands the blob to the
+        // browser's download flow, which jsdom answers with a "navigation not
+        // implemented" console error unless the click is stubbed out.
+        URL.createObjectURL = vi.fn(() => 'blob:test');
+        URL.revokeObjectURL = vi.fn();
+        anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    });
+
+    afterEach(() => anchorClick.mockRestore());
+
+    it('suppresses the per-item toast and reports the total once', () => {
+        const cm = mountDomAndChat();
+        const bulk = cm as unknown as { bulkExportRemaining: number; bulkExportTotal: number };
+        bulk.bulkExportTotal = 2;
+        bulk.bulkExportRemaining = 2;
+
+        cm.downloadExport({ id: 'a', format: 'json', data: '{}' });
+        expect(infoToasts()).toHaveLength(0);   // ~16 of these used to stack up
+
+        cm.downloadExport({ id: 'b', format: 'json', data: '{}' });
+        expect(infoToasts()).toHaveLength(1);
+        expect(infoToasts()[0]).toContain('2 conversations');
+        expect(bulk.bulkExportRemaining).toBe(0);
+    });
+
+    it('counts a content-less ack too, so the counter cannot leak', () => {
+        const cm = mountDomAndChat();
+        const bulk = cm as unknown as { bulkExportRemaining: number; bulkExportTotal: number };
+        bulk.bulkExportTotal = 2;
+        bulk.bulkExportRemaining = 2;
+
+        // A failed export still consumed one slot of the run. Decrementing only
+        // on success left the counter above zero forever, silently swallowing
+        // every later single-export toast.
+        cm.downloadExport({ id: 'a', format: 'json', data: '' });
+        cm.downloadExport({ id: 'b', format: 'json', data: '{}' });
+
+        expect(bulk.bulkExportRemaining).toBe(0);
+        expect(infoToasts()).toHaveLength(1);
+    });
+
+    it('a single (non-bulk) export still toasts on its own', () => {
+        const cm = mountDomAndChat();
+        cm.downloadExport({ id: 'a', format: 'json', data: '{}' });
+        expect(infoToasts()).toHaveLength(1);
+        expect(infoToasts()[0]).toContain('Export sent to your downloads');
     });
 });

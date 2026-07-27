@@ -604,7 +604,13 @@
                 <div class="chat-not-running-overlay" id="chat-not-running-overlay">
                     <div class="overlay-content empty-state">
                         <svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg>
-                        <h3>Bot Not Running</h3>
+                        <!-- h2, not h3: when the bot is stopped syncChatOverlayInert()
+                             marks .chat-layout inert + aria-hidden, so the only headings
+                             left in the a11y tree are the page's <h1>AI Chat</h1> and this
+                             one — an h3 here was a literal h1→h3 jump (axe heading-order)
+                             with nothing for the H key to land on in between. Visually
+                             identical: .empty-state h2 and h3 share every rule. -->
+                        <h2>Bot Not Running</h2>
                         <p>Start the Discord bot to use AI Chat</p>
                         <button class="btn btn-primary btn-large" id="btn-overlay-start">
                             <svg class="ic" aria-hidden="true"><use href="#i-play"/></svg> Start Bot
@@ -720,7 +726,15 @@
                                 <!-- In-conversation search bar (Ctrl+F) -->
                                 <div class="chat-search-bar hidden" id="chat-search-bar" role="search">
                                     <input type="search" id="chat-search-input" placeholder="Search in conversation…" aria-label="Search in conversation">
-                                    <span class="chat-search-count" id="chat-search-count">0 / 0</span>
+                                    <!-- role=status + aria-live: focus never leaves
+                                         #chat-search-input during a search, so this label
+                                         was the ONLY signal of the result and it was a
+                                         purely visual one — "no matches" and "1 of 37"
+                                         sounded identical (silence), and Enter-stepping
+                                         announced nothing at all (WCAG 4.1.3). Matches the
+                                         AI-History counter, which already had this. -->
+                                    <span class="chat-search-count" id="chat-search-count"
+                                          role="status" aria-live="polite">0 / 0</span>
                                     <button class="btn btn-icon" id="chat-search-prev" title="Previous match" aria-label="Previous match"><svg class="ic" aria-hidden="true"><use href="#i-chevron-up"/></svg></button>
                                     <button class="btn btn-icon" id="chat-search-next" title="Next match" aria-label="Next match"><svg class="ic" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
                                     <!-- Sprite, not a bare &times;: this is the third
@@ -733,7 +747,17 @@
                                          different component with its own convention.) -->
                                     <button class="btn btn-icon" id="chat-search-close" title="Close (Esc)" aria-label="Close search"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
                                 </div>
-                                <div class="chat-messages" id="chat-messages" role="log" aria-live="polite" aria-relevant="additions" aria-label="Chat conversation">
+                                <!-- tabindex=0: this is the app's overflow-y:auto transcript
+                                     and it was the one scroll region with no tab stop, so
+                                     PageUp/PageDown/Home/End could not reach it — reading
+                                     back through a long conversation meant tabbing the
+                                     copy/pin/like/edit buttons of every message in the
+                                     virtualization window, one row at a time. Same
+                                     treatment as #ai-history-messages / #conversation-list.
+                                     Do NOT strip role/aria-live here: dashboard-smoke.spec
+                                     pins both, and the streaming announcement storm is
+                                     handled with aria-busy in chat-manager instead. -->
+                                <div class="chat-messages" id="chat-messages" tabindex="0" role="log" aria-live="polite" aria-relevant="additions" aria-label="Chat conversation">
                                     <!-- Messages will be rendered here -->
                                 </div>
                                 <button class="scroll-to-bottom-fab hidden" id="scroll-to-bottom-fab" aria-label="Scroll to bottom" title="Scroll to latest">
@@ -912,12 +936,33 @@
                                     </div>
                                 </div>
                                 <div class="setting-row">
+                                    <!-- The counter STAYS inside the <label>: it is
+                                         right-aligned onto the caption line by
+                                         `#chat-files-edit-view .setting-row label`
+                                         (flex/space-between), and .setting-row is a
+                                         2-column grid — promoting the span to a third
+                                         grid child pushes the 60vh textarea into the
+                                         200px caption column. -->
                                     <label for="chat-files-edit-text">
                                         Extracted text
-                                        <span class="setting-hint-inline" id="chat-files-edit-counter">0 chars</span>
+                                        <!-- Static text must match what updateCharCounter()
+                                             writes, or first paint and every later paint
+                                             disagree ("0 chars" → "1 / 500,000 chars"). -->
+                                        <span class="setting-hint-inline" id="chat-files-edit-counter">0 / 500,000 chars</span>
                                     </label>
                                     <div class="setting-control setting-control-full">
+                                        <!-- aria-label outranks the <label> subtree in the
+                                             accname algorithm, which is the point: without
+                                             it the textarea's accessible NAME was
+                                             "Extracted text 12,345 / 500,000 chars" and
+                                             changed on every keystroke, so Chromium fired a
+                                             name-change event per character and JAWS/NVDA
+                                             talked over their own echo. aria-describedby
+                                             keeps the count reachable — read on focus and
+                                             on demand, not on every edit. -->
                                         <textarea id="chat-files-edit-text"
+                                                  aria-label="Extracted text"
+                                                  aria-describedby="chat-files-edit-counter"
                                                   class="setting-textarea chat-files-edit-textarea"
                                                   spellcheck="false"
                                                   maxlength="500000"
@@ -970,8 +1015,20 @@
                      the window: until then the container sized to its content
                      and .content did the scrolling, so it never owned a
                      scrollbar and axe had nothing to flag. -->
-                <div class="log-container" id="log-container" tabindex="0">
-                    <pre id="log-content" role="log" aria-live="polite" aria-relevant="additions" aria-label="Bot logs">Loading logs...</pre>
+                <!-- The name lives on the CONTAINER, not the <pre>: loadLogs() polls
+                     every 1000ms and rebuilds #log-content wholesale whenever the tail
+                     signature changes, and inside a live region every one of those up-to-
+                     200 re-inserted lines counts as an *addition* — so role="log" +
+                     aria-live="polite" + aria-relevant="additions" made a screen reader
+                     re-read the whole buffer once a second and starved the polite queue
+                     the toasts and #status-badge share. Note a bare aria-live removal
+                     would NOT have been enough: role="log" carries an implicit
+                     aria-live="polite", so the role has to go too. The log tail is a
+                     document you read on demand (the container is tabindex=0), not a
+                     stream of announcements. -->
+                <div class="log-container" id="log-container" tabindex="0"
+                     role="group" aria-label="Bot logs">
+                    <pre id="log-content">Loading logs...</pre>
                 </div>
             </section>
 
@@ -1006,7 +1063,15 @@
                     <div class="data-section-header">
                         <h2>Recent Channels</h2>
                         <div class="selection-controls hidden" id="channel-selection-controls">
-                            <span class="selection-count" id="channel-selection-count">0 selected</span>
+                            <!-- role=status: "N selected" is the only readout of what the
+                                 adjacent irreversible "Delete Selected" will destroy, and
+                                 it was updating silently. NOTE for app.ts: the
+                                 `.hidden` toggle on #channel-selection-controls must keep
+                                 running BEFORE this element's textContent is written, or
+                                 the 0→1 update happens while the region is still
+                                 display:none and is never announced. -->
+                            <span class="selection-count" id="channel-selection-count"
+                                  role="status" aria-live="polite">0 selected</span>
                             <button class="btn btn-sm btn-danger" id="btn-delete-selected"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg> Delete Selected</button>
                         </div>
                     </div>
@@ -1064,16 +1129,30 @@
                         <div class="history-header is-placeholder" id="ai-history-header">
                             <h2>No channel selected</h2>
                         </div>
-                        <!-- role="log": an aria-label on a bare (role-less) div
-                             is ignored by AT — same fix as #chat-tags / #chat-messages.
-                             'log' also announces appended history to screen readers. -->
+                        <!-- role must NOT be blank: an aria-label on a bare (role-less)
+                             div is ignored by AT — same trap as #chat-tags.
+                             It also must not be "log": this pane is bulk-rendered, never
+                             appended to, so log's implicit aria-live="polite" made every
+                             channel open queue up to 500 rows for announcement. And it
+                             cannot be "list" HERE, because the static empty state below
+                             (svg/h3/p) would then be a non-listitem child of a list —
+                             an aria-required-children violation in exactly the boot state
+                             populated-a11y.spec.ts audits. "group" keeps the label working
+                             in every state; renderMessages() upgrades it to "list" only
+                             for the branch that actually emits role="listitem" rows. -->
                         <!-- tabindex=0: scroll container, same reason as
                              #ai-channel-list above (axe scrollable-region-focusable). -->
-                        <div class="history-messages" id="ai-history-messages" tabindex="0" role="log" aria-label="AI chat history messages">
+                        <div class="history-messages" id="ai-history-messages" tabindex="0" role="group" aria-label="AI chat history messages">
                             <div class="empty-state">
                                 <svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg>
                                 <h3>Select a channel</h3>
-                                <p>Pick a channel on the left to view its AI chat history.</p>
+                                <!-- Says "read, edit, or delete", not "view": this page's
+                                     whole reason to exist is correcting what the bot
+                                     remembers, and the row actions that do it were
+                                     undiscoverable. history-manager.ts regenerates this
+                                     same sentence on every no-channel render — keep the
+                                     two strings identical. -->
+                                <p>Pick a channel on the left to read, edit, or delete its saved AI chat history.</p>
                             </div>
                         </div>
                         <div class="history-load-all hidden" id="ai-history-load-all-container">

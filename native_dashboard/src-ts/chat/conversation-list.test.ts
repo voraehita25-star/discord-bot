@@ -315,3 +315,168 @@ describe('ConversationList.setupFilterInput', () => {
         expect(cb.onFilterChanged).toHaveBeenCalledOnce();
     });
 });
+
+describe('ConversationList.render — listbox keyboard contract', () => {
+    // The rail used to be click-ONLY: rows were plain <div data-id> with a
+    // delegated click handler and nothing else, so a keyboard-only user could
+    // Tab to the filter box and the scroll container but had no way to open a
+    // conversation. These lock in the same contract HistoryManager's channel
+    // rail already publishes.
+    const ctx = (convs: ChatConversation[], current: ChatConversation | null = null) =>
+        ({ conversations: convs, currentConversation: current, presets: {} });
+
+    it('publishes the container as a labelled listbox', () => {
+        const list = new ConversationList(mkCallbacks());
+        list.render(ctx([mkConv('a')]));
+
+        const container = document.getElementById('conversation-list')!;
+        expect(container.getAttribute('role')).toBe('listbox');
+        expect(container.getAttribute('aria-label')).toBe('Conversations');
+    });
+
+    it('renders rows as options carrying their selected state', () => {
+        const list = new ConversationList(mkCallbacks());
+        const convs = [mkConv('a'), mkConv('b')];
+        list.render(ctx(convs, convs[1]));
+
+        const rows = Array.from(document.querySelectorAll<HTMLElement>('.conversation-item'));
+        expect(rows.map(r => r.getAttribute('role'))).toEqual(['option', 'option']);
+        expect(rows.map(r => r.getAttribute('aria-selected'))).toEqual(['false', 'true']);
+    });
+
+    it('keeps the rail to ONE tab stop — exactly one row is tabbable', () => {
+        const list = new ConversationList(mkCallbacks());
+        list.render(ctx([mkConv('a'), mkConv('b'), mkConv('c')]));
+
+        const tabbable = Array.from(document.querySelectorAll('.conversation-item'))
+            .filter(r => r.getAttribute('tabindex') === '0');
+        expect(tabbable.length).toBe(1);
+    });
+
+    it('anchors the roving tabindex on the OPEN conversation, not the first row', () => {
+        const list = new ConversationList(mkCallbacks());
+        const convs = [mkConv('a'), mkConv('b'), mkConv('c')];
+        list.render(ctx(convs, convs[2]));
+
+        const tabbable = document.querySelector<HTMLElement>('.conversation-item[tabindex="0"]');
+        expect(tabbable?.dataset.id).toBe('c');
+        expect(document.getElementById('conversation-list')!.getAttribute('aria-activedescendant'))
+            .toBe('conversation-opt-c');
+    });
+
+    it('falls back to the first row when the open conversation is filtered out', async () => {
+        const cb = mkCallbacks();
+        const list = new ConversationList(cb);
+        const convs = [mkConv('a', { title: 'Alpha' }), mkConv('b', { title: 'Beta' })];
+        list.render(ctx(convs, convs[1]));
+
+        const input = document.getElementById('conversation-filter-input') as HTMLInputElement;
+        input.value = 'Alpha';
+        input.dispatchEvent(new Event('input'));
+        await new Promise(r => setTimeout(r, 200));
+        list.render(ctx(convs, convs[1]));
+
+        const tabbable = document.querySelector<HTMLElement>('.conversation-item[tabindex="0"]');
+        expect(tabbable?.dataset.id).toBe('a');
+        // No visible option is selected, so the container must not point at one.
+        expect(document.getElementById('conversation-list')!.hasAttribute('aria-activedescendant'))
+            .toBe(false);
+    });
+
+    for (const key of ['Enter', ' ']) {
+        it(`opens the focused conversation on ${key === ' ' ? 'Space' : key}`, () => {
+            const cb = mkCallbacks();
+            const list = new ConversationList(cb);
+            list.render(ctx([mkConv('a'), mkConv('b')]));
+
+            const row = document.querySelector<HTMLElement>('.conversation-item[data-id="b"]')!;
+            row.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+
+            expect(cb.onLoadConversation).toHaveBeenCalledWith('b');
+        });
+    }
+
+    it('moves focus on ArrowDown/ArrowUp/Home/End WITHOUT opening anything', () => {
+        const cb = mkCallbacks();
+        const list = new ConversationList(cb);
+        list.render(ctx([mkConv('a'), mkConv('b'), mkConv('c')]));
+
+        const at = () => document.querySelector<HTMLElement>('.conversation-item[tabindex="0"]')!.dataset.id;
+        const press = (key: string) => {
+            const row = document.querySelector<HTMLElement>('.conversation-item[tabindex="0"]')!;
+            row.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+        };
+
+        expect(at()).toBe('a');
+        press('ArrowDown');
+        expect(at()).toBe('b');
+        press('End');
+        expect(at()).toBe('c');
+        press('ArrowDown');   // clamps at the end, does not wrap
+        expect(at()).toBe('c');
+        press('ArrowUp');
+        expect(at()).toBe('b');
+        press('Home');
+        expect(at()).toBe('a');
+        press('ArrowUp');     // clamps at the start
+        expect(at()).toBe('a');
+
+        // Arrowing surveys the rail; it never commits.
+        expect(cb.onLoadConversation).not.toHaveBeenCalled();
+    });
+
+    it('drops the key handler when the list falls back to an empty state', () => {
+        const cb = mkCallbacks();
+        const list = new ConversationList(cb);
+        list.render(ctx([mkConv('a')]));
+        const container = document.getElementById('conversation-list')!;
+
+        list.render(ctx([]));
+        container.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+        expect(cb.onLoadConversation).not.toHaveBeenCalled();
+        expect(container.hasAttribute('aria-activedescendant')).toBe(false);
+    });
+
+    it('downgrades the container to a group in both empty states', async () => {
+        // A listbox whose only child is <div class="no-conversations"> is an
+        // aria-required-children violation, and AT reads it as "listbox, 0
+        // items" — swallowing the very message that explains the empty rail.
+        // The name has to survive both states, so it stays outside the switch.
+        const cb = mkCallbacks();
+        const list = new ConversationList(cb);
+        const container = document.getElementById('conversation-list')!;
+
+        list.render(ctx([]));
+        expect(container.getAttribute('role')).toBe('group');
+        expect(container.getAttribute('aria-label')).toBe('Conversations');
+
+        // ...and the no-match state, which the e2e axe pass never reaches.
+        const convs = [mkConv('a', { title: 'Alpha' })];
+        list.render(ctx(convs));
+        expect(container.getAttribute('role')).toBe('listbox');
+
+        const input = document.getElementById('conversation-filter-input') as HTMLInputElement;
+        input.value = 'zzz';
+        input.dispatchEvent(new Event('input'));
+        await new Promise(r => setTimeout(r, 200));
+        list.render(ctx(convs));
+
+        expect(document.querySelector('.no-conversations')).not.toBeNull();
+        expect(container.getAttribute('role')).toBe('group');
+        expect(container.getAttribute('aria-label')).toBe('Conversations');
+    });
+
+    it('re-render does not stack a second key handler (one open per Enter)', () => {
+        const cb = mkCallbacks();
+        const list = new ConversationList(cb);
+        list.render(ctx([mkConv('a')]));
+        list.render(ctx([mkConv('a')]));
+        list.render(ctx([mkConv('a')]));
+
+        const row = document.querySelector<HTMLElement>('.conversation-item[data-id="a"]')!;
+        row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+        expect(cb.onLoadConversation).toHaveBeenCalledTimes(1);
+    });
+});

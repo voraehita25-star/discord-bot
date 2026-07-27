@@ -14,6 +14,7 @@
  * Each modal is guarded against running while streaming so the user can't
  * mutate a conversation mid-response.
  */
+import { showToast } from '../shared.js';
 export class ConversationModals {
     cb;
     pendingDeleteId = null;
@@ -45,8 +46,14 @@ export class ConversationModals {
     // ---------- Delete ----------
     /** Called by the trash-can button in the chat header. */
     showDelete(id) {
-        if (this.cb.isStreaming())
+        // Say why nothing happened. The trash-can stays fully enabled and
+        // clickable during a stream, so a silent return read as a wedged app —
+        // the user just clicked again. The message-level Edit/Delete buttons
+        // already toast for this exact condition.
+        if (this.cb.isStreaming()) {
+            showToast('Wait for the current response to finish', { type: 'warning' });
             return;
+        }
         this.pendingDeleteId = id;
         this.previousFocus = document.activeElement;
         const modal = document.getElementById('delete-confirm-modal');
@@ -84,8 +91,12 @@ export class ConversationModals {
     // ---------- Rename ----------
     /** Called by the pencil button in the chat header. */
     showRename(id) {
-        if (this.cb.isStreaming())
+        // Same silent-no-op fix as showDelete — the pencil button never
+        // disables, so the click has to be answered with something.
+        if (this.cb.isStreaming()) {
+            showToast('Wait for the current response to finish', { type: 'warning' });
             return;
+        }
         const conv = this.cb.findConversation(id);
         this.pendingRenameId = id;
         const modal = document.getElementById('rename-modal');
@@ -110,6 +121,13 @@ export class ConversationModals {
                 title: newTitle,
             });
             this.pendingRenameId = null;
+        }
+        else if (this.pendingRenameId) {
+            // Emptying the box and pressing Save used to close the modal with no
+            // frame sent and no explanation, so the title silently stayed put.
+            // Say so — but still close, because the modal's contract (asserted
+            // by conversation-modals.test.ts) is that confirm always dismisses.
+            showToast('Conversation name cannot be empty', { type: 'warning' });
         }
         this.closeRename();
     }

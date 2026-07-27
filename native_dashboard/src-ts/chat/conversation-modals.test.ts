@@ -17,10 +17,17 @@ const MODALS_HTML = `
     <div id="rename-modal" class="modal">
         <input id="rename-input" type="text">
     </div>
+    <div id="toast-container"></div>
 `;
 
 function mountDom(): void {
     document.body.innerHTML = MODALS_HTML;
+}
+
+/** The text of every toast currently in the container. */
+function toastMessages(): string[] {
+    return Array.from(document.querySelectorAll('#toast-container .toast-message'))
+        .map((el) => el.textContent ?? '');
 }
 
 function mkConv(id: string, overrides: Partial<ChatConversation> = {}): ChatConversation {
@@ -76,6 +83,12 @@ describe('ConversationModals.showDelete', () => {
         const { modals } = mkModals({ isStreaming: () => true });
         modals.showDelete('c1');
         expect(document.getElementById('delete-confirm-modal')!.classList.contains('active')).toBe(false);
+    });
+
+    it('explains the streaming block instead of swallowing the click', () => {
+        const { modals } = mkModals({ isStreaming: () => true });
+        modals.showDelete('c1');
+        expect(toastMessages()).toEqual(['Wait for the current response to finish']);
     });
 
     it('does not throw when modal node is missing (hot-reload safety)', () => {
@@ -164,6 +177,12 @@ describe('ConversationModals.showRename', () => {
         modals.showRename('c1');
         expect(document.getElementById('rename-modal')!.classList.contains('active')).toBe(false);
     });
+
+    it('explains the streaming block instead of swallowing the click', () => {
+        const { modals } = mkModals({ isStreaming: () => true });
+        modals.showRename('c1');
+        expect(toastMessages()).toEqual(['Wait for the current response to finish']);
+    });
 });
 
 describe('ConversationModals.confirmRename', () => {
@@ -190,6 +209,8 @@ describe('ConversationModals.confirmRename', () => {
 
         expect(cb.sendWsMessage).not.toHaveBeenCalled();
         expect(document.getElementById('rename-modal')!.classList.contains('active')).toBe(false);
+        // ...but say why the title didn't change.
+        expect(toastMessages()).toEqual(['Conversation name cannot be empty']);
     });
 
     it('skips the send when the input is whitespace-only', () => {
@@ -199,6 +220,7 @@ describe('ConversationModals.confirmRename', () => {
         input.value = '     ';
         modals.confirmRename();
         expect(cb.sendWsMessage).not.toHaveBeenCalled();
+        expect(toastMessages()).toEqual(['Conversation name cannot be empty']);
     });
 
     it('does nothing when showRename() was never called', () => {
@@ -207,6 +229,17 @@ describe('ConversationModals.confirmRename', () => {
         input.value = 'stray input';
         modals.confirmRename();
         expect(cb.sendWsMessage).not.toHaveBeenCalled();
+        // No pending id means there was no rename to reject — stay quiet.
+        expect(toastMessages()).toEqual([]);
+    });
+
+    it('does not toast on a successful rename', () => {
+        const { modals } = mkModals();
+        modals.showRename('c1');
+        const input = document.getElementById('rename-input') as HTMLInputElement;
+        input.value = 'New Title';
+        modals.confirmRename();
+        expect(toastMessages()).toEqual([]);
     });
 });
 

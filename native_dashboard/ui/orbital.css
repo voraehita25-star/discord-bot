@@ -1644,6 +1644,16 @@ h1 .ic, h2 .ic, h3 .ic,
 /* ≤820px: fluid stat grid + stack the chat / history two-pane layouts. */
 @media (max-width: 820px) {
     .stats-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+    /* Database pairs off 2x2 here, exactly as it already does at 821–1149px.
+       Without this it inherited the fluid auto-fit above, which at the 800px
+       window MINIMUM resolves to four 165px tracks — and with the hero still
+       spanning two of them the strip came out as three tiles on row one and a
+       lone "RAG Memories" on row two beside 499px of nothing. 165px also cut
+       "Active Channels" and "RAG Memories" to an ellipsis; two ~330px tracks
+       fit both labels whole. Status is left alone: its hero spans the two free
+       cells of row two, so its strip is already flush. */
+    #page-database .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #page-database .stat-card--hero { grid-column: span 1; }
     .chat-layout, .history-layout { flex-direction: column; }
     .chat-sidebar, .history-sidebar {
         width: auto;
@@ -3677,6 +3687,25 @@ html[data-theme="light"] .chat-input-hint { color: var(--text-tertiary); }
 }
 #crop-zoom:focus-visible { outline: none; }
 #crop-zoom:focus-visible::-webkit-slider-thumb { box-shadow: var(--focus-ring); }
+
+/* Windows High Contrast strips every box-shadow, and these three controls trade
+   their outline away for one — `.data-item-checkbox:focus-visible` (0,2,0) and
+   the two id rules (1,1,0) both outrank the authoritative
+   `input:focus-visible {outline: 2px solid var(--accent-cyan)}` block up at the
+   focus section (0,1,1) AND come later, so under forced-colors the focus
+   indicator resolved to literally nothing. Worst case is the Database page's
+   per-row checkbox, where a keyboard user selects rows blind and then presses
+   the irreversible "Delete Selected".
+   This block MUST stay after the `outline: none` rules above — a media query
+   adds no specificity, so it only wins on source order. */
+@media (forced-colors: active) {
+    .data-item-checkbox:focus-visible,
+    #modal-thinking:focus-visible,
+    #crop-zoom:focus-visible {
+        outline: 2px solid;
+        outline-offset: 2px;
+    }
+}
 
 /* The provider select in the New Conversation modal was the one select in the
    app with no chevron — it read as a text field. `.select-provider-inline` was
