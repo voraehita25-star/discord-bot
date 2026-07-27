@@ -544,6 +544,11 @@ export class ChatManager {
                 this.resetContextWindowIndicator();
                 this.listConversations();
                 this.closeModal();
+                // Land in the composer, not back on the "+ New" button that
+                // opened the dialog. closeModal() restores focus to its trigger
+                // (the correct default when a dialog is cancelled), but the whole
+                // point of a just-created conversation is to type into it.
+                (document.getElementById('chat-input') as HTMLTextAreaElement | null)?.focus();
                 break;
 
             case 'conversation_loaded': {
@@ -2818,6 +2823,62 @@ export class ChatManager {
     setupImageUpload(): void { this.imageAttach.setup(this.docAttach, () => this.isStreaming); }
 
     // ========================================================================
+    // Modal dismissal — Escape + focus handoff
+    // ========================================================================
+    //
+    // #new-chat-modal and #chat-files-modal used to open with a bare
+    // `classList.add('active')`: no Escape, no focus move, no focus restore.
+    // Both the Settings shortcut card and #shortcuts-modal advertise
+    // "Esc — Close modal / cancel", so those two dialogs were the ones
+    // contradicting the app's own documented reference, and a keyboard user who
+    // opened either was left with focus on <body> BEHIND the overlay.
+    //
+    // These modals live INSIDE `.app` (both are nested in <section id="page-chat">),
+    // so they deliberately do NOT route through app.ts's openModal/closeModal —
+    // that helper inerts `.app`, which would inert the dialog along with it.
+    // Same reason ConversationModals (rename/delete) rolls its own; this mirrors
+    // that class's attachEscape/restoreFocus shape.
+
+    private modalEscapeHandler: ((e: KeyboardEvent) => void) | null = null;
+    private modalPreviousFocus: HTMLElement | null = null;
+
+    /** Bind Escape to `close` for as long as the modal is open, and remember the
+     * trigger so focus can go back to it. Attaching lazily (rather than one
+     * permanent listener) keeps Escape off the hot path for every other keystroke. */
+    private attachModalDismiss(close: () => void): void {
+        this.detachModalDismiss();
+        this.modalPreviousFocus = document.activeElement as HTMLElement | null;
+        this.modalEscapeHandler = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') close();
+        };
+        document.addEventListener('keydown', this.modalEscapeHandler);
+    }
+
+    private detachModalDismiss(): void {
+        if (this.modalEscapeHandler) {
+            document.removeEventListener('keydown', this.modalEscapeHandler);
+            this.modalEscapeHandler = null;
+        }
+    }
+
+    /** Return focus to the opener, if it survived the modal (a conversation row
+     * can be re-rendered or deleted while the dialog is up). */
+    private restoreModalFocus(): void {
+        const prev = this.modalPreviousFocus;
+        this.modalPreviousFocus = null;
+        if (prev && document.body.contains(prev) && typeof prev.focus === 'function') {
+            prev.focus();
+        }
+    }
+
+    /** Move focus into a just-opened dialog (WCAG 2.4.3). Falls back through the
+     * close button so focus is never stranded behind the overlay. */
+    private focusIntoModal(modal: HTMLElement, preferred?: HTMLElement | null): void {
+        const target = preferred ?? modal.querySelector<HTMLElement>('.modal-close');
+        target?.focus();
+    }
+
+    // ========================================================================
     // Chat Files Modal — per-conversation document list (📎 button)
     // ========================================================================
 
@@ -2837,6 +2898,15 @@ export class ChatManager {
         if (list) list.innerHTML = '';
         if (empty) empty.classList.add('hidden');
         modal.classList.add('active');
+        // Escape unwinds one layer at a time: from the editor it goes back to
+        // the list (identical to the Back/Cancel buttons, which also discard
+        // without prompting), and from the list it closes the dialog.
+        this.attachModalDismiss(() => {
+            const editing = !document.getElementById('chat-files-edit-view')?.classList.contains('hidden');
+            if (editing) this.closeChatFileEditor();   // it handles its own focus handoff
+            else this.closeChatFilesModal();
+        });
+        this.focusIntoModal(modal, document.getElementById('chat-files-close'));
         const sent = this.send({
             type: 'list_conversation_documents',
             conversation_id: this.currentConversation.id,
@@ -2851,6 +2921,8 @@ export class ChatManager {
     closeChatFilesModal(): void {
         const modal = document.getElementById('chat-files-modal');
         modal?.classList.remove('active');
+        this.detachModalDismiss();
+        this.restoreModalFocus();
     }
 
     /** Handler for the `conversation_documents` WS frame. Renders the list
@@ -3011,12 +3083,22 @@ export class ChatManager {
     }
 
     closeChatFileEditor(): void {
+        const wasFocusInEditor = document
+            .getElementById('chat-files-edit-view')
+            ?.contains(document.activeElement) ?? false;
         this.editingDocId = null;
         document.getElementById('chat-files-edit-view')?.classList.add('hidden');
         document.getElementById('chat-files-list-view')?.classList.remove('hidden');
         // Shrink the modal back to the compact list size — the CSS
         // transition makes this feel smooth rather than popping.
         document.querySelector('.chat-files-modal-content')?.classList.remove('editing');
+        // Every route out of the editor (Back, Cancel, Escape) hides the element
+        // that currently holds focus — the textarea, or the very button that was
+        // just clicked. Without this, focus drops to <body> behind the still-open
+        // dialog and the next Tab restarts from the top of the document.
+        if (wasFocusInEditor) {
+            (document.getElementById('chat-files-close') as HTMLElement | null)?.focus();
+        }
     }
 
     /** Refresh the char counter under the textarea. */
@@ -3477,12 +3559,22 @@ export class ChatManager {
                     : this.aiProvider;
             }
             this.updateRoleSelection();
+            this.attachModalDismiss(() => this.closeModal());
+            // The checked role card, not the close X: it is the first control of
+            // the radiogroup this dialog exists to operate, and updateRoleSelection()
+            // has just made it the group's single tab stop.
+            this.focusIntoModal(
+                modal,
+                modal.querySelector<HTMLElement>('.role-card.selected'),
+            );
         }
     }
 
     closeModal(): void {
         const modal = document.getElementById('new-chat-modal');
         if (modal) modal.classList.remove('active');
+        this.detachModalDismiss();
+        this.restoreModalFocus();
     }
 
     selectRole(role: string): void {

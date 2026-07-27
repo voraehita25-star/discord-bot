@@ -712,16 +712,21 @@ function setupCardTilt(): void {
             });
         }
     });
-    // Scope the observer to the dynamic regions that actually render new
+    // Scope the observer to the dynamic region that actually renders new
     // role/status cards instead of the entire <body>. Observing all of
     // document.body fires the callback on every chat re-render, every sakura
     // petal append/remove, every toast, every log refresh — pure CPU waste
     // that grows with session length. Falling back to body only if no
     // narrower target is found.
-    const scope =
-        document.getElementById('role-cards-container') ||
-        document.getElementById('main-content') ||
-        document.body;
+    //
+    // #main-content IS the narrow target: it holds every .stat-card (status +
+    // database grids) and every .role-card (the New Conversation modal is
+    // nested inside <section id="page-chat">). There used to be a
+    // getElementById('role-cards-container') ahead of it — no such id has ever
+    // existed in index.html (the container is class .role-cards), so it always
+    // fell through to here. Worse if it had ever matched: scoping to the role
+    // cards alone would have stopped observing .stat-card entirely.
+    const scope = document.getElementById('main-content') || document.body;
     observer.observe(scope, { childList: true, subtree: true });
 
     // Disconnect on unload so the observer + its closure aren't held for the

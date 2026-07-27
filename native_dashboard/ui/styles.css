@@ -942,6 +942,14 @@ html[data-theme="light"] .api-health-result {
     background: var(--surface-2);
 }
 
+/* CRITICAL outranks ERROR, so it cannot look the same as it. Same red family,
+   but bold and carrying a tint of its own (see orbital.css) — the bot only
+   emits this for fatals it is about to die on. */
+.log-line.critical {
+    color: var(--accent-red);
+    font-weight: 700;
+}
+
 .log-line.error {
     color: var(--accent-red);
 }

@@ -25,6 +25,8 @@ import {
     toggleAutoScroll,
     pickTopmostModal,
     initTheme,
+    classifyLogLines,
+    LOG_LEVELS,
 } from './app';
 
 // ============================================================================
@@ -477,17 +479,14 @@ describe('initTheme — first-run prefers-color-scheme (A11Y-05)', () => {
 // ============================================================================
 
 describe('Log Filtering', () => {
-    function filterLogs(logs: string[], filter: string): string[] {
-        if (filter === 'all') return logs;
-        return logs.filter(line => line.includes(filter));
-    }
-
-    function getLogLevel(line: string): string {
-        if (line.includes('ERROR')) return 'error';
-        if (line.includes('WARNING')) return 'warning';
-        if (line.includes('DEBUG')) return 'debug';
-        return 'info';
-    }
+    // These used to run against local filterLogs()/getLogLevel() mirrors of the
+    // shipped logic. The mirrors agreed with the code, and both were missing
+    // CRITICAL — so the case below (a fatal line rendering as INFO and vanishing
+    // under the ERROR filter) passed review twice. They now call the exported
+    // classifyLogLines() so a divergence in the SHIPPED classifier fails here.
+    const filterLogs = (logs: string[], filter: string): string[] =>
+        classifyLogLines(logs, filter).map(r => r.line);
+    const getLogLevel = (line: string): string => classifyLogLines([line], 'all')[0].level;
 
     it('should return all logs when filter is "all"', () => {
         const result = filterLogs(mockLogs, 'all');
@@ -516,6 +515,71 @@ describe('Log Filtering', () => {
         expect(getLogLevel(mockLogs[0])).toBe('info');
         expect(getLogLevel(mockLogs[1])).toBe('warning');
         expect(getLogLevel(mockLogs[2])).toBe('error');
+    });
+
+    // --- CRITICAL: the level bot.py logs its fatals with -------------------
+    // utils/monitoring/logger.py formats the column as [%(levelname)s], and
+    // bot.py::main() uses logger.critical for a missing/invalid DISCORD_TOKEN
+    // and for network failures reaching Discord. The classifier did not know
+    // the token, so these lines took the previous line's level (or 'info').
+    const criticalLine = '2026-07-27 12:00:02 [CRITICAL] DISCORD_TOKEN is not set';
+
+    it('tags a CRITICAL line as critical, not info', () => {
+        expect(getLogLevel(criticalLine)).toBe('critical');
+    });
+
+    it('does not let a CRITICAL line inherit the previous line’s level', () => {
+        const rows = classifyLogLines(
+            ['2026-07-27 12:00:01 [INFO] starting up', criticalLine],
+            'all',
+        );
+        expect(rows.map(r => r.level)).toEqual(['info', 'critical']);
+    });
+
+    it('surfaces CRITICAL lines under the CRITICAL filter', () => {
+        const rows = classifyLogLines(
+            ['2026-07-27 12:00:01 [INFO] starting up', criticalLine],
+            'CRITICAL',
+        );
+        expect(rows).toHaveLength(1);
+        expect(rows[0].line).toBe(criticalLine);
+    });
+
+    it('surfaces DEBUG lines under the DEBUG filter', () => {
+        const debugLine = '2026-07-27 12:00:03 [DEBUG] cache hit';
+        const rows = classifyLogLines([mockLogs[0], debugLine], 'DEBUG');
+        expect(rows).toEqual([{ line: debugLine, level: 'debug' }]);
+    });
+
+    it('every level the classifier can emit is offered by the filter menu', () => {
+        // LOG_LEVELS is the contract index.html's <option> values mirror; the
+        // e2e twin of this assertion checks the markup itself.
+        for (const level of LOG_LEVELS) {
+            const line = `2026-07-27 12:00:00 [${level}] something happened`;
+            expect(getLogLevel(line)).toBe(level.toLowerCase());
+            expect(classifyLogLines([line], level)).toHaveLength(1);
+        }
+    });
+
+    it('carries a level forward onto continuation lines (traceback bodies)', () => {
+        const rows = classifyLogLines(
+            [
+                '2026-07-27 12:00:02 [ERROR] Unhandled exception',
+                '  File "bot.py", line 1190, in main',
+                '    raise RuntimeError(msg)',
+            ],
+            'ERROR',
+        );
+        expect(rows).toHaveLength(3);
+        expect(rows.every(r => r.level === 'error')).toBe(true);
+    });
+
+    it('ignores a level word that only appears in the message text', () => {
+        // The token is anchored to the level column, so an INFO line that talks
+        // ABOUT errors is neither coloured red nor caught by the ERROR filter.
+        const line = '2026-07-27 12:00:00 [INFO] scan complete, no ERROR found';
+        expect(getLogLevel(line)).toBe('info');
+        expect(classifyLogLines([line], 'ERROR')).toHaveLength(0);
     });
 });
 

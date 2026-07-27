@@ -405,4 +405,25 @@ test('document language matches its content, with Korean strings marked', async 
         return bad;
     });
     expect(unmarked, `Korean text with no lang="ko" ancestor: ${unmarked.join(' | ')}`).toEqual([]);
+
+    // The walk above only sees TEXT nodes, so it stepped straight past the
+    // sidebar's aria-label="주 메뉴" — a Korean accessible name in a lang="en"
+    // document, and the FIRST thing announced on entering the landmark. Unlike
+    // the skip link and the logo, an attribute value cannot carry lang="ko", so
+    // there is no way to mark it: the accessible name has to be English.
+    // (Korean visible branding is unaffected — that is what the walk covers.)
+    const koreanNames = await page.evaluate(() => {
+        const HANGUL = /[가-힣]/;
+        const ATTRS = ['aria-label', 'title', 'placeholder', 'alt', 'aria-description'];
+        const bad: string[] = [];
+        for (const el of Array.from(document.querySelectorAll('*'))) {
+            for (const a of ATTRS) {
+                const v = el.getAttribute(a);
+                if (v && HANGUL.test(v)) bad.push(`${el.tagName.toLowerCase()}[${a}="${v}"]`);
+            }
+        }
+        return bad;
+    });
+    expect(koreanNames, `Korean in an accessible name, which cannot be lang-marked: ${koreanNames.join(' | ')}`)
+        .toEqual([]);
 });

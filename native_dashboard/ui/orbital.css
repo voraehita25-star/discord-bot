@@ -200,6 +200,7 @@
     --chart-fill-bot: rgba(255, 161, 194, .05);
 
     /* severity (log rails + toast rails) */
+    --sev-critical: #ff2d55;
     --sev-error: var(--accent-red);
     --sev-warn:  var(--accent-orange);
     --sev-info:  var(--accent-green);
@@ -306,6 +307,7 @@ html[data-theme="light"],
     --chart-fill-bot: rgba(163, 37, 93, .03);
 
     /* severity (dawn) */
+    --sev-critical: #8f0b26;
     --sev-error: #b3223c;
     --sev-warn:  #8f5310;
     --sev-info:  #0f7a4d;
@@ -1018,10 +1020,12 @@ html[data-theme="light"] #page-logs .page-header {
 
 /* Severity rails — a left-edge inset bar + faint matching wash. */
 .log-line { position: relative; padding-left: var(--space-3); }
+.log-line.critical { box-shadow: inset 3px 0 0 var(--sev-critical); background: rgba(255, 93, 120, 0.14); }
 .log-line.error   { box-shadow: inset 3px 0 0 var(--sev-error);  background: rgba(255, 93, 120, 0.06); }
 .log-line.warning { box-shadow: inset 3px 0 0 var(--sev-warn);   background: rgba(255, 184, 92, 0.06); }
 .log-line.info    { box-shadow: inset 3px 0 0 var(--sev-info);   background: transparent; }
 .log-line.debug   { box-shadow: inset 3px 0 0 var(--sev-debug);  background: transparent; }
+html[data-theme="light"] .log-line.critical { background: rgba(143, 11, 38, 0.13); }
 html[data-theme="light"] .log-line.error   { background: rgba(179, 34, 60, 0.07); }
 html[data-theme="light"] .log-line.warning { background: rgba(143, 83, 16, 0.08); }
 
@@ -2379,7 +2383,14 @@ html[data-theme="light"] .btn-warning:hover:not(:disabled) {
     min-height: 40px;
     padding: 10px 12px;
     border-radius: var(--radius-sm);
-    background: var(--surface-2);
+    /* background-COLOR, not the `background` shorthand. The shorthand resets
+       background-image to none, and at (0,1,1) `.modal-body select` outranks the
+       (0,1,0) `.select-provider` chevron rule further down this file — so the
+       New Conversation modal's provider <select> shipped with no chevron and
+       read as a plain text field, which is the exact bug the note above that
+       rule says it was fixing. Only the fill belongs here; leave every other
+       background longhand to the rules that own it. */
+    background-color: var(--surface-2);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
     font-family: var(--font-ui);
@@ -2473,12 +2484,20 @@ html[data-theme="light"] .nav-items::after { opacity: 0.13; }
     border-color: var(--border-strong);
 }
 
-/* ---- conversation sidebar header — room to breathe ------------------------- */
+/* ---- list-rail headers — room to breathe ----------------------------------- */
 .chat-sidebar-header {
     padding: var(--space-4) var(--space-4) var(--space-3);
     gap: var(--space-3);
 }
-.chat-sidebar-header h2 {
+/* The History page's "Channels" rail is the same object as the Chat page's
+   "Conversations" rail — a titled list with one action button — and the layout
+   rule further up styles the pair together. Only this type treatment was scoped
+   to the chat one, so the two panels sat side by side in the app wearing
+   different headers: mono/uppercase/--step--1 vs display/sentence-case/--step-1.
+   The panel-eyebrow treatment is the one that belongs to a rail; it now applies
+   to both. */
+.chat-sidebar-header h2,
+.history-sidebar-header h2 {
     font-family: var(--font-mono);
     font-weight: 600;
     text-transform: uppercase;
@@ -3664,8 +3683,17 @@ html[data-theme="light"] .chat-input-hint { color: var(--text-tertiary); }
    added to the chevron list when this was last fixed; its sibling
    `.select-provider` was not, and the `background` SHORTHAND on both of them in
    styles.css (0,1,0) outranks the bare `select` element selector (0,0,1) that
-   was supposed to be covering it. */
-.select-provider {
+   was supposed to be covering it.
+   That fix then went on losing anyway, to a rule nobody suspected: this select
+   sits in a modal body, and `.modal-body select` (0,1,1) beats a bare
+   `.select-provider` (0,1,0). Its `background` shorthand reset background-image
+   to none all over again. Two things keep it fixed now — that rule uses
+   background-COLOR (see it for why), and the `.modal-body .select-provider`
+   twin below, which is load-bearing rather than redundant: without it the same
+   rule's `padding` shorthand claws padding-right back to 12px and runs the
+   option text under the chevron. */
+.select-provider,
+.modal-body .select-provider {
     appearance: none;
     -webkit-appearance: none;
     background-color: var(--surface-2);

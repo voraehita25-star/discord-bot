@@ -340,7 +340,14 @@ function initKeyboardShortcuts(): void {
         // chain re-evaluated `e.ctrlKey && …` for every shortcut, and a future
         // overlapping binding would double-fire). Ctrl chords switch on the
         // normalized key; plain keys are handled after.
-        if (e.ctrlKey) {
+        // `e.altKey` excluded deliberately: on Windows, AltGr reports as
+        // Ctrl+Alt, and on several layouts AltGr+digit is how you type a common
+        // character — AltGr+2 is @ and AltGr+3 is # on Spanish, AltGr+4 is ¢ on
+        // Latin-American. Without this guard, typing an email address into the
+        // chat composer navigated the user to the AI Chat page mid-word (the
+        // e.code branch below reads Digit2 regardless of the character produced).
+        // No app shortcut is a Ctrl+Alt chord, so dropping the whole class is safe.
+        if (e.ctrlKey && !e.altKey) {
             // Ctrl+1-6 for page navigation. Key off e.code ('Digit1'..'Digit6')
             // so the shortcut is layout-independent — on AZERTY and similar
             // layouts the unmodified top-row keys emit symbols (&é"'(-) and
@@ -2605,6 +2612,62 @@ async function startDevBot(): Promise<void> {
 
 let lastLogFilter: string | null = null;
 
+/**
+ * Every level token the log viewer recognises, most severe first.
+ *
+ * MUST stay in sync with the `#log-filter` <option> values in index.html (a
+ * level the classifier can produce but the menu can't select is a line the user
+ * can see coloured and never filter to) and with the `.log-line.<level>` rules
+ * in styles.css / orbital.css. tests-e2e/ui-invariants.spec.ts asserts the
+ * first pairing so the three can't drift apart again.
+ *
+ * CRITICAL is here because bot.py logs its fatals with it — bad or missing
+ * DISCORD_TOKEN, network failure contacting Discord, unhandled startup errors —
+ * and utils/monitoring/logger.py formats the column as `[%(levelname)s]`. It
+ * used to be absent, so the single most severe line the bot can emit inherited
+ * the PREVIOUS line's level (or fell back to 'info'): it rendered green, and a
+ * user who filtered to ERROR to find out why the bot wouldn't start was shown
+ * everything except the reason.
+ */
+export const LOG_LEVELS = ['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'] as const;
+
+const LOG_LEVEL_RE = new RegExp(`\\b(${LOG_LEVELS.join('|')})\\b`);
+
+/**
+ * Split raw log lines into `{line, level}` pairs, dropping anything the filter
+ * excludes. Pure, and exported so app.test.ts exercises the SHIPPED classifier
+ * rather than a mirror re-implementation — the mirror in the old test happily
+ * agreed with the code while both were missing CRITICAL.
+ *
+ * `filter` is 'all' or one of LOG_LEVELS.
+ */
+export function classifyLogLines(
+    logs: string[],
+    filter: string,
+): Array<{ line: string; level: string }> {
+    const out: Array<{ line: string; level: string }> = [];
+    // Continuation lines (traceback bodies, wrapped messages) carry no level
+    // token of their own — they belong to the last tagged entry. Carrying that
+    // level forward keeps a filtered ERROR view showing its traceback instead
+    // of dropping the most useful part of the error.
+    let carriedLevelToken: string | undefined;
+    for (const line of logs) {
+        // Anchor the level to a standalone token (the structured log-level
+        // column) rather than a whole-line substring match, so message text that
+        // incidentally contains a level word (e.g. an INFO line "no ERROR
+        // found") is neither mis-coloured nor wrongly selected by the filter.
+        // The first token wins, matching the column order.
+        const ownLevelToken = LOG_LEVEL_RE.exec(line)?.[1];
+        if (ownLevelToken) carriedLevelToken = ownLevelToken;
+        const levelToken = ownLevelToken ?? carriedLevelToken;
+        const level = levelToken ? levelToken.toLowerCase() : 'info';
+        if (filter === 'all' || levelToken === filter) {
+            out.push({ line, level });
+        }
+    }
+    return out;
+}
+
 async function loadLogs(): Promise<void> {
     try {
         const logs = await invoke<string[]>('get_logs', { count: 200 });
@@ -2636,29 +2699,12 @@ async function loadLogs(): Promise<void> {
         // Use DocumentFragment for better performance
         const fragment = document.createDocumentFragment();
 
-        // Continuation lines (traceback bodies, wrapped messages) carry no
-        // level token of their own — they belong to the last tagged entry.
-        // Carrying that level forward keeps a filtered ERROR view showing its
-        // traceback instead of dropping the most useful part of the error.
-        let carriedLevelToken: string | undefined;
-        logs.forEach((line: string) => {
-            // Anchor the level to a standalone token (the structured log-level
-            // column) rather than a whole-line substring match, so message text
-            // that incidentally contains a level word (e.g. an INFO line "no
-            // ERROR found") is neither mis-colored nor wrongly selected by the
-            // level filter. The first token wins, matching the column order.
-            const ownLevelToken = /\b(ERROR|WARNING|DEBUG|INFO)\b/.exec(line)?.[1];
-            if (ownLevelToken) carriedLevelToken = ownLevelToken;
-            const levelToken = ownLevelToken ?? carriedLevelToken;
-            const level = levelToken ? levelToken.toLowerCase() : 'info';
-
-            if (filter === 'all' || levelToken === filter) {
-                const div = document.createElement('div');
-                div.className = `log-line ${level}`;
-                div.textContent = line;
-                fragment.appendChild(div);
-            }
-        });
+        for (const { line, level } of classifyLogLines(logs, filter)) {
+            const div = document.createElement('div');
+            div.className = `log-line ${level}`;
+            div.textContent = line;
+            fragment.appendChild(div);
+        }
 
         container.innerHTML = '';
         container.appendChild(fragment);
@@ -2671,12 +2717,30 @@ async function loadLogs(): Promise<void> {
             // <h1>Log Viewer</h1> with no intervening section heading, so an h3
             // skipped a level (axe: moderate heading-order). The other empty
             // states in index.html DO sit under an <h2> and correctly use h3.
-            container.innerHTML =
-                '<div class="empty-state">' +
-                '<svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg>' +
-                '<h2>No logs found</h2>' +
-                '<p>Logs will appear here once the bot starts running.</p>' +
-                '</div>';
+            //
+            // Two distinct states, because "the bot has logged nothing" and "the
+            // bot has logged plenty, none of it at this level" are different
+            // problems with different next steps. Telling someone who filtered
+            // to CRITICAL on a healthy bot to wait for it to start running is a
+            // lie, and it was the ONLY message this panel had. Now that the menu
+            // offers CRITICAL and DEBUG the empty result is the common case, so
+            // it names the filter and points at the way out.
+            // `filter` is one of the fixed option values, never user text — safe
+            // to interpolate, and escapeHtml() is applied anyway rather than
+            // relying on that staying true.
+            const filtered = filter !== 'all' && logs.length > 0;
+            container.innerHTML = filtered
+                ? '<div class="empty-state">' +
+                  '<svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg>' +
+                  `<h2>No ${escapeHtml(filter)} lines</h2>` +
+                  `<p>${countLabel(logs.length, 'log line')} loaded, none at this level. ` +
+                  'Pick <em>All Levels</em> to see everything.</p>' +
+                  '</div>'
+                : '<div class="empty-state">' +
+                  '<svg class="ic" aria-hidden="true"><use href="#i-logs"/></svg>' +
+                  '<h2>No logs found</h2>' +
+                  '<p>Logs will appear here once the bot starts running.</p>' +
+                  '</div>';
         }
 
         // Auto-scroll on new logs OR when the filter changes — switching from

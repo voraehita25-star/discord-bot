@@ -432,7 +432,15 @@
 
     <div class="app">
         <!-- Sidebar -->
-        <nav class="sidebar" aria-label="주 메뉴">
+        <!-- English, unlike the visible Korean strings elsewhere: this is an
+             ACCESSIBLE NAME, and an attribute value cannot carry lang="ko" the
+             way the skip link and the logo text do. In a lang="en" document an
+             English TTS voice read "주 메뉴" as noise, and it is the first thing
+             announced on entering the region. It is also UI wording, not the
+             product name — "봇 대시보드" in the logo is the branding, and stays.
+             Just "Main": screen readers append the landmark role themselves, so
+             "Main navigation" is announced as "main navigation navigation". -->
+        <nav class="sidebar" aria-label="Main">
             <div class="logo">
                 <span class="logo-icon"><svg class="ic" aria-hidden="true"><use href="#i-bot"/></svg></span>
                 <span class="logo-text" lang="ko">봇 대시보드</span>
@@ -715,7 +723,15 @@
                                     <span class="chat-search-count" id="chat-search-count">0 / 0</span>
                                     <button class="btn btn-icon" id="chat-search-prev" title="Previous match" aria-label="Previous match"><svg class="ic" aria-hidden="true"><use href="#i-chevron-up"/></svg></button>
                                     <button class="btn btn-icon" id="chat-search-next" title="Next match" aria-label="Next match"><svg class="ic" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
-                                    <button class="btn btn-icon" id="chat-search-close" title="Close (Esc)" aria-label="Close search">&times;</button>
+                                    <!-- Sprite, not a bare &times;: this is the third
+                                         .btn-icon in a row of three, and the other two
+                                         draw #i-chevron-up / #i-chevron-down. A text
+                                         glyph next to them picks up the UI font's
+                                         weight and baseline instead of the 2px monoline
+                                         stroke, so the group read as two icons plus a
+                                         typo. (.modal-close keeps its own &times; — a
+                                         different component with its own convention.) -->
+                                    <button class="btn btn-icon" id="chat-search-close" title="Close (Esc)" aria-label="Close search"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
                                 </div>
                                 <div class="chat-messages" id="chat-messages" role="log" aria-live="polite" aria-relevant="additions" aria-label="Chat conversation">
                                     <!-- Messages will be rendered here -->
@@ -928,11 +944,20 @@
                 <div class="page-header">
                     <div class="page-title-bar"><span class="page-eyebrow">LOG // STREAM</span><h1>Log Viewer <span id="live-indicator" class="live-indicator"><svg class="ic" aria-hidden="true"><use href="#i-pulse"/></svg> LIVE</span></h1></div>
                     <div class="log-controls">
+                        <!-- Every level loadLogs() can tag a line with must be
+                             selectable here, or those lines are colour-coded but
+                             unreachable. DEBUG was already recognised and styled
+                             yet had no option; CRITICAL — what bot.py logs for a
+                             bad token or a failed Discord connection — was
+                             neither. Ordered most-severe first so the two levels
+                             worth filtering for sit at the top of the menu. -->
                         <select id="log-filter" aria-label="Filter log level">
                             <option value="all">All Levels</option>
-                            <option value="INFO">INFO</option>
-                            <option value="WARNING">WARNING</option>
+                            <option value="CRITICAL">CRITICAL</option>
                             <option value="ERROR">ERROR</option>
+                            <option value="WARNING">WARNING</option>
+                            <option value="INFO">INFO</option>
+                            <option value="DEBUG">DEBUG</option>
                         </select>
                         <button id="btn-auto-scroll" class="btn"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg> Pause</button>
                         <button class="btn" id="btn-clear-logs"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg> Clear</button>

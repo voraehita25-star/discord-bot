@@ -746,3 +746,185 @@ test('toasts use the icon sprite, not emoji', async ({ page }) => {
         expect(t.icon, `${t.cls} still renders a text/emoji glyph: "${t.icon}"`).toBe('');
     }
 });
+
+// The level menu is a mirror of the classifier in app.ts (LOG_LEVELS). It listed
+// INFO/WARNING/ERROR only, while loadLogs() also tagged DEBUG — so DEBUG lines
+// were colour-coded and unreachable — and neither side knew CRITICAL, which is
+// what bot.py logs a missing/invalid DISCORD_TOKEN and a failed Discord
+// connection with. A user filtering to ERROR to find out why the bot would not
+// start was shown everything except the reason.
+test('the log level menu offers every level the classifier can emit', async ({ page }) => {
+    await boot(page);
+    const r = await page.evaluate(async () => {
+        const appModulePath = '/app.js';
+        const mod = await import(appModulePath) as {
+            LOG_LEVELS?: readonly string[];
+            classifyLogLines?: (l: string[], f: string) => Array<{ line: string; level: string }>;
+        };
+        const options = Array.from(document.querySelectorAll('#log-filter option'))
+            .map((o) => (o as HTMLOptionElement).value);
+        // What the shipped classifier actually produces for a line of each level.
+        const produced = (mod.LOG_LEVELS ?? []).map((lvl) => ({
+            lvl,
+            level: mod.classifyLogLines?.([`2026-07-27 12:00:00 [${lvl}] x`], 'all')[0]?.level,
+        }));
+        return { options, levels: mod.LOG_LEVELS ?? [], produced };
+    });
+
+    expect(r.levels.length, 'app.js did not export LOG_LEVELS').toBeGreaterThan(0);
+    expect(r.options[0], 'the menu should still lead with the unfiltered view').toBe('all');
+    expect(
+        r.options.slice(1).slice().sort(),
+        'the #log-filter options and LOG_LEVELS have drifted apart',
+    ).toEqual(r.levels.slice().sort());
+    for (const p of r.produced) {
+        expect(p.level, `a ${p.lvl} line is not classified as ${p.lvl.toLowerCase()}`)
+            .toBe(p.lvl.toLowerCase());
+    }
+    // CRITICAL specifically must not be styled as an ordinary line.
+    const criticalStyled = await page.evaluate(() => {
+        const el = document.createElement('div');
+        el.className = 'log-line critical';
+        document.getElementById('log-content')!.appendChild(el);
+        const s = getComputedStyle(el);
+        const r = { weight: s.fontWeight, shadow: s.boxShadow };
+        el.remove();
+        return r;
+    });
+    expect(criticalStyled.shadow, '.log-line.critical draws no severity rail').not.toBe('none');
+});
+
+// The panel had ONE empty state — "Logs will appear here once the bot starts
+// running" — which it also showed to someone who had simply filtered to a level
+// with no matches. On a healthy, chatty bot that message is just false. Adding
+// CRITICAL and DEBUG to the menu makes the empty result the common case, so the
+// two states have to be told apart.
+test('an empty log filter says so, instead of claiming the bot is not running', async ({ page }) => {
+    await boot(page);
+    await show(page, 'logs');
+    // The populated fixture logs 400 lines cycling INFO/WARNING/ERROR/DEBUG —
+    // plenty of logs, and not one CRITICAL among them.
+    await page.selectOption('#log-filter', 'CRITICAL');
+    await page.waitForTimeout(300);
+
+    const empty = page.locator('#log-content .empty-state');
+    await expect(empty).toBeVisible();
+    await expect(empty).toContainText('CRITICAL');
+    await expect(empty, 'told the user to start a bot that is already running')
+        .not.toContainText('once the bot starts running');
+
+    // ...and the genuine no-logs case still reads the original way.
+    await page.selectOption('#log-filter', 'all');
+    await page.evaluate(() => {
+        const t = (window as unknown as {
+            __TAURI__: { core: { invoke: (c: string, a?: Record<string, unknown>) => Promise<unknown> } };
+        }).__TAURI__;
+        const base = t.core.invoke;
+        t.core.invoke = async (cmd: string, args?: Record<string, unknown>) =>
+            cmd === 'get_logs' ? [] : base(cmd, args);
+    });
+    await page.waitForTimeout(1200);   // the 1s poll picks up the empty tail
+    await expect(page.locator('#log-content .empty-state'))
+        .toContainText('once the bot starts running');
+});
+
+// Two panels of the same species — a titled list rail with one action button —
+// sat side by side in the app wearing different headers, because the mono
+// eyebrow treatment was scoped to the chat one while the layout rule above it
+// styled the pair together.
+test('both list rails wear the same panel header', async ({ page }) => {
+    await boot(page);
+    const read = async (sel: string): Promise<Record<string, string>> => {
+        const r = await page.$eval(sel, (e) => {
+            const s = getComputedStyle(e);
+            return {
+                fontFamily: s.fontFamily,
+                fontSize: s.fontSize,
+                fontWeight: s.fontWeight,
+                textTransform: s.textTransform,
+                letterSpacing: s.letterSpacing,
+                color: s.color,
+            };
+        });
+        return r;
+    };
+    await show(page, 'chat');
+    const chat = await read('.chat-sidebar-header h2');
+    await show(page, 'history');
+    const history = await read('.history-sidebar-header h2');
+    expect(history, 'the History rail header does not match the Chat rail header').toEqual(chat);
+});
+
+// `.modal-body select` set the `background` SHORTHAND, which resets
+// background-image to none and at (0,1,1) outranks the (0,1,0) `.select-provider`
+// chevron rule — so the New Conversation modal's provider select shipped looking
+// like a plain text field. Assert every <select> in the app keeps its affordance.
+test('every select keeps its chevron once it stops drawing OS chrome', async ({ page }) => {
+    await boot(page);
+    await show(page, 'chat');
+    await page.evaluate(() => document.getElementById('new-chat-modal')?.classList.add('active'));
+    const r = await page.$$eval('select', (els) =>
+        els.map((e) => {
+            const s = getComputedStyle(e);
+            return {
+                id: e.id || e.className,
+                appearance: s.appearance,
+                bg: s.backgroundImage,
+                padRight: parseFloat(s.paddingRight),
+            };
+        }),
+    );
+    expect(r.length, 'no selects found').toBeGreaterThan(0);
+    for (const s of r) {
+        if (s.appearance !== 'none') continue;  // still drawing native chrome, has its own arrow
+        expect(s.bg, `${s.id} has appearance:none but no chevron — it reads as a text field`)
+            .not.toBe('none');
+        // The chevron sits at right 9px and is 13px wide; text must clear it.
+        expect(s.padRight, `${s.id} runs its option text under its own chevron`)
+            .toBeGreaterThanOrEqual(22);
+    }
+});
+
+// Ctrl+1..6 keys off e.code so the shortcut survives non-QWERTY layouts, but on
+// Windows AltGr reports as Ctrl+Alt — and AltGr+2/+3 is how a Spanish keyboard
+// types @ and #. Typing an email address into the composer navigated away
+// mid-word. No app shortcut is a Ctrl+Alt chord, so the whole class is ignored.
+test('AltGr chords do not trigger the Ctrl shortcuts', async ({ page }) => {
+    await boot(page);
+    await show(page, 'status');
+    await page.focus('#chat-input').catch(() => { /* input lives on the chat page */ });
+    await page.evaluate(() => {
+        // AltGr+2 on a Spanish layout: ctrlKey+altKey set, code still Digit2.
+        document.dispatchEvent(new KeyboardEvent('keydown', {
+            key: '@', code: 'Digit2', ctrlKey: true, altKey: true, bubbles: true, cancelable: true,
+        }));
+    });
+    await page.waitForTimeout(150);
+    await expect(page.locator('#page-status')).toHaveClass(/active/);
+    // The plain Ctrl+2 chord must still work.
+    await page.keyboard.press('Control+2');
+    await page.waitForTimeout(150);
+    await expect(page.locator('#page-chat')).toHaveClass(/active/);
+});
+
+// Both chat-page dialogs opened with a bare classList.add('active'): no Escape,
+// no focus move, no focus restore — while the Settings shortcut card and
+// #shortcuts-modal both advertise "Esc — Close modal / cancel". The unit twin of
+// this lives in src-ts/chat-manager.modal-dismiss.test.ts; this one proves it
+// through the real wiring, from a real trigger click.
+test('the chat dialogs honour the Esc the app advertises', async ({ page }) => {
+    await boot(page);
+    await show(page, 'chat');
+
+    await page.click('#btn-new-chat');
+    await expect(page.locator('#new-chat-modal')).toHaveClass(/active/);
+    // Focus must be inside the dialog, not stranded on <body> behind the overlay.
+    expect(await page.evaluate(() =>
+        !!document.getElementById('new-chat-modal')?.contains(document.activeElement),
+    ), 'focus stayed outside the opened dialog').toBe(true);
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#new-chat-modal')).not.toHaveClass(/active/);
+    expect(await page.evaluate(() => document.activeElement?.id),
+        'focus was not returned to the trigger').toBe('btn-new-chat');
+});
