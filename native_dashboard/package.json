@@ -42,7 +42,7 @@
     "jsdom": "^29.1.1",
     "pngjs": "^7.0.0",
     "prismjs": "^1.30.0",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   }
 }
