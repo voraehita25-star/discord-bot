@@ -2476,6 +2476,64 @@ describe('message viewer semantics + states', () => {
         expect(document.getElementById('ai-history-show-older')).toBeNull();
     });
 
+    it('"Show older" keeps the keyboard: focus moves to the rebuilt button', () => {
+        // The note's innerHTML is rewritten on every expansion, so the button
+        // destroys itself when pressed. Unfixed, focus landed on <body> and the
+        // next Tab restarted at the top of the document.
+        const { hm } = mountHistory();
+        hm.openChannel(CHANNEL_A);
+        hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: Array.from({ length: 1200 }, (_, i) =>
+                makeMessage({ id: i + 1, content: `m${i}` })),
+            total_count: 1200,
+            has_more: false,
+        });
+        const btn = document.getElementById('ai-history-show-older') as HTMLElement;
+        btn.focus();
+        btn.click();
+        const next = document.getElementById('ai-history-show-older');
+        expect(next).not.toBeNull();          // 200 rows still hidden
+        expect(next).not.toBe(btn);           // …but it is a NEW node
+        expect(document.activeElement).toBe(next);
+    });
+
+    it('"Show older" falls back to the viewer when the last expansion removes the button', () => {
+        const { hm } = mountHistory();
+        hm.openChannel(CHANNEL_A);
+        hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: Array.from({ length: 700 }, (_, i) =>
+                makeMessage({ id: i + 1, content: `m${i}` })),
+            total_count: 700,
+            has_more: false,
+        });
+        const btn = document.getElementById('ai-history-show-older') as HTMLElement;
+        btn.focus();
+        btn.click();
+        expect(document.getElementById('ai-history-show-older')).toBeNull();
+        expect(document.activeElement).toBe(document.getElementById('ai-history-messages'));
+    });
+
+    it('leaves focus alone when "Show older" was fired without it (a mouse click elsewhere)', () => {
+        const { hm } = mountHistory();
+        hm.openChannel(CHANNEL_A);
+        hm.handleMessage({
+            type: 'ai_history_loaded',
+            channel_id: CHANNEL_A,
+            messages: Array.from({ length: 1200 }, (_, i) =>
+                makeMessage({ id: i + 1, content: `m${i}` })),
+            total_count: 1200,
+            has_more: false,
+        });
+        const elsewhere = document.getElementById('ai-channel-list') as HTMLElement;
+        elsewhere.focus();
+        (document.getElementById('ai-history-show-older') as HTMLElement).click();
+        expect(document.activeElement).toBe(elsewhere);
+    });
+
     it('a fresh load resets the "Show older" expansion back to the newest cap', () => {
         const { hm } = mountHistory();
         hm.openChannel(CHANNEL_A);

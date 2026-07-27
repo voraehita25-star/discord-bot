@@ -1613,6 +1613,14 @@ export class HistoryManager {
     showOlderMessages() {
         const container = document.getElementById('ai-history-messages');
         const heightBefore = container?.scrollHeight ?? 0;
+        // The render below rewrites the note's innerHTML — the count changes
+        // every time, and the final expansion empties it — so the button the
+        // user just pressed is DESTROYED by its own activation and focus falls
+        // to <body>. This is a page, not a modal, so nothing catches it and the
+        // next Tab restarts at the top of the document. Same reclaim refocusRow
+        // does for the editor, on whichever anchor survives.
+        const note = document.getElementById('ai-history-overflow');
+        const hadFocus = !!note && note.contains(document.activeElement);
         this.renderExtra += MESSAGE_RENDER_CAP;
         this.renderMessages();
         if (container) {
@@ -1620,6 +1628,14 @@ export class HistoryManager {
             // down by exactly the height they added. `+=`, not `=`: assigning
             // the delta outright is only correct at scrollTop 0.
             container.scrollTop += container.scrollHeight - heightBefore;
+        }
+        if (hadFocus) {
+            // The rebuilt button when there are still older rows, else the
+            // viewer itself (tabindex=0 — the note is gone at that point).
+            // preventScroll: the compensation above already positioned the
+            // viewport and focus() must not drag it somewhere else.
+            const back = document.getElementById('ai-history-show-older') ?? container;
+            back?.focus({ preventScroll: true });
         }
     }
     /** One message row's markup. Shared by renderMessages() (full build) and

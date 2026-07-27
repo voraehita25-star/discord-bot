@@ -1615,3 +1615,197 @@ describe('Export All emits one summary toast, not one per conversation', () => {
         expect(infoToasts()[0]).toContain('Export sent to your downloads');
     });
 });
+
+// ============================================================================
+// Copy buttons must survive their own "Copied" confirmation.
+//
+// The bug: the handler did `btn.textContent = 'Copied'` and restored via
+// textContent 1500ms later. `<button><svg class="ic"><use/></svg> Copy</button>`
+// has textContent ' Copy' (an <svg> contributes none), and assigning
+// textContent replaces EVERY child with one text node — so the first click
+// deleted the glyph and the "restore" put back a bare string. From then on the
+// button was word-only, misaligned against the Edit/Delete buttons that still
+// carried theirs, until the next full renderMessages().
+// ============================================================================
+
+describe('copy buttons keep their <svg> icon across repeated clicks', () => {
+    let writeText: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+        // jsdom ships no navigator.clipboard at all.
+        writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText },
+            configurable: true,
+        });
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    const iconHref = (btn: Element | null): string | null =>
+        btn?.querySelector('svg.ic use')?.getAttribute('href') ?? null;
+
+    describe('renderMessages() path', () => {
+        const copyBtn = () => document.querySelector('#chat-messages .copy-message-btn');
+
+        it('swaps to a check GLYPH, then restores the copy glyph — never a bare word', async () => {
+            const cm = mountDomAndChat();
+            cm.messages = [{ id: 1, role: 'assistant', content: 'hello', created_at: 't' }];
+            cm.renderMessages();
+
+            expect(iconHref(copyBtn())).toBe('#i-copy');
+
+            copyBtn()!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            await vi.advanceTimersByTimeAsync(0);
+
+            expect(writeText).toHaveBeenCalledWith('hello');
+            expect(iconHref(copyBtn())).toBe('#i-check');
+            expect(copyBtn()!.textContent).toContain('Copied');
+
+            await vi.advanceTimersByTimeAsync(1500);
+            // Pre-fix this element had zero children and textContent ' Copy'.
+            expect(copyBtn()!.querySelectorAll('svg.ic')).toHaveLength(1);
+            expect(iconHref(copyBtn())).toBe('#i-copy');
+            expect(copyBtn()!.textContent).toContain('Copy');
+        });
+
+        it('a SECOND click still finds an icon to swap (the glyph is not lost for good)', async () => {
+            const cm = mountDomAndChat();
+            cm.messages = [{ id: 1, role: 'assistant', content: 'hello', created_at: 't' }];
+            cm.renderMessages();
+
+            copyBtn()!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            await vi.advanceTimersByTimeAsync(1500);
+
+            copyBtn()!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            await vi.advanceTimersByTimeAsync(0);
+            expect(iconHref(copyBtn())).toBe('#i-check');
+
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(copyBtn()!.querySelectorAll('svg.ic')).toHaveLength(1);
+            expect(iconHref(copyBtn())).toBe('#i-copy');
+            // Exactly one icon — an innerHTML rebuild must not stack duplicates.
+            expect(copyBtn()!.querySelectorAll('use')).toHaveLength(1);
+            expect(writeText).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    describe('finalizeStreamingMessage() path', () => {
+        // This bubble is only replaced when stream_end carries a
+        // user/assistant message id; without one it stays on screen, so the
+        // same stripped-icon bug is reachable here.
+        const STREAM_BUBBLE = `
+            <div id="streaming-message" class="chat-message streaming">
+                <div class="message-wrapper"><div class="message-content"></div></div>
+            </div>`;
+        const copyBtn = () => document.querySelector('#chat-messages .copy-message-btn');
+
+        it('restores the copy glyph after the confirmation', async () => {
+            const cm = mountDomAndChat();
+            document.getElementById('chat-messages')!.innerHTML = STREAM_BUBBLE;
+            cm.finalizeStreamingMessage('streamed answer');
+
+            expect(iconHref(copyBtn())).toBe('#i-copy');
+
+            copyBtn()!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            await vi.advanceTimersByTimeAsync(0);
+            expect(writeText).toHaveBeenCalledWith('streamed answer');
+            expect(iconHref(copyBtn())).toBe('#i-check');
+
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(copyBtn()!.querySelectorAll('svg.ic')).toHaveLength(1);
+            expect(iconHref(copyBtn())).toBe('#i-copy');
+        });
+
+        it('copies the message even when the click lands on the <svg> glyph', async () => {
+            // `.ic` has no pointer-events:none, so event.target is the <svg>.
+            // The handler used to read data-content off event.target and copy ''.
+            const cm = mountDomAndChat();
+            document.getElementById('chat-messages')!.innerHTML = STREAM_BUBBLE;
+            cm.finalizeStreamingMessage('streamed answer');
+
+            const glyph = copyBtn()!.querySelector('svg.ic')!;
+            glyph.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            await vi.advanceTimersByTimeAsync(0);
+
+            expect(writeText).toHaveBeenCalledWith('streamed answer');
+            // …and the confirmation landed on the BUTTON, not inside the svg.
+            expect(iconHref(copyBtn())).toBe('#i-check');
+        });
+    });
+});
+
+// ============================================================================
+// updateChatHeader() — the AI avatar's visibility must ride on the `hidden`
+// class, not an inline display.
+//
+// The bug: this method wrote `style.display='none'` while app.ts's
+// updateAiAvatars() drives `classList`. Saving an avatar in Settings called
+// updateAiAvatars(), which set .src and removed `hidden` — but the stale
+// inline display:none survived, so the header slot stayed blank until the
+// user happened to click a conversation row.
+// ============================================================================
+
+describe('updateChatHeader — AI avatar visibility uses the `hidden` class', () => {
+    const CONV = {
+        id: 'c1', title: 't', role_preset: 'general', thinking_enabled: false,
+        is_starred: false, created_at: '2026-04-01',
+    };
+    let savedAvatar: string;
+    let settings: typeof import('./shared.js').settings;
+
+    beforeAll(async () => {
+        settings = (await import('./shared.js')).settings;
+    });
+
+    beforeEach(() => { savedAvatar = settings.aiAvatar; });
+    afterEach(() => { settings.aiAvatar = savedAvatar; });
+
+    it('removes `hidden` and leaves NO inline display when a safe avatar is set', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = CONV;
+        settings.aiAvatar = 'https://example.com/a.png';
+
+        cm.updateChatHeader();
+
+        const img = document.getElementById('chat-role-avatar') as HTMLImageElement;
+        expect(img.classList.contains('hidden')).toBe(false);
+        expect(img.getAttribute('src')).toBe('https://example.com/a.png');
+        expect(img.style.display).toBe('');
+    });
+
+    it('adds `hidden` (and no inline display) when there is no avatar', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = CONV;
+        settings.aiAvatar = '';
+
+        cm.updateChatHeader();
+
+        const img = document.getElementById('chat-role-avatar') as HTMLImageElement;
+        expect(img.classList.contains('hidden')).toBe(true);
+        expect(img.hasAttribute('src')).toBe(false);
+        // The regression: this used to be 'none'.
+        expect(img.style.display).toBe('');
+    });
+
+    it('a later class-only reveal (app.ts updateAiAvatars) actually shows the avatar', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = CONV;
+        settings.aiAvatar = '';
+        cm.updateChatHeader();   // hides it — pre-fix via inline display:none
+
+        // Exactly what updateAiAvatars() does after saveCroppedAvatar():
+        const img = document.getElementById('chat-role-avatar') as HTMLImageElement;
+        img.src = 'https://example.com/a.png';
+        img.classList.remove('hidden');
+
+        expect(img.classList.contains('hidden')).toBe(false);
+        // Pre-fix a stale inline display:none survived here and won outright:
+        // `.hidden { display:none !important }` is what the class relies on, and
+        // an inline value cannot be cleared by removing a class.
+        expect(img.style.display).toBe('');
+    });
+});

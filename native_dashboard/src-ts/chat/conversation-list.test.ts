@@ -480,3 +480,60 @@ describe('ConversationList.render — listbox keyboard contract', () => {
         expect(cb.onLoadConversation).toHaveBeenCalledTimes(1);
     });
 });
+
+describe('ConversationList.render — focus survives a background re-render', () => {
+    // render() is not only called on user action: a WS frame (new message, title
+    // update, star ack) repaints the whole rail. The innerHTML swap destroys the
+    // focused row, so without a capture/restore a keyboard user parked on a
+    // conversation lost focus to <body> mid-chat. renderChannelList() in
+    // history-manager.ts carries the same guard.
+    const ctx = (convs: ChatConversation[], current: ChatConversation | null = null) =>
+        ({ conversations: convs, currentConversation: current, presets: {} });
+
+    it('keeps focus on the roving row across a re-render', () => {
+        const list = new ConversationList(mkCallbacks());
+        const convs = [mkConv('a'), mkConv('b'), mkConv('c')];
+        list.render(ctx(convs, convs[1]));
+
+        document.querySelector<HTMLElement>('.conversation-item[tabindex="0"]')!.focus();
+        expect((document.activeElement as HTMLElement).dataset.id).toBe('b');
+
+        list.render(ctx(convs, convs[1]));   // e.g. a message-count frame lands
+        expect((document.activeElement as HTMLElement).dataset.id).toBe('b');
+    });
+
+    it('falls back to the container when the rail re-renders to an empty state', () => {
+        const list = new ConversationList(mkCallbacks());
+        const container = document.getElementById('conversation-list')!;
+        // ui/index.html ships the container with tabindex="0" (it is the
+        // focusable scroll region); the bare test mount has to match, or
+        // .focus() on a plain <div> is a no-op.
+        container.tabIndex = 0;
+        list.render(ctx([mkConv('a')]));
+        document.querySelector<HTMLElement>('.conversation-item[tabindex="0"]')!.focus();
+
+        list.render(ctx([]));
+        expect(document.activeElement).toBe(container);
+    });
+
+    it('does NOT steal focus from somewhere else in the page', () => {
+        const list = new ConversationList(mkCallbacks());
+        list.render(ctx([mkConv('a')]));
+        const outside = document.getElementById('conversation-filter-input') as HTMLInputElement;
+        outside.focus();
+
+        list.render(ctx([mkConv('a'), mkConv('b')]));
+        expect(document.activeElement).toBe(outside);
+    });
+
+    it('does not drag a user who focused the container only to scroll onto a row', () => {
+        const list = new ConversationList(mkCallbacks());
+        const container = document.getElementById('conversation-list')!;
+        container.tabIndex = 0;
+        list.render(ctx([mkConv('a'), mkConv('b')]));
+        container.focus();
+
+        list.render(ctx([mkConv('a'), mkConv('b')]));
+        expect(document.activeElement).toBe(container);
+    });
+});

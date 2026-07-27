@@ -164,12 +164,19 @@ function renderSingleMessage(msg, msgIdx, mctx) {
     // a PDF/text doc is visible in history. Session-scoped: the backend stores
     // docs at conversation scope (dashboard_document_memories), not per message,
     // so these show on send + within the session but not after a full reload.
+    //
+    // The name gets its OWN element. The chip is `display: inline-flex` with
+    // `text-overflow: ellipsis` on itself, and ellipsis does nothing on a flex
+    // container — it needs a block-ish box whose own text overflows. So a long
+    // filename was sliced flat at the 240px cap, mid-glyph, with no "…" to say
+    // the name continued, while the composer's chip for the same file
+    // ellipsised correctly. `.doc-chip-name` is the box that can truncate.
     let docsHtml = '';
     if (Array.isArray(msg.documents) && msg.documents.length > 0) {
         docsHtml = `<div class="message-docs">${msg.documents
             .map((d) => {
             const name = (d && typeof d.name === 'string') ? d.name : 'document';
-            return `<span class="message-doc-chip" title="${escapeHtml(name)}">${icon('paperclip')} ${escapeHtml(name)}</span>`;
+            return `<span class="message-doc-chip" title="${escapeHtml(name)}">${icon('paperclip')}<span class="doc-chip-name">${escapeHtml(name)}</span></span>`;
         })
             .join('')}</div>`;
     }
@@ -200,6 +207,14 @@ function renderSingleMessage(msg, msgIdx, mctx) {
     // user could not open it at all and a screen reader was never told the
     // control existed. The ▼/▶ affordance is a CSS ::after glyph, invisible to
     // AT, so aria-expanded is the only thing that can carry the state.
+    //
+    // aria-hidden on the BODY is the other half of that pair, not decoration:
+    // `.thinking-content.collapsed` is only `max-height: 0; overflow: hidden`,
+    // so the trace never leaves the accessibility tree and a screen reader read
+    // the whole reasoning out under a header announcing itself collapsed. The
+    // streaming path already ships it (chat-manager.ts finalizeThinking) and
+    // toggleThinking rewrites it on every flip — this makes the FIRST paint of a
+    // stored message agree with the state the app sets one interaction later.
     let thinkingHtml = '';
     if (!isUser && msg.thinking) {
         const thinkingIdAttr = msgId ? ` data-thinking-id="${msgId}"` : '';
@@ -208,7 +223,7 @@ function renderSingleMessage(msg, msgIdx, mctx) {
                 <div class="thinking-header collapsible collapsed" role="button" tabindex="0" aria-expanded="false" aria-controls="thinking-${msgIdxSafe}">
                     Thought Process
                 </div>
-                <div class="thinking-content collapsed" id="thinking-${msgIdxSafe}">${deps.formatMessage(msg.thinking)}</div>
+                <div class="thinking-content collapsed" id="thinking-${msgIdxSafe}" aria-hidden="true">${deps.formatMessage(msg.thinking)}</div>
             </div>
         `;
     }

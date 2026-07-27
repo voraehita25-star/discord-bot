@@ -261,8 +261,22 @@ html[data-theme="light"] kbd {
     font-size: 20px;
 }
 
+/* `flex: 1` leaves `min-width: auto`, so a message carrying one unbreakable run
+   — a Windows path, where UAX#14 LB24 forbids a break between `\` and a letter —
+   held the flex line open at its min-content width instead of shrinking to the
+   294px it has. The line overflowed and .toast-close was pushed past .toast's
+   own `overflow: hidden` (the noise-texture clipping group below) — measured
+   31.9px past it for a Windows path and 119.4px for an unbroken filename, i.e.
+   0 of its 24px was visible. Clipped regions do not hit-test, so the ✕ was
+   unclickable too and the toast could only be waited out, while the filename
+   itself was sliced mid-glyph with no ellipsis. `min-width: 0` restores the
+   shrink and puts the whole 24x24 ✕ back inside; `overflow-wrap: anywhere` (not
+   `break-word`) is what also lowers the min-content contribution, and it wraps
+   the path instead of slicing it mid-glyph. */
 .toast-message {
     flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
     color: var(--text-primary);
     font-size: 14px;
 }
@@ -1166,18 +1180,40 @@ html[data-theme="light"] .log-line.info {
     backdrop-filter: blur(10px);
 }
 
+/* `overflow-wrap: anywhere` for the Paths card. A Windows path is ONE
+   unbreakable run to CSS line breaking (UAX#14 LB24 forbids a break between
+   `\`, class PR, and the letter after it), so an install under e.g.
+   `C:\Users\<name>\OneDrive - <org>\Documents\GitHub\…` ran straight off the
+   780px card and the `overflow: hidden` .settings-card carries (the noise-
+   texture clipping group below) cut it flat — no ellipsis, and unscrollable and
+   unselectable past the cut. Measured on a 110-char OneDrive-depth path, 36.9px
+   of it was gone; wrapping puts it back for one extra 21.7px line. These three
+   rows are the only place the dashboard discloses where the bot script, log file
+   and DB actually live. The companion `title` on each of the three spans
+   (src-ts/app.ts) is the other half and is NOT in this file. */
 .settings-card p {
     color: var(--text-secondary);
     margin-bottom: 10px;
+    overflow-wrap: anywhere;
 }
 
 .settings-card p strong {
     color: var(--accent-pink);
 }
 
-/* Sakura Petals Animation */
+/* Sakura Petals Animation.
+ *
+ * `position: absolute`, NOT fixed. A fixed box is a stacking context all by
+ * itself, so the z-index:2 "near" canvas app.ts spawns was sealed inside the
+ * container's own z-index:0 layer and could never rise in front of `.app`
+ * (z-index 1) — the near half of the field ran a full instanced draw call and
+ * half the physics budget every frame while painting behind the deck, which is
+ * exactly the failure the orbital.css sakura block was written to fix. Geometry
+ * is unchanged: body is `height: 100vh; overflow: hidden` with no positioned
+ * ancestor, so top/left:0 + 100%/100% resolve against the initial containing
+ * block to the same 0,0,viewport rect the fixed box had. */
 #sakura-container {
-    position: fixed;
+    position: absolute;
     top: 0;
     left: 0;
     width: 100%;
@@ -2474,10 +2510,18 @@ margin-bottom: 8px;
     gap: 6px;
     margin-bottom: 8px;
 }
+/* `display: block`, NOT inline-flex. `text-overflow: ellipsis` applies to block
+   containers only — on a flex box the filename is an anonymous flex item and the
+   declaration below did nothing, so a name over ~28 chars was cut flat at the
+   240px cap mid-glyph with no signal that it continued. (The composer's chip for
+   the SAME file ellipsised correctly, so one attachment truncated two different
+   ways in one view.) As a block container the paperclip and the name are
+   ordinary inline content, which `.ic`'s `vertical-align: -0.16em` is already
+   built for, and the ellipsis lands. `gap` went with the flex box; the icon
+   carries its own margin instead so the separation survives regardless of
+   whether the template keeps its literal space between glyph and name. */
 .message-doc-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
+    display: block;
     max-width: 240px;
     padding: 3px 10px;
     font-size: 0.8rem;
@@ -2488,6 +2532,10 @@ margin-bottom: 8px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.message-doc-chip .ic {
+    margin-right: 3px;
 }
 
 .message-image:hover {
@@ -2827,8 +2875,17 @@ mark.chat-search-hit {
     scroll-margin-bottom: 60px;
 }
 
+/* The ACTIVE hit needs its own ink. Inheriting the message colour put near-white
+   rgb(245,237,244) on a 75%-opaque orange that composites to rgb(199,129,10) in
+   dark — 2.78:1, i.e. Ctrl+F made the one match you had just jumped to the least
+   readable text on the page while every other match stayed at 5.6:1. Light theme
+   measured 10.15:1 from the same rule, so the failure was dark-only and
+   invisible to anyone testing in light. Because the fill is 75% opaque in BOTH
+   themes the composite is rgb(199,129,10) / rgb(254,184,61), and one dark
+   literal clears AA on both: measured 5.91:1 dark, 10.91:1 light. */
 mark.chat-search-hit.active {
     background: rgba(255, 165, 0, 0.75);
+    color: #1a0f00;
     outline: 2px solid rgba(255, 140, 0, 0.9);
 }
 
@@ -3529,12 +3586,21 @@ html[data-theme="light"] .role-card:hover {
     flex: 1;
 }
 
+/* No `overflow: hidden` here. The wrapper is the containing block for the
+   remove-✕, which is deliberately parked 5px OUTSIDE the padding box — so the
+   clip sliced the 18x18 badge down to a measured 13x13, with the 8px radius
+   shaving its outer corner on top of that. Clipped areas do not hit-test, so the
+   real pointer target for "drop this image before sending" was 169px² against
+   the 324px² it lays out; the 24x24 floor enforced on .data-item-checkbox above
+   is 576px². The rounding the clip was doing
+   moves onto the <img> itself; `width: 50px` is a definite size, so losing the
+   clip does not change the chip's flex sizing in the .attached-images row and
+   the 5px overhang still fits inside that row's 8px gap. */
 .attached-image-preview {
     position: relative;
     width: 50px;
     height: 50px;
     border-radius: 8px;
-    overflow: hidden;
     border: 2px solid var(--border-color);
 }
 
@@ -3542,6 +3608,7 @@ html[data-theme="light"] .role-card:hover {
     width: 100%;
     height: 100%;
     object-fit: cover;
+    border-radius: 6px;
 }
 
 .attached-image-preview .remove-image {
@@ -3659,13 +3726,24 @@ html[data-theme="light"] .role-card:hover {
     margin-left: 3px;
     border-radius: 10px;
     background: var(--accent-purple);
-    color: white;
+    /* Dark ink, NOT white. --accent-purple is two different colours: a pale
+       lavender (#c7b1ff) in dark theme and a deep plum (#79436f) in light. The
+       badge was `color: white` for both, so in the DEFAULT theme it painted
+       white on lavender — 1.88:1, a file count nobody can read. axe never saw
+       it because the badge carries `.hidden` whenever the count is zero, which
+       is the state every automated pass boots into. #241436 on the lavender is
+       9.1:1; the light theme keeps white below, where it measures 7.4:1. */
+    color: #241436;
     font-size: 11px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     line-height: 1;
     vertical-align: middle;
     box-shadow: 0 0 8px var(--glow-purple);
+}
+
+html[data-theme="light"] .chat-files-badge {
+    color: #fff;
 }
 
 .chat-files-badge.hidden {
@@ -3829,8 +3907,15 @@ html[data-theme="light"] .role-card:hover {
 }
 
 /* ALL setting-rows in this view: full-width, stacked (label above control),
- * no bottom borders (the modal already has sections visually separated). */
+ * no bottom borders (the modal already has sections visually separated).
+ *
+ * `display: flex` is load-bearing and must stay. orbital.css:3279 turns every
+ * .setting-row into a two-column GRID, which silently voided the
+ * `flex-direction: column` below — so the dialog expanded to 1200px to give the
+ * 500,000-char editor a real surface and then dropped the label into the 200px
+ * caption track with the field pinned 232px from the left edge. */
 #chat-files-edit-view .setting-row {
+    display: flex;
     flex-direction: column;
     align-items: stretch;
     padding: 0;
@@ -3847,8 +3932,15 @@ html[data-theme="light"] .role-card:hover {
     font-size: 13px;
 }
 
+/* `max-width: none` clears orbital.css:3291's 420px measure. That cap is right
+ * for the Settings page's one-row-per-field form and wrong here: measured, the
+ * editor was 411.6px starting at x=484.8 inside a dialog filling almost the whole
+ * screen, and is 995.9px starting at x=272 with both halves of the fix in — code
+ * wrapping every ~130 characters instead of every ~55. #page-settings has its
+ * own escape at orbital.css:3920; this modal is not on that page. */
 #chat-files-edit-view .setting-control {
     width: 100%;
+    max-width: none;
     display: flex;
 }
 

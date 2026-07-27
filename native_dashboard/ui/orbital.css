@@ -598,10 +598,15 @@ html[data-theme="light"] .quick-actions:hover {
     }
 }
 
-/* Confine the glass blur to the few chrome surfaces that earn it. */
+/* Confine the glass blur to the few chrome surfaces that earn it.
+   #toast-container is NOT one of them: it is a bare flex column with no paint of
+   its own, and backdrop-filter fills the whole border box — the 10px gaps
+   between cards and the layout slots of toasts still translated off-screen
+   included. Two stacked toasts therefore bridged into one frosted 380px-wide
+   rectangle with no card in it, and the same empty frosted rect flashed for the
+   300ms translateX(110%) slide. The blur belongs on .toast, below. */
 .sidebar,
-.modal-overlay,
-#toast-container {
+.modal-overlay {
     backdrop-filter: blur(var(--blur));
     -webkit-backdrop-filter: blur(var(--blur));
 }
@@ -618,6 +623,16 @@ html[data-theme="light"] .quick-actions:hover {
 input[type="text"], input[type="search"], input[type="number"], textarea, select {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+}
+/* `.toast` stays in the none-group above ON PURPOSE — it is what neutralises
+   styles.css's `blur(10px)` literal, which drifts from the --blur token. The
+   glass is then re-applied here through the token, clipped to the card's own
+   rounded box instead of smearing across the container's flex gaps. A hidden
+   toast is `opacity: 0`, and a filtered backdrop composites through the
+   element's own opacity, so the slide-in/out flash goes away with it. */
+.toast {
+    backdrop-filter: blur(var(--blur));
+    -webkit-backdrop-filter: blur(var(--blur));
 }
 
 /* Stat cards: glass + brighter top edge + sakura hover, no brackets */
@@ -1014,9 +1029,14 @@ html[data-theme="light"] input:checked + .toggle-slider { background: var(--acce
     padding-bottom: var(--space-3);
     margin-bottom: var(--space-3);
 }
-html[data-theme="light"] #page-logs .page-header {
-    box-shadow: 0 6px 14px rgba(75, 30, 55, 0.10);
-}
+/* The light variant of the drop shadow above used to live here. The later
+   `#page-logs .page-header` rule deletes the shelf in both themes — background,
+   border and shadow — but it is only (1,1,1) against this rule's (1,2,1), so
+   `box-shadow` alone survived: light theme kept a 14px-blur plum smudge cast 6px
+   below a header that is otherwise transparent, i.e. exactly the "seam across
+   the page for nothing" that rule was written to remove, while dark theme was
+   clean. `position: sticky`/`top`/`z-index` above are deliberately kept — they
+   still apply in both themes. */
 
 /* Severity rails — a left-edge inset bar + faint matching wash. */
 .log-line { position: relative; padding-left: var(--space-3); }
@@ -1634,9 +1654,11 @@ h1 .ic, h2 .ic, h3 .ic,
     }
 }
 
-/* ≤920px: shrink the corner ticks. */
+/* ≤920px: shrink the corner ticks.
+   The heading-tracking half of this block moved to the tail of the file — a
+   media query adds no specificity, and the page-title rule further down set the
+   opposite value at the same weight, so it was dead here. */
 @media (max-width: 920px) {
-    h1, .page-header h1 { letter-spacing: 0.02em; }
     .control-card, .chart-card, .settings-card, .api-failover-card,
     .data-section, .charts-section, .quick-actions { background-size: 10px 2px, 2px 10px, 10px 2px, 2px 10px, 10px 2px, 2px 10px, 10px 2px, 2px 10px, auto; }
 }
@@ -3411,6 +3433,25 @@ html[data-theme="light"] .btn-small.btn-danger:hover:not(:disabled) {
     background: var(--edge-strong);
 }
 #btn-chat-files { position: relative; }
+/* The count pill was an in-flow sibling of the paperclip inside a 30px pill that
+   `.btn { overflow: hidden }` clips (the ::before shimmer needs that clip). The
+   glyph + 3px margin + a 16x16 badge overflowed the 28px content box, and
+   `justify-content: center` split the overrun BOTH ways: measured at a two-digit
+   count, 5.8px was shaved flat off the badge's right edge — taking the second
+   digit with it, so the number itself is misread — and the paperclip lost the
+   same 5.8px off its left stroke. Taking the badge out of flow leaves
+   the glyph alone in a box it fits, and parks the pill inside the padding box
+   where nothing clips it — every header icon button stays exactly 30x30. */
+#btn-chat-files .chat-files-badge {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    margin-left: 0;
+    min-width: 13px;
+    height: 13px;
+    padding: 0 3px;
+    font-size: 9px;
+}
 
 .chat-connection-status {
     padding: 3px 10px;
@@ -3433,7 +3474,19 @@ html[data-theme="light"] .btn-small.btn-danger:hover:not(:disabled) {
 }
 .chat-input-container { background: var(--surface-2); border-color: var(--edge); }
 .chat-input-hint { color: var(--text-muted); }
-.chat-input-hint kbd { background: var(--surface-3); border: 1px solid var(--edge); }
+/* The chip needs its own ink. It inherited --text-muted #8f8099 from
+   .chat-input-hint above, but --surface-3 composites the chip LIGHTER than the
+   line it sits in — rgb(48,33,63) — so the two Enter / Shift+Enter chips that
+   tell a first-time user how to send a message measured 4.04:1 at 11px, under
+   the 4.5:1 floor. --text-secondary #c9b7cd on that same chip measures 7.87:1.
+   Light theme is untouched at 7.05:1: `html[data-theme="light"] kbd` (0,2,1)
+   still outranks this (0,1,1). This escaped the sweep because #chat-container carries
+   `.hidden` until a conversation is opened, so the resting DOM never has it. */
+.chat-input-hint kbd {
+    background: var(--surface-3);
+    border: 1px solid var(--edge);
+    color: var(--text-secondary);
+}
 
 /* Code blocks were painted with `rgba(0,0,0,.3)` / `rgba(0,0,0,.5)` — a black
    wash, which on dawn paper is a dark-grey slab holding near-black text. Route
@@ -3564,9 +3617,14 @@ html[data-theme="light"] .chat-input-hint { color: var(--text-tertiary); }
    running and rendering nothing.
    The container must therefore NOT be a stacking context, or its children can
    never straddle .app: that means no transform (the ±20px cursor parallax is
-   gone — see the note in shared.ts), no will-change, and z-index:auto. app.ts
-   then assigns each petal z-index 0 (far: behind the deck, softened by .app's
-   own backdrop-filter into free depth-of-field) or 2 (near: in front of it).
+   gone — see the note in shared.ts), no will-change, z-index:auto — and NOT
+   `position: fixed`, which is a stacking context on its own no matter what the
+   other three say. That last one was still in force in styles.css and quietly
+   re-sealed the whole layer; it is `position: absolute` there now, which lands
+   on the identical rect because body is `height: 100vh; overflow: hidden` with
+   no positioned ancestor.
+   app.ts then assigns each petal z-index 0 (far: behind the deck, softened by
+   .app's own backdrop-filter into free depth-of-field) or 2 (near: in front).
    ============================================================================ */
 #sakura-container {
     transform: none;
@@ -3958,4 +4016,21 @@ html[data-theme] .btn.btn[disabled] .ic { color: var(--text-muted); }
     padding: 0;
     background: none;
     border-radius: 0;
+}
+
+/* The narrow-window heading tracking, restated where it can actually win.
+   It shipped inside the "≤920px: shrink the corner ticks" block as
+   `h1, .page-header h1` — but the page-title rule that follows it matches
+   `.page-title-bar h1` at the same (0,1,1) weight and a media query adds no
+   specificity, so source order handed the win to 0.045em and the narrow-window
+   value was never applied. At the 800x600 Tauri floor the titles were therefore
+   at their WIDEST tracking on the app's narrowest viewport. Same three arms as
+   the rule being corrected so the specificities tie and position decides; the
+   bare `h1` arm stays so chat's markdown `<h1 class="md-heading">` keeps the
+   tracking it already had here. */
+@media (max-width: 920px) {
+    h1,
+    .page-title-bar h1,
+    .page-header h1,
+    .page > h1:first-child { letter-spacing: 0.02em; }
 }

@@ -1926,7 +1926,11 @@ export class ChatManager {
                 `;
                 wrapper.appendChild(actionsDiv);
                 actionsDiv.querySelector('.copy-message-btn')?.addEventListener('click', async (e) => {
-                    const btn = e.target;
+                    // currentTarget, not target: the button contains an <svg
+                    // class="ic"> with no pointer-events:none, so clicking the
+                    // glyph itself made `target` the <svg> — getAttribute
+                    // returned null and the click copied an empty string.
+                    const btn = e.currentTarget;
                     // ``getAttribute`` returns the attribute value already
                     // entity-decoded by the HTML parser. Previously this
                     // path piped the value through ``textarea.innerHTML =
@@ -1941,8 +1945,14 @@ export class ChatManager {
                     const contentAttr = btn.getAttribute('data-content') || '';
                     try {
                         await navigator.clipboard.writeText(contentAttr);
-                        btn.textContent = 'Copied';
-                        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+                        // innerHTML + icon(), never textContent — see the copy
+                        // handler in renderMessages(). This bubble survives past
+                        // stream_end whenever the server omits user/assistant
+                        // message ids (the only trigger for the re-render at the
+                        // end of the stream_end case), so the stripped-icon bug
+                        // is reachable here too.
+                        btn.innerHTML = icon('check') + ' Copied';
+                        setTimeout(() => { btn.innerHTML = icon('copy') + ' Copy'; }, 1500);
                     }
                     catch (err) {
                         console.error('Failed to copy:', err);
@@ -2317,9 +2327,16 @@ export class ChatManager {
                 const content = btn.getAttribute('data-content') || '';
                 try {
                     await navigator.clipboard.writeText(content);
-                    const originalText = btn.textContent;
-                    btn.textContent = 'Copied';
-                    setTimeout(() => { btn.textContent = originalText; }, 1500);
+                    // Rebuild the label with innerHTML from icon(), NOT textContent.
+                    // The button is `<svg class="ic"><use/></svg> Copy`, and a
+                    // textContent write replaces ALL children with a single text
+                    // node — so the first click destroyed the <svg> and the
+                    // 1500ms "restore" put back the bare string ' Copy'. The
+                    // glyph never came back until the next full renderMessages(),
+                    // leaving a row of half-iconed buttons next to Edit/Delete.
+                    // Same remedy as updateStarButton().
+                    btn.innerHTML = icon('check') + ' Copied';
+                    setTimeout(() => { btn.innerHTML = icon('copy') + ' Copy'; }, 1500);
                 }
                 catch (err) {
                     console.error('Failed to copy:', err);
@@ -2504,13 +2521,23 @@ export class ChatManager {
             // Validate before assigning to .src — same defense-in-depth as renderMessages().
             // localStorage can be tampered with, so never trust avatar URLs blindly.
             // Use isSafeAvatarUrl + raw value (NOT safeAvatarUrl, which HTML-escapes for innerHTML).
+            //
+            // Visibility rides on the `hidden` CLASS, not an inline display.
+            // Two writers own this <img>: this method and app.ts's
+            // updateAiAvatars(), which uses classList. While this path wrote
+            // `style.display='none'`, saving an avatar in Settings called
+            // updateAiAvatars() → it set .src and removed `hidden`, but the
+            // stale inline display:none stayed and the header slot rendered
+            // blank until the user happened to click a conversation row.
+            // One mechanism = one source of truth (and no inline style, per
+            // the CSP posture).
             if (isSafeAvatarUrl(settings.aiAvatar)) {
                 avatarEl.src = settings.aiAvatar;
-                avatarEl.style.display = '';
+                avatarEl.classList.remove('hidden');
             }
             else {
                 avatarEl.removeAttribute('src');
-                avatarEl.style.display = 'none';
+                avatarEl.classList.add('hidden');
             }
         }
         if (nameEl)

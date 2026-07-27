@@ -1567,7 +1567,14 @@ function initSakuraAnimation(): void {
      * live far above either (--z-modal / --z-toast).
      *
      * Requires `#sakura-container` to stay stacking-context-free (no transform,
-     * no will-change, z-index:auto) — see the sakura block in orbital.css.
+     * no will-change, z-index:auto, and NOT `position: fixed`) — see the sakura
+     * block in orbital.css. `position: fixed` was the omission that kept the
+     * near canvas behind `.app` anyway: it makes a stacking context all by
+     * itself, so the near layer's z-index:2 was scoped INSIDE the container and
+     * never competed with the deck. The container must be `position: absolute`
+     * (identical geometry — body is `height:100vh; overflow:hidden` with no
+     * positioned ancestor, so the box still resolves against the initial
+     * containing block). That declaration lives in ui/styles.css.
      */
     function createPetal(seeded = false): void {
         if (petals.length >= MAX_PETALS) return;

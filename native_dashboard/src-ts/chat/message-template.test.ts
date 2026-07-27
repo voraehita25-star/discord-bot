@@ -216,6 +216,10 @@ describe('renderMessagesHtml', () => {
         // aria-controls must resolve to the sibling it actually toggles.
         expect(header.getAttribute('aria-controls')).toBe(content.id);
         expect(content.id).not.toBe('');
+        // Collapsed is max-height:0 only, so the trace stays in the a11y tree
+        // unless it is explicitly hidden — aria-expanded="false" over readable
+        // content is a lie. (ChatManager.toggleThinking rewrites this on flip.)
+        expect(content.getAttribute('aria-hidden')).toBe('true');
     });
 
     it('tags the thinking container with the message id so expansion survives a re-render', () => {
@@ -265,6 +269,29 @@ describe('renderMessagesHtml', () => {
         const ids = Array.from(doc.querySelectorAll('.thinking-content')).map((el) => el.id);
         expect(ids.length).toBe(2);
         expect(new Set(ids).size).toBe(2);
+    });
+
+    it('wraps a doc-chip filename in its own truncatable element', () => {
+        // The chip itself is a flex container, where text-overflow: ellipsis is
+        // inert — the name needs a box of its own or a long filename is cut
+        // mid-glyph with no "…". The chip keeps the full name as its tooltip.
+        const long = 'quarterly-revenue-projection-final-v7-REALLY-final.pdf';
+        const result = renderMessagesHtml({
+            messages: [mkMsg(1, {
+                documents: [{ name: long }] as unknown as ChatMessage['documents'],
+            })],
+            currentConversation: mkConv(),
+            visibleMessageCount: 0,
+            deps: fakeDeps,
+        });
+        const doc = new DOMParser().parseFromString(result.html, 'text/html');
+        const chip = doc.querySelector('.message-doc-chip')!;
+        const nameEl = chip.querySelector('.doc-chip-name')!;
+        expect(nameEl.textContent).toBe(long);
+        expect(chip.getAttribute('title')).toBe(long);
+        // The paperclip glyph stays OUTSIDE the truncating box, or it would be
+        // the first thing the ellipsis eats.
+        expect(nameEl.querySelector('svg')).toBeNull();
     });
 
     it('marks pinned messages in the pin button dataset', () => {

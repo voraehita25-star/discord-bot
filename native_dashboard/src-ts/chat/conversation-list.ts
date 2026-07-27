@@ -73,6 +73,18 @@ export class ConversationList {
         // name, so the label stays outside the switch and every state keeps it.
         container.setAttribute('aria-label', 'Conversations');
 
+        // A rebuild below destroys whichever option node holds focus — capture
+        // first, restore after. render() is not only called on user action: a
+        // WS frame (a new message bumping a row's count, a title update, a star
+        // ack) re-renders the whole rail, so a keyboard user parked on a row
+        // would silently lose focus to <body> mid-conversation. The container
+        // itself is EXCLUDED because it carries tabindex=0 as a focusable
+        // scroll region: someone who tabbed in only to scroll must not be
+        // dragged onto an option. Mirrors renderChannelList() in
+        // history-manager.ts, which gained the same guard.
+        const hadFocus = document.activeElement !== container
+            && container.contains(document.activeElement);
+
         if (ctx.conversations.length === 0) {
             container.setAttribute('role', 'group');
             container.removeAttribute('aria-activedescendant');
@@ -83,6 +95,9 @@ export class ConversationList {
                 </div>
             `;
             this.detachRowHandlers(container);
+            // No options left to land on; keep focus in the rail rather than
+            // dropping it to <body> (the container is the focusable region).
+            if (hadFocus) container.focus();
             return;
         }
 
@@ -100,6 +115,7 @@ export class ConversationList {
                 </div>
             `;
             this.detachRowHandlers(container);
+            if (hadFocus) container.focus();
             return;
         }
 
@@ -148,6 +164,14 @@ export class ConversationList {
             container.setAttribute('aria-activedescendant', `conversation-opt-${activeId}`);
         } else {
             container.removeAttribute('aria-activedescendant');
+        }
+
+        // Restore the focus the innerHTML swap destroyed. The roving anchor has
+        // already been placed on the open conversation (or the first row), so
+        // focus simply follows it.
+        if (hadFocus) {
+            (container.querySelector('.conversation-item[tabindex="0"]') as HTMLElement | null)
+                ?.focus();
         }
 
         // Re-bind click delegation. One handler per container; we replace it
