@@ -43,8 +43,11 @@
  *                  face while the other shows its edge
  *     shape.bend   a lengthwise arc
  *     shape.pivot  where the petal turns about — 0 for a loose petal (its own
- *                  middle), -0.52 for a blossom lobe, which puts the BASE at
- *                  the origin so five of them can share a centre
+ *                  middle), about -0.44 for a blossom lobe, which carries the
+ *                  BASE just PAST the origin so five of them overlap around one
+ *                  centre. (Not -0.52, which lands the base exactly on it: the
+ *                  five then meet along one line and leave a hole punched
+ *                  through the middle of the flower. See the emitter.)
  *     colour       body colour and a separate base tint, which is how the warm
  *                  throat of a flower and the cool rim of a single petal come
  *                  out of one shader
@@ -114,10 +117,26 @@ out vec2 vForm;           // dome, notch — the fragment shader carves with the
 // just starts, and the shape reads as a shield. Around 1.2-1.5 the taper is
 // spread over the whole lower half, where a real petal's narrow neck lives. It
 // varies per petal because that neck is most of what tells two cultivars apart.
+// CLAW. The blade does not come to a needle at u=0 — it ends in the short
+// narrow stalk by which a real petal was attached, and that stalk has width.
+// At exactly zero the outline closes to a point, and a shape that is widest
+// near its top and infinitely sharp at its bottom is a spade: it was the single
+// biggest reason a face-on petal read as a leaf. A finite base also helps the
+// five-lobe blossom, where the claws overlap around the throat the way a real
+// flower's do instead of meeting at one mathematical point.
+const float CLAW = 0.19;
+
 float halfWidth(float u, float neck) {
     float grow = pow(1.0 - pow(1.0 - u, neck), 0.85);
-    float ease = 1.0 - 0.16 * pow(u, 3.0);
-    return grow * ease;
+    // SHOULDER. The old easing took 16% off at the very tip, which put the
+    // widest point AT the tip — the blade grew all the way out and was then
+    // cut square by the dome, so every cultivar came out a rounded triangle.
+    // Pulling 26% back from halfway on moves the widest point to ~0.70 and
+    // eases in above it: obovate, which is the sakura outline. It also leaves
+    // the tip narrower than the waist, so the dome cuts a round end rather than
+    // lopping off the widest part of the shape.
+    float shoulder = 1.0 - 0.26 * smoothstep(0.50, 1.0, u);
+    return (CLAW + (1.0 - CLAW) * grow) * shoulder;
 }
 
 vec3 surface(vec2 uv, vec4 shape, float neck) {
@@ -235,14 +254,32 @@ void main() {
     // Both edges are feathered by one derivative-width, which is what keeps an
     // 8px petal from having a staircase for a rim.
     float dome  = vForm.x * (1.0 - sqrt(max(0.0, 1.0 - v * v)));
-    float notch = vForm.y * exp(-(v * v) / 0.06);
+    /* The cleft is the one feature that says SAKURA rather than "some blossom",
+       and at 0.06 the Gaussian was too tight to say it: sigma 0.17 put the
+       notch at 22% of its depth by |v|=0.3, so it closed to a pinprick right of
+       centre and read as a nick in the rim, not as a split tip. 0.16 (sigma
+       0.28) holds 57% of the depth out to the same place, which opens the two
+       shoulders the eye actually reads as a cleft. Widening rather than
+       deepening on purpose — depth is the per-instance parameter, and a deeper
+       narrow spike would have cut a slot instead of a V. */
+    float notch = vForm.y * exp(-(v * v) / 0.16);
     float uMax = 1.0 - dome - notch;
+
+    /* The claw needs its corners taken off. Giving the base a finite width
+       (CLAW, in the vertex shader) stopped the outline closing to a needle, but
+       the mesh boundary at u=0 is a straight run in v, so a flat
+       smoothstep(0, 0.035, u) cut it square and left two hard right-angles — the petal
+       looked guillotined off rather than shed. Same circular arc the tip uses,
+       just shallower: it rounds the two corners and leaves the short blunt end
+       a real claw has between them. */
+    float baseCut = 0.075 * (1.0 - sqrt(max(0.0, 1.0 - v * v)));
 
     float fu = fwidth(u) * 1.2 + 1e-5;
     float fv = fwidth(v) * 1.2 + 1e-5;
     float tipMask  = 1.0 - smoothstep(uMax - fu, uMax, u);
     float sideMask = 1.0 - smoothstep(1.0 - fv, 1.0, abs(v));
-    float mask = tipMask * sideMask * smoothstep(0.0, 0.035, u);
+    float baseMask = smoothstep(baseCut, baseCut + fu + 0.010, u);
+    float mask = tipMask * sideMask * baseMask;
     if (mask <= 0.001) discard;
 
     // ---- lighting ---------------------------------------------------------

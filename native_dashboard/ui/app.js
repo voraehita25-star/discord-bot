@@ -1284,13 +1284,13 @@ function initSakuraAnimation() {
             // somei-yoshino — the one everybody pictures. Moderate everything.
             p.neck = 1.35 + Math.random() * 0.25;
             p.dome = 0.38 + Math.random() * 0.08;
-            p.notch = 0.09 + Math.random() * 0.04;
+            p.notch = 0.15 + Math.random() * 0.05;
         }
         else if (kind < 0.62) {
             // a slim, deeply cleft petal — long neck, tighter tip
             p.neck = 1.12 + Math.random() * 0.16;
             p.dome = 0.27 + Math.random() * 0.08;
-            p.notch = 0.12 + Math.random() * 0.05;
+            p.notch = 0.19 + Math.random() * 0.06;
             p.aspect *= 0.80;
         }
         else if (kind < 0.80) {
@@ -1311,7 +1311,7 @@ function initSakuraAnimation() {
             // rather than a curled petal.
             p.neck = 1.30 + Math.random() * 0.30;
             p.dome = 0.34 + Math.random() * 0.10;
-            p.notch = 0.08 + Math.random() * 0.05;
+            p.notch = 0.13 + Math.random() * 0.05;
             p.cup *= 1.15;
             p.twist *= 1.3;
             p.notch *= 0.7; // a hard curl already deepens the cleft optically
@@ -1326,7 +1326,7 @@ function initSakuraAnimation() {
             p.lobes = 5;
             p.neck = 1.45 + Math.random() * 0.25;
             p.dome = 0.42 + Math.random() * 0.08;
-            p.notch = 0.09 + Math.random() * 0.04;
+            p.notch = 0.14 + Math.random() * 0.05;
             p.aspect *= 1.05;
             // A flower is a bigger object than a loose petal.
             p.size *= 1.5;
