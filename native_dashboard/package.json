@@ -39,7 +39,7 @@
     "@types/pngjs": "^6.0.5",
     "@vitest/coverage-v8": "^4.1.9",
     "dompurify": "^3.4.10",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.0",
     "pngjs": "^7.0.0",
     "prismjs": "^1.30.0",
     "typescript": "^6.0.3",
