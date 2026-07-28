@@ -15,7 +15,7 @@ thiserror.workspace = true
 
 # Image processing
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
-base64 = "0.22"
+base64 = "0.23"
 
 [features]
 # On by default so `cargo build --release` still produces a loadable .pyd/.so.
