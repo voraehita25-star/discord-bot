@@ -272,9 +272,11 @@ describe('renderMessagesHtml', () => {
     });
 
     it('wraps a doc-chip filename in its own truncatable element', () => {
-        // The chip itself is a flex container, where text-overflow: ellipsis is
-        // inert — the name needs a box of its own or a long filename is cut
-        // mid-glyph with no "…". The chip keeps the full name as its tooltip.
+        // A long filename must not be cut mid-glyph with no "…". The chip does
+        // the truncating (`display: block` — ellipsis is inert on the flex
+        // container it used to be; see styles.css:2513) and keeps the full name
+        // as its tooltip. The name still gets a box of its own so the paperclip
+        // stays out of the ellipsis's reach, which is what this asserts.
         const long = 'quarterly-revenue-projection-final-v7-REALLY-final.pdf';
         const result = renderMessagesHtml({
             messages: [mkMsg(1, {

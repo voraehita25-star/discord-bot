@@ -675,6 +675,55 @@ test('a panel standing empty centres its placeholder', async ({ page }) => {
     expect(offenders, offenders.join('\n')).toEqual([]);
 });
 
+// The sibling above only ever sees a panel that has FINISHED loading — the mocks
+// resolve instantly, so the in-flight branch of HistoryManager.renderMessages is
+// never on screen when it measures. It was uncentred the whole time:
+// `.history-loading` had no rule in either stylesheet, and its two children
+// disagree — `.no-data` centres its own text, `.loading-spinner` is a bare 32px
+// block, so the spinner sat hard against the panel's left edge (measured 613 vs
+// a 920 centre) with the caption centred underneath it.
+//
+// The markup here is a copy of what history-manager.ts renders for
+// `this.loading`, because that state is not reachable through the mocks; it is
+// the STYLING this pins. Keep the two in step if the loading block changes.
+test('a panel mid-load centres its spinner, not just its caption', async ({ page }) => {
+    await boot(page, 1280, 900);
+    await freezeMotion(page);
+    await show(page, 'history');
+
+    const r = await page.evaluate(() => {
+        const host = document.getElementById('ai-history-messages');
+        if (!host) return null;
+        host.innerHTML = `
+            <div class="history-loading" role="status" aria-live="polite">
+                <div class="loading-spinner" aria-hidden="true"></div>
+                <p class="no-data">Loading messages…</p>
+            </div>`;
+        const centre = (el: Element | null) => {
+            if (!el) return null;
+            const b = el.getBoundingClientRect();
+            return b.left + b.width / 2;
+        };
+        const hostC = centre(host)!;
+        const spinner = centre(host.querySelector('.loading-spinner'));
+        const caption = centre(host.querySelector('.no-data'));
+        return {
+            spinnerOff: spinner === null ? null : Math.round(spinner - hostC),
+            captionOff: caption === null ? null : Math.round(caption - hostC),
+            hostW: Math.round(host.getBoundingClientRect().width),
+        };
+    });
+
+    expect(r, '#ai-history-messages missing').not.toBeNull();
+    expect(r!.spinnerOff, 'no .loading-spinner rendered').not.toBeNull();
+    expect(
+        Math.abs(r!.spinnerOff!),
+        `spinner is ${r!.spinnerOff}px off the centre of a ${r!.hostW}px panel`,
+    ).toBeLessThanOrEqual(2);
+    // The caption was always centred; assert it stayed that way beside the fix.
+    expect(Math.abs(r!.captionOff!)).toBeLessThanOrEqual(2);
+});
+
 // The kbd chips were content-width past their 80px min, so "Ctrl+Enter" pushed
 // its description 14px right of the other eleven — in the ? modal AND in the
 // Settings card, which render the same reference. The modal also needs to fit the

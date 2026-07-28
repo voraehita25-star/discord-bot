@@ -165,12 +165,17 @@ function renderSingleMessage(msg, msgIdx, mctx) {
     // docs at conversation scope (dashboard_document_memories), not per message,
     // so these show on send + within the session but not after a full reload.
     //
-    // The name gets its OWN element. The chip is `display: inline-flex` with
-    // `text-overflow: ellipsis` on itself, and ellipsis does nothing on a flex
-    // container — it needs a block-ish box whose own text overflows. So a long
-    // filename was sliced flat at the 240px cap, mid-glyph, with no "…" to say
-    // the name continued, while the composer's chip for the same file
-    // ellipsised correctly. `.doc-chip-name` is the box that can truncate.
+    // The name gets its OWN element, and the paperclip stays outside it. Both
+    // this chip and the composer's cap the name at 240px; this one used to slice
+    // it flat mid-glyph with no "…" because the chip was `display: inline-flex`
+    // and `text-overflow: ellipsis` is inert on a flex container.
+    // NOTE: the truncation is now the CHIP's, not this span's — the fix that
+    // shipped was `display: block` on `.message-doc-chip` (see the comment at
+    // styles.css:2513), which makes the chip itself the block box whose inline
+    // content overflows. `.doc-chip-name` carries no CSS of its own; it stays
+    // because it keeps the icon out of the ellipsis's reach (the ellipsis eats
+    // the END of the line, and the glyph leads) and because it gives the name a
+    // stable hook to assert against.
     let docsHtml = '';
     if (Array.isArray(msg.documents) && msg.documents.length > 0) {
         docsHtml = `<div class="message-docs">${msg.documents

@@ -4884,6 +4884,25 @@ html[data-theme="light"] .toast::before {
     padding-right: 4px;
 }
 
+/* In-flight load placeholder: centre the spinner over its caption.
+   `.history-loading` had no rule at all, and its two children disagreed about
+   their own alignment — `.no-data` is the shared in-panel empty-state recipe
+   (orbital.css:2320) and centres itself, while `.loading-spinner` is a bare
+   32px block box, so in a block parent it kept margin-left:0. Measured, the
+   spinner sat at x=613 against the panel's 920 centre: 305px off, hard against
+   the left edge and visually detached from the caption below it. Every other
+   placeholder in the app is centred — the e2e suite asserts it for the EMPTY
+   state, but the loading state is transient and nothing was looking at it.
+
+   Centre the SPINNER only, rather than making the parent a centred flex
+   column: `.no-data` is a full-width dashed frame shared with the Database and
+   chat-sidebar empty states, and `align-items: center` shrink-wrapped it here
+   into a chip that matched neither. Its own `margin: var(--space-2) 0` already
+   supplies the gap. */
+.history-loading .loading-spinner {
+    margin-inline: auto;
+}
+
 .history-msg {
     background: var(--card-bg);
     border: 1px solid var(--border-color);

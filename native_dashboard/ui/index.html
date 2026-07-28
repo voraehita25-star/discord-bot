@@ -963,7 +963,14 @@
                                              disagree ("0 chars" → "1 / 500,000 chars"). -->
                                         <span class="setting-hint-inline" id="chat-files-edit-counter">0 / 500,000 chars</span>
                                     </label>
-                                    <div class="setting-control setting-control-full">
+                                    <!-- No `setting-control-full` modifier: that class
+                                         name shipped here but has never had a rule in
+                                         either stylesheet. What actually clears the
+                                         Settings page's 420px measure for this editor is
+                                         `#chat-files-edit-view .setting-control`
+                                         (styles.css) — the modifier read as if it were
+                                         load-bearing and was not. -->
+                                    <div class="setting-control">
                                         <!-- aria-label outranks the <label> subtree in the
                                              accname algorithm, which is the point: without
                                              it the textarea's accessible NAME was

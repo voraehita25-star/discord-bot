@@ -2996,18 +2996,33 @@ export class ChatManager {
             const now = new Date();
             const isToday = date.toDateString() === now.toDateString();
             
-            const timeStr = date.toLocaleTimeString('th-TH', { 
-                hour: '2-digit', 
+            // Locale `undefined` = the user's own, matching formatChatFileDate
+            // above ("works in any locale") and formatLastActive in
+            // history-manager. These three were the app's only date renderers
+            // and this one was the odd one out: 'th-TH' is a HARDCODED Thai
+            // locale, so `month: 'short'` emitted Thai abbreviations ("25 ก.ค.")
+            // on every message bubble while the attached-files panel beside it
+            // rendered the same instant as "Jul 25" — one conversation, two
+            // languages. The UI is English (the document is lang="en"), which
+            // makes it wrong twice over: the Thai glyphs carry no lang="th", so
+            // a screen reader voices them with an English voice — the exact
+            // defect already fixed for the Korean skip link and logo, which DO
+            // carry lang="ko". Thai comments are this repo's convention; Thai
+            // in the rendered UI is not.
+            // hour12:false is kept deliberately — the dashboard is 24h
+            // throughout (the chart axis pins en-GB for the same reason).
+            const timeStr = date.toLocaleTimeString(undefined, {
+                hour: '2-digit',
                 minute: '2-digit',
                 hour12: false
             });
-            
+
             if (isToday) {
                 return timeStr;
             } else {
-                const dateFormatted = date.toLocaleDateString('th-TH', { 
-                    day: 'numeric', 
-                    month: 'short' 
+                const dateFormatted = date.toLocaleDateString(undefined, {
+                    day: 'numeric',
+                    month: 'short'
                 });
                 return `${dateFormatted} ${timeStr}`;
             }

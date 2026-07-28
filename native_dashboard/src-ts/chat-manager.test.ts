@@ -412,6 +412,57 @@ describe('formatTime — invalid input', () => {
     });
 });
 
+describe('formatTime — locale', () => {
+    // formatTime used to pass a hardcoded 'th-TH', so `month: 'short'` printed
+    // Thai abbreviations ("15 ม.ค.") on every message bubble of an English
+    // (lang="en") UI, while formatChatFileDate one screen over rendered the same
+    // instant as "Jan 15" from the user's own locale. The app's other two date
+    // renderers both pass `undefined` on purpose; this one is now the same.
+    //
+    // ASSERT THE ARGUMENT, NOT THE OUTPUT. A maintainer whose machine is already
+    // Thai — which describes this repo's author — gets byte-identical output
+    // from 'th-TH' and undefined, so an output comparison silently passes on the
+    // one machine most likely to reintroduce the bug. (It was written that way
+    // first and did exactly that: green with the fix reverted.) The contract
+    // worth pinning is "never names a locale", and that holds everywhere.
+    const PAST = '2020-01-15 09:00:00'; // past, so the not-today branch runs
+
+    it('asks for the running locale, never a hardcoded one', () => {
+        const cm = mountDomAndChat();
+        const dateSpy = vi.spyOn(Date.prototype, 'toLocaleDateString');
+        const timeSpy = vi.spyOn(Date.prototype, 'toLocaleTimeString');
+        try {
+            cm.formatTime(PAST);
+            expect(timeSpy, 'no time was formatted').toHaveBeenCalled();
+            expect(dateSpy, 'the not-today branch did not run').toHaveBeenCalled();
+            for (const [name, spy] of [['date', dateSpy], ['time', timeSpy]] as const) {
+                for (const call of spy.mock.calls) {
+                    expect(call[0], `${name} was formatted with a hardcoded "${String(call[0])}"`)
+                        .toBeUndefined();
+                }
+            }
+        } finally {
+            dateSpy.mockRestore();
+            timeSpy.mockRestore();
+        }
+    });
+
+    it('agrees with the locale policy its sibling formatters use', () => {
+        const cm = mountDomAndChat();
+        // "Z" because SQLite's naive timestamps are UTC — same as the shipped path.
+        const expected = new Date('2020-01-15T09:00:00Z')
+            .toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+        expect(cm.formatTime(PAST)).toContain(expected);
+    });
+
+    it('keeps a 24-hour clock, which the dashboard uses throughout', () => {
+        const cm = mountDomAndChat();
+        const out = cm.formatTime(PAST);
+        expect(out).not.toMatch(/\b[AP]\.?M\.?\b/i);
+        expect(out).toMatch(/\d{2}:\d{2}/);
+    });
+});
+
 describe('handleMessage — tag mutations', () => {
     it('conversation_tagged updates the current conversation tags + re-renders chips', () => {
         const cm = mountDomAndChat();
