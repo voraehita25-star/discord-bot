@@ -3902,12 +3902,23 @@ html[data-theme] .btn.btn[disabled] .ic { color: var(--text-muted); }
    the right of every control that belonged to nothing. The 260px caption column
    was the other half of it — the longest label ("Send Anonymous Crash Reports")
    needs ~200px, so 60px of that column was holding a gap between a label and
-   the control it names. Narrowing the caption column and capping the cards to
-   the measure the form actually occupies turns an unowned in-card gutter into a
-   deliberate page margin. The one-left-edge / one-right-edge invariant that
+   the control it names. The one-left-edge / one-right-edge invariant that
    ui-invariants.spec.ts pins is untouched: fields still share a grid column.
+
+   NO SECOND CAP ON THE CARD. This block used to also carry
+   `#page-settings .settings-card { max-width: 780px }`, on the reasoning that
+   capping the card to the form's own measure turned that unowned in-card gutter
+   into a deliberate page margin. It over-corrected, and it was not the fix:
+   what actually closed the gutter is the `max-width: none` rule directly below,
+   which lets each field fill its grid column — measured at 1280, the Display
+   Name input now runs the full 545→1219 of the control column with the cap
+   gone. The cap's only remaining effect was to stop the card at x=1076 while
+   `.content > .page` (which already caps every page at 1520px and centres it)
+   carried the rest of the deck out to 1244. 36px of page margin on the left and
+   204px on the right does not read as a measure; it reads as a form that has
+   been dragged to one side, which is exactly how it was reported. Settings now
+   fills the same measure as Status, Logs, Database and History.
    --------------------------------------------------------------------------- */
-#page-settings .settings-card { max-width: 780px; }
 .setting-row { grid-template-columns: minmax(0, 200px) minmax(0, 1fr); }
 /* With the page capped, the 420px cap on each field becomes the SECOND unowned
    gutter — 86px of empty control column to the right of every input, inside a
