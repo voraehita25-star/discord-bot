@@ -382,6 +382,96 @@ describe('Chart hold-to-edge rendering (drawChart)', () => {
             vi.useRealTimers();
         }
     });
+
+    it('keeps the end-value label clear of the series it labels', () => {
+        // The regression this guards: the label's y came from the LAST sample
+        // alone (`lastPt.y - 12`), so on any series that oscillates — which is
+        // exactly what the memory chart does — a peak a few pixels above the
+        // endpoint ran straight through the glyphs. "227.2 MB" shipped with the
+        // 2px stroke and its 8px glow crossing the digits, illegible, and the
+        // line looked broken where the text sat on it. No other check could see
+        // it: the label is painted on a <canvas>, so axe, the pixel-sampled
+        // contrast spec, and the visual baselines (which only ever render the
+        // "Collecting data..." state) are all blind to it.
+        //
+        // The invariant: the label's glyph box must not vertically overlap the
+        // band the line occupies within the label's own x-span. drawChart holds
+        // it by going above that band's top, or below its bottom.
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-07-11T18:22:05'));
+        const originalRaf = window.requestAnimationFrame;
+        window.requestAnimationFrame = ((): number => 0) as typeof window.requestAnimationFrame;
+        const canvas = document.createElement('canvas');
+        canvas.id = 'endlabel-test-chart';
+        document.body.appendChild(canvas);
+        canvas.getBoundingClientRect = () =>
+            ({ width: 480, height: 200, top: 0, left: 0, right: 480, bottom: 200, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+        const ctx = makeRecordingCtx();
+        canvas.getContext = (() => ctx) as unknown as typeof canvas.getContext;
+
+        try {
+            const now = Date.now();
+            // A peak 1s before the end and a lower final reading: both land
+            // inside the label's x-span, and the peak sits just far enough above
+            // the endpoint to be inside the old `lastPt.y - 12` glyph box.
+            drawChart('endlabel-test-chart', [
+                { timestamp: now - 20_000, value: 100 },
+                { timestamp: now - 10_000, value: 104 },
+                { timestamp: now - 1_000, value: 128 },
+                { timestamp: now - 500, value: 120 },
+            ], '#b2a4ff', { decimals: 1, unit: ' MB' });
+
+            // The unit makes the end label unambiguous — axis ticks carry none.
+            const endCall = ctx.calls.find(
+                c => c.method === 'fillText' && String(c.args[0]).endsWith(' MB'),
+            );
+            expect(endCall, 'no end-value label was drawn').toBeTruthy();
+            const labelX = endCall!.args[1] as number;   // textAlign:right → right edge
+            const labelY = endCall!.args[2] as number;   // alphabetic baseline
+            // measureText is stubbed at 20px wide; mirror drawChart's own box.
+            const boxL = labelX - 20 - 4;
+            const boxR = labelX + 4;
+
+            // Vertices of the DRAWN LINE only. traceSmoothPath emits moveTo +
+            // bezierCurveTo; the two lineTo calls are the area fill's closure
+            // down to the plot floor and would swamp the band.
+            const ys: number[] = [];
+            for (const c of ctx.calls) {
+                if (c.method === 'moveTo') {
+                    const [x, y] = c.args as [number, number];
+                    if (x >= boxL - 2 && x <= boxR + 2) ys.push(y);
+                } else if (c.method === 'bezierCurveTo') {
+                    const a = c.args as number[];
+                    for (const [x, y] of [[a[0], a[1]], [a[2], a[3]], [a[4], a[5]]]) {
+                        if (x >= boxL - 2 && x <= boxR + 2) ys.push(y);
+                    }
+                }
+            }
+            expect(ys.length, 'no line vertices under the label — fixture drifted')
+                .toBeGreaterThan(1);
+
+            const bandTop = Math.min(...ys);
+            const bandBottom = Math.max(...ys);
+            // 11px font on an alphabetic baseline: ascent ~9 above, descent ~3 below.
+            const glyphTop = labelY - 9;
+            const glyphBottom = labelY + 3;
+            const clearsAbove = glyphBottom < bandTop;
+            const clearsBelow = glyphTop > bandBottom;
+            expect(
+                clearsAbove || clearsBelow,
+                `label box [${glyphTop.toFixed(1)}, ${glyphBottom.toFixed(1)}] overlaps the ` +
+                `line band [${bandTop.toFixed(1)}, ${bandBottom.toFixed(1)}] it sits on`,
+            ).toBe(true);
+
+            // …and it still has to be inside the canvas.
+            expect(glyphTop).toBeGreaterThanOrEqual(0);
+            expect(glyphBottom).toBeLessThanOrEqual(200);
+        } finally {
+            window.requestAnimationFrame = originalRaf;
+            canvas.remove();
+            vi.useRealTimers();
+        }
+    });
 });
 
 // ============================================================================

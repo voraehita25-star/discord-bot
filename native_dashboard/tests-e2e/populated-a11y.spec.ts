@@ -269,6 +269,156 @@ test('chat: the conversation rail is usable at the 800x600 window minimum', asyn
     expect(r.mainH, 'chat-main squeezed by the rail').toBeGreaterThanOrEqual(260);
 });
 
+// ---------------------------------------------------------------------------
+// …and the same rail with ROWS in it, which is the state it is actually for.
+// The test above only ever measures the zero-data block, so it kept passing
+// while the populated rail was unusable: every number in .conversation-item is
+// tuned for a full-height desktop rail (12px padding + a 32px avatar + an 8px
+// gutter = a 68px row), and against a ~110px list that rendered ONE
+// conversation plus a second sliced through its title by the Export All footer
+// — which reads as a rendering fault, not as a list that scrolls.
+// ---------------------------------------------------------------------------
+test('chat: the populated conversation rail shows whole rows at 800x600', async ({ page }) => {
+    await boot(page, MIN_WIN);
+    await show(page, 'chat');
+    await page.evaluate(() => {
+        const list = document.getElementById('conversation-list')!;
+        list.replaceChildren();
+        for (let i = 0; i < 12; i++) {
+            const item = document.createElement('div');
+            item.className = 'conversation-item';
+            const avatar = document.createElement('img');
+            avatar.className = 'conv-avatar';
+            const info = document.createElement('div');
+            info.className = 'conv-info';
+            const title = document.createElement('span');
+            title.className = 'conv-title';
+            title.textContent = `Conversation ${i}`;
+            const meta = document.createElement('span');
+            meta.className = 'conv-meta';
+            meta.textContent = '41 messages';
+            info.append(title, meta);
+            item.append(avatar, info);
+            list.appendChild(item);
+        }
+    });
+    await page.waitForTimeout(250);
+
+    const r = await page.evaluate(() => {
+        const list = document.getElementById('conversation-list')!;
+        const row = list.querySelector<HTMLElement>('.conversation-item')!;
+        const footer = document.querySelector<HTMLElement>('#page-chat .chat-sidebar-footer')!;
+        const rail = document.querySelector<HTMLElement>('#page-chat .chat-sidebar')!;
+        const main = document.querySelector<HTMLElement>('#page-chat .chat-main')!;
+        return {
+            rowH: row.getBoundingClientRect().height,
+            listClientH: list.clientHeight,
+            scrolls: list.scrollHeight > list.clientHeight,
+            footerSpill: Math.round(
+                footer.getBoundingClientRect().bottom - rail.getBoundingClientRect().bottom),
+            mainH: Math.round(main.getBoundingClientRect().height),
+            docOverflowY: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+        };
+    });
+
+    expect(r.rowH, 'no rows rendered — fixture drifted').toBeGreaterThan(0);
+    // TWO whole rows. Not a round number for its own sake: one row is what the
+    // rail showed before, and a list that can only ever display a single item
+    // is a dropdown, not a browsable rail.
+    expect(
+        r.listClientH / r.rowH,
+        `only ${(r.listClientH / r.rowH).toFixed(2)} rows fit (${r.rowH}px rows in a ${r.listClientH}px list)`,
+    ).toBeGreaterThanOrEqual(2);
+    // The rest of the rail's contract still has to hold with rows present.
+    expect(r.scrolls, 'the list must own its overflow').toBe(true);
+    expect(r.footerSpill, 'the rail spilled its footer past its own box').toBeLessThanOrEqual(1);
+    expect(r.mainH, 'chat-main squeezed by the rail').toBeGreaterThanOrEqual(260);
+    expect(r.docOverflowY, 'the page itself must not scroll').toBeLessThanOrEqual(1);
+});
+
+// ---------------------------------------------------------------------------
+// A user row is row-reverse — the avatar sits on the RIGHT, and the bubble
+// squares its top-right corner to point at it — but .message-header kept the
+// base sheet's left alignment inside a flex:1 wrapper. So the name and time were
+// pinned to the far left of a full-width row while the face they belong to was
+// hundreds of px away at the other end, with the action row (already flex-end)
+// right-aligned underneath. Nothing saw it: the visual baselines only render the
+// empty chat page, and a misaligned caption is neither an axe violation nor an
+// overflow.
+// ---------------------------------------------------------------------------
+test('chat: a user message caption sits with its own avatar, not across the row', async ({ page }) => {
+    await boot(page, NORMAL);
+    await show(page, 'chat');
+    await page.evaluate(() => {
+        document.getElementById('chat-not-running-overlay')?.classList.remove('visible');
+        document.getElementById('chat-empty')?.classList.add('hidden');
+        const c = document.getElementById('chat-container');
+        if (c) { c.classList.remove('hidden'); (c as HTMLElement).style.display = 'flex'; }
+        const host = document.getElementById('chat-messages')!;
+        host.replaceChildren();
+        for (const role of ['user', 'assistant'] as const) {
+            const msg = document.createElement('div');
+            msg.className = `chat-message ${role}`;
+            const avatar = document.createElement('div');
+            avatar.className = 'message-avatar';
+            const wrapper = document.createElement('div');
+            wrapper.className = 'message-wrapper';
+            const header = document.createElement('div');
+            header.className = 'message-header';
+            const name = document.createElement('span');
+            name.className = 'message-name';
+            name.textContent = role === 'user' ? 'TestUser' : 'General Assistant';
+            const time = document.createElement('span');
+            time.className = 'message-time';
+            time.textContent = '12:34';
+            header.append(name, time);
+            const body = document.createElement('div');
+            body.className = 'message-content';
+            body.textContent = 'A message long enough that its wrapper is much wider than its caption.';
+            wrapper.append(header, body);
+            msg.append(avatar, wrapper);
+            host.appendChild(msg);
+        }
+    });
+    await page.waitForTimeout(250);
+
+    const r = await page.evaluate(() => {
+        // .message-header spans the whole flex:1 wrapper in both roles, so the
+        // question is where its CONTENT sits inside it — flush to the avatar's
+        // end, or stranded at the far one.
+        const read = (role: string) => {
+            const msg = document.querySelector<HTMLElement>(`.chat-message.${role}`)!;
+            const header = msg.querySelector<HTMLElement>('.message-header')!;
+            const kids = Array.from(header.children).map((k) => k.getBoundingClientRect());
+            const hb = header.getBoundingClientRect();
+            return {
+                headerW: hb.width,
+                // Slack between the caption block and each end of its header.
+                slackLeft: Math.min(...kids.map((k) => k.left)) - hb.left,
+                slackRight: hb.right - Math.max(...kids.map((k) => k.right)),
+            };
+        };
+        return { user: read('user'), assistant: read('assistant') };
+    });
+
+    // Sanity: the header really is much wider than its caption, so "which end
+    // is it on" is a meaningful question at all.
+    expect(r.user.headerW, 'header too narrow to distinguish the ends').toBeGreaterThan(300);
+
+    // The user's caption belongs at the avatar's end (right). Before the fix its
+    // slackRight was the near-full width of the row.
+    expect(
+        r.user.slackRight,
+        `user caption is ${Math.round(r.user.slackRight)}px from the right edge it shares `
+        + `with its avatar (header is ${Math.round(r.user.headerW)}px wide)`,
+    ).toBeLessThanOrEqual(12);
+    // …and the assistant's stays at its own avatar's end (left), unchanged.
+    expect(
+        r.assistant.slackLeft,
+        `assistant caption drifted ${Math.round(r.assistant.slackLeft)}px off its left edge`,
+    ).toBeLessThanOrEqual(12);
+});
+
 test('chat: the composer stays pinned at 800x600 with a conversation open', async ({ page }) => {
     await boot(page, MIN_WIN);
     await show(page, 'chat');

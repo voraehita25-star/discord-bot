@@ -1085,13 +1085,53 @@ export function drawChart(canvasId: string, data: ChartDataPoint[], color: strin
         const current = data[data.length - 1].value;
         const endLabel = `${formatChartValue(current, spec.decimals)}${spec.unit}`;
         ctx.font = `600 11px ${monoFont}`;
-        ctx.fillStyle = inkStrong;
         ctx.textAlign = 'right';
-        const endLabelY = lastPt.y - 14 < plotTop ? lastPt.y + 20 : lastPt.y - 12;
         // The label follows its dot (riding the hold segment's end at the
         // clock edge), clamped inside the plot.
         const endLabelW = ctx.measureText(endLabel).width;
         const endLabelX = Math.min(plotRight, Math.max(lastPt.x + endLabelW / 2, plotLeft + endLabelW));
+
+        // Place it clear of the SERIES, not just clear of the last sample.
+        // The y used to be derived from lastPt alone, so on any series that
+        // oscillates — which is what memory does — the peaks in the label's own
+        // x-span ran straight through the glyphs: "227.2 MB" shipped with the
+        // 2px stroke and its glow crossing the digits, illegible against a line
+        // that was itself broken up by the text. Measure the line where the
+        // label actually sits and go above its highest point there; if that
+        // would leave the plot, drop below its lowest instead.
+        const boxL = endLabelX - endLabelW - 4;
+        const boxR = endLabelX + 4;
+        let spanTop = Infinity;
+        let spanBottom = -Infinity;
+        for (const p of linePts) {
+            if (p.x < boxL - 2 || p.x > boxR + 2) continue;
+            if (p.y < spanTop) spanTop = p.y;
+            if (p.y > spanBottom) spanBottom = p.y;
+        }
+        // No vertex lands under the label (a very sparse series): the endpoint
+        // is the only thing that can be there.
+        if (spanTop === Infinity) { spanTop = lastPt.y; spanBottom = lastPt.y; }
+        // CLEAR is the stroke half-width + the marker radius + a little air, so
+        // the glow does not lick the baseline either.
+        const CLEAR = 12;
+        let endLabelY = spanTop - CLEAR;
+        if (endLabelY - 9 < plotTop) endLabelY = spanBottom + CLEAR + 8;
+        // Last resort — a series that fills the plot top to bottom. Keep the
+        // glyphs inside the canvas and punch their footprint out of the line
+        // beneath, the same way drawChartMarker clears a ring around the dot
+        // (the canvas is transparent, so the punch reveals the card itself and
+        // stays correct in both themes).
+        if (endLabelY + 3 > plotBottom) {
+            endLabelY = Math.max(plotTop + 10, Math.min(lastPt.y - CLEAR, plotBottom - 3));
+            ctx.save();
+            ctx.globalCompositeOperation = 'destination-out';
+            ctx.fillStyle = '#000';   // opaque: the punch erases dest × srcAlpha
+            ctx.beginPath();
+            ctx.roundRect(boxL, endLabelY - 10, endLabelW + 8, 14, 3);
+            ctx.fill();
+            ctx.restore();
+        }
+        ctx.fillStyle = inkStrong;
         ctx.fillText(endLabel, endLabelX, endLabelY);
     }
 
