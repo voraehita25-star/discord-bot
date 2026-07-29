@@ -147,11 +147,24 @@ assets/RP/
 
 # Claude Code / RuFlo (per-user runtime state, never commit)
 .claude/settings.local.json
-.claude/settings.json.pre-ruflo-init.bak
-.claude/settings.local.json.pre-ruflo-init.bak
+.claude/*.bak
 .claude/worktrees/
 .claude/helpers/
 .claude/memory.db
 .claude-flow/
 .swarm/
 claude-flow.config.json
+
+# Tool caches. These were only ever ignored because mypy / pytest / ruff each
+# write their OWN .gitignore ("*") inside the directory they create — so the
+# moment one of those self-written files goes missing (a partial delete, an
+# older tool version, a copied tree) the whole cache surfaces as untracked
+# noise. Name them here so the repo does not depend on that.
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.playwright-mcp/
+
+# Tauri / cargo build output (also self-ignored by target/.gitignore)
+native_dashboard/target/
+rust_extensions/target/

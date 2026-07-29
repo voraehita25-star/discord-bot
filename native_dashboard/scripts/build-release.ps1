@@ -53,8 +53,6 @@ try {
     Write-Host "  [release] bot-dashboard.exe" -ForegroundColor White
     Write-Host "  [release] Discord Bot Dashboard.exe" -ForegroundColor White
     Write-Host "  [release] $koreanName" -ForegroundColor White
-    Write-Host "  [BOT] bot-dashboard.exe" -ForegroundColor White
-    Write-Host "  [BOT] Discord Bot Dashboard.exe" -ForegroundColor White
     Write-Host "  [BOT] $koreanName" -ForegroundColor White
     Write-Host ""
 } finally {

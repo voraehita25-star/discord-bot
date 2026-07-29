@@ -243,17 +243,17 @@ cd native_dashboard
 .\scripts\build-tauri.ps1
 ```
 
-Manual build (if needed — **must copy both exes**):
+Manual build (if needed — **must copy the aliases**):
 
 ```bash
 npm run build                          # 1. Compile TypeScript
 cargo build --release                  # 2. Build Rust
-# 3. Copy to Korean + English aliases (REQUIRED!)
+# 3. Copy the aliases (REQUIRED!)
+#    target/release keeps both names — scripts/dev/validate_ipc.py probes for them.
 Copy-Item target\release\bot-dashboard.exe "target\release\디스코드 봇 대시보드.exe"
 Copy-Item target\release\bot-dashboard.exe "target\release\Discord Bot Dashboard.exe"
-Copy-Item target\release\bot-dashboard.exe ..\bot-dashboard.exe
+#    The repo root carries the shipping name only.
 Copy-Item target\release\bot-dashboard.exe "..\디스코드 봇 대시보드.exe"
-Copy-Item target\release\bot-dashboard.exe "..\Discord Bot Dashboard.exe"
 ```
 
 ### Create Desktop Shortcut

@@ -52,10 +52,16 @@ function Publish-DashboardExe {
         Copy the built exe to every shipping location.
     .DESCRIPTION
         Destinations (all pointing at the same binary):
-          target\release\  - bot-dashboard.exe (build output), the Korean name,
-                             and the legacy "Discord Bot Dashboard.exe"
-          repo root        - the same three, so the app can be launched from
-                             next to bot.py
+          target\release\  - bot-dashboard.exe (cargo's own output), the Korean
+                             name, and the legacy "Discord Bot Dashboard.exe".
+                             Both aliases stay: scripts/dev/validate_ipc.py
+                             probes for them by name.
+          repo root        - the Korean name ONLY.
+
+        The repo root used to receive all three, which meant 54 MB of the same
+        18 MB binary sitting in the project root under three names. Nothing in
+        the codebase launches them by path (only docs and this script mention
+        them), so the root now carries the single shipping name.
         Returns $true when every copy landed.
     .PARAMETER ReleaseDir
         native_dashboard\target\release
@@ -78,11 +84,9 @@ function Publish-DashboardExe {
 
     $KoreanName = Get-DashboardKoreanName
     $Targets = @(
-        @{ Path = (Join-Path $ReleaseDir $KoreanName);                       Label = "[release] $KoreanName" }
-        @{ Path = (Join-Path $ReleaseDir "Discord Bot Dashboard.exe");       Label = "[release] Discord Bot Dashboard.exe" }
-        @{ Path = (Join-Path $BotDir "bot-dashboard.exe");                   Label = "[BOT] bot-dashboard.exe" }
-        @{ Path = (Join-Path $BotDir "Discord Bot Dashboard.exe");           Label = "[BOT] Discord Bot Dashboard.exe" }
-        @{ Path = (Join-Path $BotDir $KoreanName);                           Label = "[BOT] $KoreanName" }
+        @{ Path = (Join-Path $ReleaseDir $KoreanName);                 Label = "[release] $KoreanName" }
+        @{ Path = (Join-Path $ReleaseDir "Discord Bot Dashboard.exe"); Label = "[release] Discord Bot Dashboard.exe" }
+        @{ Path = (Join-Path $BotDir $KoreanName);                     Label = "[BOT] $KoreanName" }
     )
 
     $Locked = @()
