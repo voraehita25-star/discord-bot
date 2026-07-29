@@ -49,7 +49,10 @@ if ($Config.bot.check_dependencies) {
         } else {
             $Install = Read-Host "Install dependencies now? (y/n)"
             if ($Install -eq "y") {
-                pip install -r (Join-Path $ProjectRoot "requirements.txt")
+                # Install INTO the interpreter that will run the bot. A bare
+                # `pip` installs wherever PATH points, which is exactly the
+                # mismatch that made the dependency check fail again next launch.
+                & $BotPython -m pip install -r (Join-Path $ProjectRoot "requirements.txt")
             }
         }
     }
@@ -72,7 +75,10 @@ while ($true) {
         # Quote the script path — $BotScript contains a space ("C:\BOT Discord\bot.py").
         # -ArgumentList passes its value to the new process verbatim (no auto-quoting),
         # so without the embedded quotes Python receives "C:\BOT" as the script path.
-        $BotProcess = Start-Process -FilePath "python" -ArgumentList "`"$BotScript`"" -NoNewWindow -PassThru -WorkingDirectory $ProjectRoot
+        # $BotPython is the repo venv interpreter when one exists (see _common.psm1);
+        # launching bare `python` here ran the bot under a system Python that has
+        # none of its dependencies installed.
+        $BotProcess = Start-Process -FilePath $BotPython -ArgumentList "`"$BotScript`"" -NoNewWindow -PassThru -WorkingDirectory $ProjectRoot
 
         # Wait for process
         $BotProcess.WaitForExit()

@@ -39,6 +39,8 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -173,23 +175,45 @@ def _line_count_k(rel: str) -> str | None:
 
 def compute_stats() -> dict[str, object | None]:
     """Compute every synced stat. None means 'could not compute — leave doc as-is'."""
-    return {
-        # File / JSON based — always available.
+    stats: dict[str, object | None] = {
+        # File / JSON based — always available and effectively free.
         "version": _version(),
         "pytest_test_files": _count_glob(ROOT / "tests", "test_*.py"),
-        "python_files": _git_py_count(),
         "vitest_files": _count_glob(DASH / "src-ts", "**/*.test.ts"),
         "vitest_chat_files": _count_glob(DASH / "src-ts" / "chat", "*.test.ts"),
         "playwright_files": _count_glob(DASH / "tests-e2e", "*.spec.ts"),
         "app_ts_lines": _line_count_k("native_dashboard/src-ts/app.ts"),
         "chat_manager_ts_lines": _line_count_k("native_dashboard/src-ts/chat-manager.ts"),
-        # Tool based — best-effort (skipped if the toolchain is absent).
-        "pytest_tests": _pytest_total(),
-        "vitest_tests": _vitest_total(),
-        "playwright_tests": _playwright_total(),
-        "chat_manager_tests": _vitest_total("src-ts/chat-manager.test.ts"),
-        "ruff_version": _ruff_version(),
     }
+
+    # Tool-based stats — best-effort (skipped if the toolchain is absent).
+    # Each one shells out and WAITS: the two vitest probes actually run the
+    # frontend suite (up to 240s apiece), playwright lists its tests, pytest
+    # collects, git lists files. Serially that is the sum of all of them for a
+    # command whose whole job is rewriting a handful of numbers. They are
+    # independent subprocesses, so a thread pool turns the wall clock into the
+    # slowest single probe — threads, not processes, because every one of these
+    # is blocked in subprocess.run rather than holding the GIL.
+    probes: dict[str, Callable[[], object | None]] = {
+        "python_files": _git_py_count,
+        "pytest_tests": _pytest_total,
+        "vitest_tests": _vitest_total,
+        "playwright_tests": _playwright_total,
+        "chat_manager_tests": lambda: _vitest_total("src-ts/chat-manager.test.ts"),
+        "ruff_version": _ruff_version,
+    }
+    with ThreadPoolExecutor(max_workers=len(probes)) as pool:
+        futures = {name: pool.submit(fn) for name, fn in probes.items()}
+        for name, future in futures.items():
+            try:
+                stats[name] = future.result()
+            except Exception as exc:
+                # A probe blowing up must not abort the sync; its doc
+                # occurrences are simply left untouched (same as None).
+                print(f"⚠️  probe '{name}' failed: {exc}")
+                stats[name] = None
+
+    return stats
 
 
 # Integer stats render with a thousands separator (only adds a comma >= 1000,

@@ -10,15 +10,39 @@ from pathlib import Path
 # Anchor PROJECT_ROOT to this script's location instead of CWD so the tool
 # works no matter where it's invoked from.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXCLUDE_DIRS = {"__pycache__", ".git", "venv", ".venv", "node_modules", "data"}
+EXCLUDE_DIRS = {
+    "__pycache__",
+    ".git",
+    "venv",
+    ".venv",
+    "node_modules",
+    "data",
+    # Build/cache output. Not source, and walking them made the scan read
+    # thousands of irrelevant files before this list covered them.
+    "target",
+    "dist",
+    "build",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "htmlcov",
+    "site-packages",
+}
 
 
 def find_python_files():
-    """Find all Python files in the project."""
+    """Find all Python files in the project.
+
+    Hidden directories are skipped wholesale. That is not cosmetic: Claude
+    Code's scratch git worktrees live under ``.claude/worktrees/<name>/`` and
+    each is a FULL COPY of the repo. Walking them made every duplicated module
+    look like a file nobody imports — 115 of the 119 "potentially unused" hits
+    this tool reported were worktree copies, which buried the 4 real ones.
+    """
     files = []
     for root, dirs, filenames in os.walk(PROJECT_ROOT):
-        # Skip excluded directories
-        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+        # Skip excluded and hidden directories
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not d.startswith(".")]
 
         for filename in filenames:
             if filename.endswith(".py"):
@@ -100,29 +124,40 @@ def module_to_file(module_name, project_files):
     # version also indexed backslash-normalized absolute paths, which let
     # an absolute-path key surface first in the suffix fallback and
     # attribute an import to the wrong file.
-    rel_lookup = getattr(module_to_file, "_rel_lookup", None)
-    if rel_lookup is None:
+    rel_lookup: dict[str, Path] | None = getattr(module_to_file, "_rel_lookup", None)
+    suffix_index: dict[str, list[str]] | None = getattr(module_to_file, "_suffix_index", None)
+    if rel_lookup is None or suffix_index is None:
         rel_lookup = {}
+        # Basename -> the relative paths ending in it. The suffix fallback used
+        # to scan every entry of rel_lookup on each MISS, and misses are the
+        # common case (every `import os`, `import json`, `import discord` …).
+        # At ~800 files x ~20 imports that was tens of millions of endswith
+        # calls per run. A basename bucket turns each fallback into one dict
+        # hit plus a check of the few same-named files.
+        suffix_index = defaultdict(list)
         for pf in project_files:
             try:
                 rel = pf.relative_to(PROJECT_ROOT).as_posix()
             except ValueError:
                 continue
             rel_lookup[rel] = pf
+            suffix_index[rel.rsplit("/", 1)[-1]].append(rel)
         module_to_file._rel_lookup = rel_lookup  # type: ignore[attr-defined]
+        module_to_file._suffix_index = suffix_index  # type: ignore[attr-defined]
 
     for var in variations:
         # Exact-path hit first
         if var in rel_lookup:
             return rel_lookup[var]
-        # Fall back to slow suffix match only when needed — the indexed
-        # lookup catches >99% of imports without scanning. Collect ALL
-        # suffix matches: if two packages share the same leaf module name
-        # (e.g. cogs/ai_core/cache/store.py vs utils/cache/store.py) the
-        # match is ambiguous, so we must not arbitrarily pick whichever
-        # dict iteration happens to hit first.
+        # Fall back to a suffix match only when needed — the indexed lookup
+        # catches >99% of imports without scanning. Collect ALL suffix matches:
+        # if two packages share the same leaf module name (e.g.
+        # cogs/ai_core/cache/store.py vs utils/cache/store.py) the match is
+        # ambiguous, so we must not arbitrarily pick whichever entry comes
+        # first. Only same-basename candidates can possibly match "/<var>".
         suffix = "/" + var
-        matches = [pf for path_key, pf in rel_lookup.items() if path_key.endswith(suffix)]
+        candidates = suffix_index.get(var.rsplit("/", 1)[-1], ())
+        matches = [rel_lookup[key] for key in candidates if key.endswith(suffix)]
         if len(matches) == 1:
             return matches[0]
         # 0 matches -> try next variation; >1 -> ambiguous, skip suffix

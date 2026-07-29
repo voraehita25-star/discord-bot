@@ -27,10 +27,15 @@ async def check() -> None:
             ORDER BY min_id
         """)
         rows = await cur.fetchall()
-        print("Channel ID           | Min ID | Max ID | Count")
+        # Pad channel_id to the header's own column width — unpadded values
+        # (Discord snowflakes vary in length, and NULL renders as "None") made
+        # every column after the first jag out of alignment.
+        print(f"{'Channel ID':<20} | {'Min ID':>6} | {'Max ID':>6} | Count")
         print("-" * 55)
         for r in rows:
-            print(f"{r['channel_id']} | {r['min_id']:6} | {r['max_id']:6} | {r['count']}")
+            print(f"{r['channel_id']!s:<20} | {r['min_id']:>6} | {r['max_id']:>6} | {r['count']}")
+        if not rows:
+            print("(ai_history is empty)")
 
 
 if __name__ == "__main__":

@@ -84,6 +84,15 @@ class DevWatcherConfig:
             ".sqlite",
             "rvc_env",
             "models/rvc",
+            # Build output. These hold no first-party source (verified: zero
+            # tracked *.py under any of them) but they are by far the largest
+            # directories in the tree — rust_extensions/target and
+            # native_dashboard/target alone are ~37k entries, which the polling
+            # observer would otherwise stat on every single poll.
+            "target",
+            "dist",
+            "build",
+            "htmlcov",
         ]
     )
 
@@ -171,6 +180,15 @@ def setup_logging(config: DevWatcherConfig) -> logging.Logger:
     logger = logging.getLogger("DevWatcher")
     logger.setLevel(logging.DEBUG if config.debug_mode else logging.INFO)
 
+    # Idempotent: a second call (tests, an embedding tool) would otherwise stack
+    # another console + file handler on the same singleton logger and every
+    # record would print twice, three times, ... Drop the handlers this function
+    # installed before installing the new pair.
+    for existing in list(logger.handlers):
+        logger.removeHandler(existing)
+        with contextlib.suppress(Exception):
+            existing.close()
+
     # Console handler. Attach it to the logger so INFO/DEBUG records reach
     # the console as intended — without addHandler the 'DevWatcher' logger
     # had no console output and (when file logging was disabled) fell back
@@ -204,7 +222,10 @@ def setup_logging(config: DevWatcherConfig) -> logging.Logger:
 # Check for watchdog
 try:
     if sys.platform == "win32":
-        from watchdog.observers.polling import PollingObserver as Observer
+        # PollingObserverVFS, not PollingObserver: the VFS variant accepts a
+        # custom ``listdir`` so we can prune whole directory subtrees BEFORE
+        # they enter the snapshot. See ``build_observer`` for why that matters.
+        from watchdog.observers.polling import PollingObserverVFS as Observer
     else:
         from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
@@ -880,6 +901,141 @@ if WATCHDOG_AVAILABLE:
 
 
 # =============================================================================
+# OBSERVER CONSTRUCTION (directory pruning)
+# =============================================================================
+
+
+def compile_dir_prunes(
+    patterns: list[str],
+) -> tuple[frozenset[str], frozenset[str], frozenset[tuple[str, ...]]]:
+    """Split ``ignore_patterns`` into the three shapes a directory can match.
+
+    Returns ``(names, roots, chains)``:
+      * ``names``  — a bare component ("__pycache__", "node_modules"): prune a
+        directory with that name wherever it appears.
+      * ``roots``  — written with a trailing separator ("data/", "RP/"): a
+        repo-ROOT dump, so prune it only as the first path component. This is
+        what keeps first-party source such as ``cogs/ai_core/data/`` watched.
+      * ``chains`` — multi-component ("models/rvc"): prune where the whole run
+        of components matches.
+
+    Mirrors ``BotRestarter._should_ignore`` so pruning can never hide a
+    directory whose events that method would have kept. Glob patterns are
+    dropped: they target file NAMES, and pruning a directory on one could
+    silently stop watching real source.
+    """
+    names: set[str] = set()
+    roots: set[str] = set()
+    chains: set[tuple[str, ...]] = set()
+
+    for raw in patterns:
+        pat = raw.lower().strip()
+        if not pat:
+            continue
+        had_trailing_sep = pat.endswith(("/", "\\"))
+        pat = pat.rstrip("/\\")
+        if not pat or any(ch in pat for ch in ("*", "?", "[")):
+            continue
+        if "/" in pat or "\\" in pat:
+            chain = tuple(seg for seg in pat.replace("\\", "/").split("/") if seg)
+            if chain:
+                chains.add(chain)
+        elif had_trailing_sep:
+            roots.add(pat)
+        else:
+            names.add(pat)
+
+    return frozenset(names), frozenset(roots), frozenset(chains)
+
+
+def make_dir_prune(root: Path, patterns: list[str]):
+    """Build ``prune(dir_path) -> bool`` for directories under ``root``.
+
+    Pure string work (no ``Path`` construction) because the polling observer
+    calls this for every directory on every poll.
+    """
+    names, roots, chains = compile_dir_prunes(patterns)
+    prefix = str(root).rstrip("\\/") + os.sep
+
+    def prune(dir_path: str) -> bool:
+        if not dir_path.startswith(prefix):
+            return False
+        rel = dir_path[len(prefix) :].replace("\\", "/")
+        parts = tuple(seg.lower() for seg in rel.split("/") if seg)
+        if not parts:
+            return False
+        # Hidden directories — same blanket rule _should_ignore applies to
+        # every repo-relative path component.
+        if any(seg.startswith(".") for seg in parts):
+            return True
+        if parts[-1] in names:
+            return True
+        if len(parts) == 1 and parts[0] in roots:
+            return True
+        for chain in chains:
+            span = len(chain)
+            if span <= len(parts) and parts[-span:] == chain:
+                return True
+        return False
+
+    return prune
+
+
+def make_pruning_listdir(root: Path, patterns: list[str]):
+    """``listdir`` for PollingObserverVFS that skips ignored directory subtrees.
+
+    ``DirectorySnapshot.walk`` recurses only into entries this callable yields,
+    so dropping a directory here removes its whole subtree from the snapshot.
+    Without it the observer stats EVERY file under the repo on every poll —
+    ``.venv``, ``node_modules``, ``target``, ``.git`` included. On this repo
+    that is ~168k entries and 5-8 seconds per scan against a 1.0s poll
+    interval, i.e. the emitter thread never stops scanning and a save takes
+    seconds to trigger a reload. Pruned it is ~850 entries and ~0.02s.
+    """
+    prune = make_dir_prune(root, patterns)
+
+    def listdir(path: str | None):
+        with os.scandir(path if path is not None else str(root)) as scan:
+            entries = list(scan)
+        for entry in entries:
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if is_dir and prune(entry.path):
+                continue
+            yield entry
+
+    return listdir
+
+
+def count_watched_entries(root: Path, patterns: list[str]) -> int:
+    """How many filesystem entries the pruned watch actually covers."""
+    prune = make_dir_prune(root, patterns)
+    total = 0
+    for current, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if not prune(os.path.join(current, d))]
+        total += len(dirs) + len(files)
+    return total
+
+
+def build_observer(config: DevWatcherConfig, root: Path):
+    """Create the watchdog observer for ``root``.
+
+    Windows has no usable native recursive watcher in watchdog, so it polls —
+    which is why the pruning ``listdir`` matters there. POSIX uses inotify /
+    FSEvents, which are event-driven and need no pruning.
+    """
+    if sys.platform == "win32":
+        return Observer(
+            os.stat,
+            make_pruning_listdir(root, config.ignore_patterns),
+            polling_interval=config.poll_interval,
+        )
+    return Observer(timeout=config.poll_interval)
+
+
+# =============================================================================
 # DEV WATCHER SERVICE
 # =============================================================================
 
@@ -1019,13 +1175,18 @@ def main():
     # rather than ``.`` so a stray ``os.chdir`` somewhere else in the
     # process doesn't drift the watch root.
     event_handler = BotRestarter(config, logger)
-    observer = Observer(timeout=config.poll_interval)
+    observer = build_observer(config, PROJECT_ROOT)
     observer.schedule(event_handler, path=str(PROJECT_ROOT), recursive=True)
     observer.start()
 
     if sys.platform == "win32":
+        # Surface the pruned scan size: this number IS the per-poll cost, and
+        # seeing it jump into the tens of thousands is the signal that a new
+        # heavyweight directory needs an ignore_patterns entry.
+        watched = count_watched_entries(PROJECT_ROOT, config.ignore_patterns)
         print(
-            f"  {Colors.DIM}Using Polling Observer (interval: {config.poll_interval}s){Colors.RESET}"
+            f"  {Colors.DIM}Using Polling Observer (interval: {config.poll_interval}s, "
+            f"{watched:,} entries watched){Colors.RESET}"
         )
     print()
 

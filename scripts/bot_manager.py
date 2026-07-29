@@ -3,6 +3,8 @@ Bot Manager Script
 CLI tool to manage the Discord bot processes.
 """
 
+from __future__ import annotations
+
 import datetime
 import ntpath
 import os
@@ -11,6 +13,8 @@ import subprocess
 import sys
 import time
 import unicodedata
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import psutil
@@ -243,7 +247,23 @@ def box_header(text, width=BOX_WIDTH):
 
 
 def clear_screen():
-    """Clear terminal screen"""
+    """Clear terminal screen.
+
+    ANSI first: the menu loop clears on every keystroke, and spawning
+    ``cmd /c cls`` each time costs a process launch (tens of ms) and makes the
+    redraw visibly flicker. VT processing is already enabled — every box and
+    colour in this file depends on it — so the escape sequence works wherever
+    the rest of the UI does. Fall back to the external command only when stdout
+    isn't a terminal-backed stream.
+    """
+    try:
+        if sys.stdout.isatty():
+            # 2J clears the screen, 3J drops the scrollback, H homes the cursor.
+            sys.stdout.write("\033[2J\033[3J\033[H")
+            sys.stdout.flush()
+            return
+    except (OSError, ValueError):
+        pass
     subprocess.run(
         ["cmd", "/c", "cls"] if sys.platform == "win32" else ["clear"],
         shell=False,
@@ -287,6 +307,88 @@ def _arg_basename(arg):
     return ntpath.basename(arg)
 
 
+@dataclass(frozen=True)
+class _ProcInfo:
+    """One process, with the derived fields every finder below needs.
+
+    ``cmdline_str`` and ``arg_basenames`` are computed once here instead of
+    per-finder: joining and lower-casing a command line for three separate
+    scans was pure duplicated work.
+    """
+
+    # psutil can hand back a None pid for a process that died mid-iteration.
+    pid: int | None
+    name: str
+    cmdline: tuple[str, ...]
+    cmdline_str: str
+    arg_basenames: frozenset[str]
+
+
+# One shared sweep per ``shared_process_scan()`` block. Reading .cmdline() for
+# every process is the expensive part on Windows (it opens each process), and
+# the manager used to pay for it three times per menu refresh:
+# find_all_bot_processes, find_all_dev_watcher_processes and — on stop —
+# _find_launcher_processes each ran a full psutil.process_iter.
+_scan_snapshot: list[_ProcInfo] | None = None
+_scan_active = False
+
+
+@contextmanager
+def shared_process_scan():
+    """Reuse a single process sweep for every finder called inside the block.
+
+    A nested block JOINS the outer one rather than starting a new scan — that
+    matters because ``get_bot_status`` opens its own block, so ``stop_bot``
+    wrapping ``get_bot_status`` + ``_find_launcher_processes`` would otherwise
+    invalidate the snapshot halfway through and pay for two sweeps anyway.
+    Outside any block each finder scans independently, which keeps the finders
+    usable — and unit-testable — standalone.
+    """
+    global _scan_snapshot, _scan_active
+    if _scan_active:
+        # Already inside a scan: reuse it untouched.
+        yield
+        return
+    prev_snapshot = _scan_snapshot
+    _scan_snapshot, _scan_active = None, True
+    try:
+        yield
+    finally:
+        _scan_snapshot, _scan_active = prev_snapshot, False
+
+
+def _process_snapshot():
+    """All processes as ``_ProcInfo``, served from the shared scan when active."""
+    global _scan_snapshot
+    if _scan_active and _scan_snapshot is not None:
+        return _scan_snapshot
+
+    snapshot = []
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            info = proc.info
+            cmdline = tuple(info.get("cmdline") or ())
+            snapshot.append(
+                _ProcInfo(
+                    pid=info.get("pid"),
+                    name=(info.get("name") or "").lower(),
+                    cmdline=cmdline,
+                    cmdline_str=" ".join(cmdline).lower(),
+                    arg_basenames=frozenset(_arg_basename(a).lower() for a in cmdline if a),
+                )
+            )
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    if _scan_active:
+        _scan_snapshot = snapshot
+    return snapshot
+
+
+# VS Code extensions and other non-project Python processes.
+_NON_PROJECT_PATTERNS = (".antigravity", "vscode", "ms-python", "pylance")
+
+
 def _find_processes(match_terms, exclude_terms=None, exact_basenames=None):
     """Find process IDs matching ALL terms (not ANY).
 
@@ -297,28 +399,20 @@ def _find_processes(match_terms, exclude_terms=None, exact_basenames=None):
     ``bot.py``.
     """
     pids = []
-    exact_basenames = set(exact_basenames or ())
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-        try:
-            cmdline = proc.info.get("cmdline") or []
-            cmdline_str = " ".join(cmdline).lower()
-            # Must match ALL substring terms (not ANY)
-            if not all(term in cmdline_str for term in match_terms):
-                continue
-            if exclude_terms and any(term in cmdline_str for term in exclude_terms):
-                continue
-            # If callers requested an exact basename match, enforce it now.
-            if exact_basenames:
-                arg_basenames = {_arg_basename(a).lower() for a in cmdline if a}
-                if not exact_basenames.issubset(arg_basenames):
-                    continue
-            # Exclude VS Code extensions and other non-project Python processes
-            non_project_patterns = [".antigravity", "vscode", "ms-python", "pylance"]
-            if any(pattern in cmdline_str for pattern in non_project_patterns):
-                continue
-            pids.append(proc.info["pid"])
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+    exact_basenames = frozenset(exact_basenames or ())
+    for proc in _process_snapshot():
+        cmdline_str = proc.cmdline_str
+        # Must match ALL substring terms (not ANY)
+        if not all(term in cmdline_str for term in match_terms):
             continue
+        if exclude_terms and any(term in cmdline_str for term in exclude_terms):
+            continue
+        # If callers requested an exact basename match, enforce it now.
+        if exact_basenames and not exact_basenames.issubset(proc.arg_basenames):
+            continue
+        if any(pattern in cmdline_str for pattern in _NON_PROJECT_PATTERNS):
+            continue
+        pids.append(proc.pid)
     return pids
 
 
@@ -467,9 +561,11 @@ def get_bot_status():
         "dev_watcher_pids": [],
     }
 
-    all_bot_pids = find_all_bot_processes()
-    status["all_pids"] = all_bot_pids
-    status["dev_watcher_pids"] = find_all_dev_watcher_processes()
+    # Both finders scan the same process table; share one sweep between them.
+    with shared_process_scan():
+        all_bot_pids = find_all_bot_processes()
+        status["all_pids"] = all_bot_pids
+        status["dev_watcher_pids"] = find_all_dev_watcher_processes()
 
     if all_bot_pids:
         status["running"] = True
@@ -822,24 +918,20 @@ def start_bot(mode="production"):
 
 def _find_launcher_processes():
     """Find live start.ps1 restart-loop wrappers (powershell/pwsh)."""
-    pids = []
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-        try:
-            name = (proc.info["name"] or "").lower()
-            if name not in ("powershell.exe", "pwsh.exe"):
-                continue
-            cmdline = " ".join(proc.info["cmdline"] or []).lower()
-            if "start.ps1" in cmdline and "startup" in cmdline:
-                pids.append(proc.info["pid"])
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return pids
+    return [
+        proc.pid
+        for proc in _process_snapshot()
+        if proc.name in ("powershell.exe", "pwsh.exe")
+        and "start.ps1" in proc.cmdline_str
+        and "startup" in proc.cmdline_str
+    ]
 
 
 def stop_bot():
     """Stop ALL bot instances (and their start.ps1 restart loops)."""
-    status = get_bot_status()
-    launcher_pids = _find_launcher_processes()
+    with shared_process_scan():
+        status = get_bot_status()
+        launcher_pids = _find_launcher_processes()
     if not status["running"] and not launcher_pids:
         print(f"{Colors.YELLOW}Bot is not running{Colors.RESET}")
         return False
@@ -1088,6 +1180,14 @@ def main():
             if choice != "0":
                 input(f"\n{Colors.DIM}Press Enter to continue...{Colors.RESET}")
         except KeyboardInterrupt:
+            break
+        except EOFError:
+            # stdin closed (piped input exhausted, terminal detached, launched
+            # from a non-interactive parent). Without this the loop raised
+            # EOFError out of input() and printed a traceback instead of
+            # exiting cleanly — and, because the `while True` never ended, a
+            # closed stdin could spin.
+            print(f"\n{Colors.DIM}No input available - exiting.{Colors.RESET}")
             break
     print(f"\n{Colors.BRIGHT_MAGENTA}✨ Goodbye! 👋{Colors.RESET}")
 

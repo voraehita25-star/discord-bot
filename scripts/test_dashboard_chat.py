@@ -1,6 +1,13 @@
 """
 Quick test script to verify dashboard chat components work.
 Run: python scripts/test_dashboard_chat.py
+
+The checks are named ``check_*``, not ``test_*``, deliberately. pyproject sets
+``python_functions = ["test_*"]`` with ``asyncio_mode = "auto"``, so under the
+old names any collection that reached this file (``pytest scripts/``, an IDE
+discovery pass) would RUN them for real — binding ws://127.0.0.1:8765 and
+writing rows into the live data/bot_database.db. ``testpaths = ["tests"]``
+kept the default run clear, but nothing stopped an explicit path.
 """
 
 import asyncio
@@ -11,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-async def test_database():
+async def check_database():
     """Test database schema and methods."""
     print("=" * 50)
     print("Testing Database...")
@@ -60,7 +67,7 @@ async def test_database():
     print("\n✅ All database tests passed!\n")
 
 
-async def test_websocket_server():
+async def check_websocket_server():
     """Test WebSocket server startup/shutdown."""
     print("=" * 50)
     print("Testing WebSocket Server...")
@@ -104,8 +111,8 @@ async def main():
     print("=" * 50 + "\n")
 
     try:
-        await test_database()
-        await test_websocket_server()
+        await check_database()
+        await check_websocket_server()
 
         print("=" * 50)
         print("🎉 All tests passed!")

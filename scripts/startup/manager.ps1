@@ -36,9 +36,10 @@ if (-not (Test-Path $BotManager)) {
     exit 1
 }
 
-# Check Python
-if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-    Write-Log "Python is not available" -Level ERROR
+# Check Python. $BotPython is the repo venv interpreter when one exists
+# (_common.psm1); only the PATH fallback needs a lookup to confirm it resolves.
+if (-not $UsingVenvPython -and -not (Get-Command python -ErrorAction SilentlyContinue)) {
+    Write-Log "Python is not available (no .venv and nothing named python on PATH)" -Level ERROR
     Read-Host "Press Enter to exit"
     exit 1
 }
@@ -46,8 +47,8 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 Write-Log "Starting Bot Manager..." -Level INFO
 Write-Host ""
 
-# Run bot manager
-python $BotManager
+# Run bot manager — bot_manager.py imports psutil, which is a venv dependency.
+& $BotPython $BotManager
 $ExitCode = $LASTEXITCODE
 
 Write-Host ""

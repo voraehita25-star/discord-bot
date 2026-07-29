@@ -36,7 +36,10 @@ while ($true) {
     Write-Host ""
     Write-Log "Auto-restart on file save" -Level OK
     Write-Log "Hash-based change detection" -Level OK
-    Write-Log "Watches: .py, .json files" -Level OK
+    # dev_watcher's watch_extensions defaults to [".py"] only, and ".json" is in
+    # its ignore_patterns — the old "Watches: .py, .json" line was the opposite
+    # of what the watcher does and sent people hunting for a broken JSON reload.
+    Write-Log "Watches: .py files (configure via .devwatcher.json)" -Level OK
     Write-Log "Press Ctrl+C to stop" -Level INFO
     Write-Host ""
 
@@ -52,8 +55,9 @@ while ($true) {
     Write-BoxBottom
     Write-Host ""
 
-    # Run dev watcher
-    python $DevWatcher
+    # Run dev watcher through the repo venv interpreter (see _common.psm1) —
+    # the watcher imports watchdog/psutil, which a bare PATH python lacks.
+    & $BotPython $DevWatcher
     $ExitCode = $LASTEXITCODE
 
     Write-Host ""

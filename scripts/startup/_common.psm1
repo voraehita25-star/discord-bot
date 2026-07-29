@@ -9,17 +9,25 @@ $script:ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 # Load configuration
 $script:ConfigPath = Join-Path $PSScriptRoot "startup.json"
-if (Test-Path $ConfigPath) {
-    $script:Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+# Default config (mirror the shipped startup.json so the no-config path keeps
+# the same safe defaults — notably check_dependencies, which start.ps1 gates
+# the dependency check on; omitting it silently disables that gate).
+$script:Config = @{
+    bot     = @{ max_restarts = 50; restart_delay_seconds = 10; check_dependencies = $true }
+    health  = @{ min_disk_space_gb = 1; min_memory_mb = 1024 }
+    display = @{ box_width = 69; show_banner = $true; colored_output = $true }
 }
-else {
-    # Default config (mirror the shipped startup.json so the no-config path keeps
-    # the same safe defaults — notably check_dependencies, which start.ps1 gates
-    # the dependency check on; omitting it silently disables that gate).
-    $script:Config = @{
-        bot     = @{ max_restarts = 50; restart_delay_seconds = 10; check_dependencies = $true }
-        health  = @{ min_disk_space_gb = 1; min_memory_mb = 1024 }
-        display = @{ box_width = 69; show_banner = $true; colored_output = $true }
+if (Test-Path $ConfigPath) {
+    # A truncated or hand-edited startup.json used to throw straight out of
+    # Import-Module, so a single stray comma bricked start / dev / manager all
+    # at once with a raw ConvertFrom-Json error. Fall back to the defaults above
+    # and say so instead.
+    try {
+        $Loaded = Get-Content $ConfigPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($Loaded) { $script:Config = $Loaded }
+    }
+    catch {
+        Write-Warning "startup.json is unreadable ($($_.Exception.Message)) - using built-in defaults"
     }
 }
 
@@ -33,6 +41,20 @@ $script:CrashLogsDir = Join-Path $LogsDir "crashes"
 @($LogsDir, $DataDir, $CrashLogsDir) | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
 }
+
+# ============================================================================
+# Interpreter resolution
+# ============================================================================
+# The bot's dependencies live in the repo venv, NOT in the system Python. A
+# bare `python` resolves through PATH — which, per CLAUDE.md, a freshly spawned
+# shell may not even inherit, and which on this machine points at a bare
+# 3.14 install with no discord.py. The launchers used to run the bot that way,
+# so Test-Environment reported "Python installed" and the bot then died on its
+# first import. Prefer the venv interpreter; fall back to PATH only if it's
+# genuinely absent (a checkout that hasn't been provisioned yet).
+$script:VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+$script:BotPython = if (Test-Path $script:VenvPython) { $script:VenvPython } else { "python" }
+$script:UsingVenvPython = (Test-Path $script:VenvPython)
 
 # ============================================================================
 # Colors (ANSI Escape Codes)
@@ -52,14 +74,39 @@ $script:C = @{
     Gray    = "$ESC[90m"
 }
 
-# Disable colors if configured
+# Disable colors if configured. Snapshot the keys with @() first: piping the
+# live KeyCollection while assigning back into the same hashtable is a
+# modify-during-enumeration pattern that only happens to be safe today.
 if (-not $Config.display.colored_output) {
-    $C.Keys | ForEach-Object { $C[$_] = "" }
+    @($C.Keys) | ForEach-Object { $C[$_] = "" }
 }
 
 # ============================================================================
 # Logging Functions
 # ============================================================================
+$script:StartupLog = Join-Path $LogsDir "startup.log"
+$script:StartupLogMaxBytes = 2MB
+
+function Invoke-StartupLogRotation {
+    <#
+    .SYNOPSIS
+        Roll startup.log once it passes the size cap.
+    .DESCRIPTION
+        Every launch appends here and nothing ever truncated it, so on a machine
+        that restarts the bot often the file grew without bound. Keep one
+        previous generation (startup.log.1) and start fresh.
+    #>
+    try {
+        $Existing = Get-Item -LiteralPath $script:StartupLog -ErrorAction Stop
+        if ($Existing.Length -lt $script:StartupLogMaxBytes) { return }
+        Move-Item -LiteralPath $script:StartupLog -Destination "$($script:StartupLog).1" -Force -ErrorAction Stop
+    }
+    catch {
+        # Missing (nothing to rotate) or locked by a concurrent launcher —
+        # logging is best-effort and must never block startup.
+    }
+}
+
 function Write-Log {
     param(
         [string]$Message,
@@ -68,7 +115,7 @@ function Write-Log {
     )
 
     $Time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $LogFile = Join-Path $LogsDir "startup.log"
+    $LogFile = $script:StartupLog
 
     $Colors = @{
         INFO  = $C.Cyan
@@ -91,12 +138,20 @@ function Write-Log {
 
 function Write-LogHeader {
     param([string]$Title)
+    Invoke-StartupLogRotation
     $Time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $LogFile = Join-Path $LogsDir "startup.log"
-    "" | Add-Content -Path $LogFile
-    "================================================================" | Add-Content -Path $LogFile
-    "[$Time] Starting: $Title" | Add-Content -Path $LogFile
-    "================================================================" | Add-Content -Path $LogFile
+    $LogFile = $script:StartupLog
+    # -Encoding UTF8 on EVERY write. Write-Log already used it; these four did
+    # not, so on Windows PowerShell they fell back to the ANSI code page and the
+    # single file ended up holding two encodings — which renders the Thai in
+    # later entries as mojibake in any UTF-8 reader.
+    $Header = @(
+        ""
+        "================================================================"
+        "[$Time] Starting: $Title"
+        "================================================================"
+    )
+    $Header | Add-Content -Path $LogFile -Encoding UTF8
 }
 
 # ============================================================================
@@ -182,13 +237,17 @@ function Test-Environment {
     Write-BoxLine -Text "$($C.Bold)$($C.White)Health Checks$($C.Reset)" -Align "Center"
     Write-BoxBottom
 
-    # Python
-    $PythonOK = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
-    if ($PythonOK) {
-        Write-Log "Python installed" -Level OK
+    # Python — report which interpreter will actually run the bot, because the
+    # venv one and a PATH one have completely different package sets.
+    if ($UsingVenvPython) {
+        Write-Log "Python: repo venv (.venv\Scripts\python.exe)" -Level OK
+    }
+    elseif ($null -ne (Get-Command python -ErrorAction SilentlyContinue)) {
+        Write-Log "No .venv found - falling back to PATH python (deps may be missing)" -Level WARN
+        Write-Log "Create it with: python -m venv .venv; .venv\Scripts\pip install -r requirements.txt" -Level INFO
     }
     else {
-        Write-Log "Python not found" -Level ERROR
+        Write-Log "Python not found (no .venv and nothing named python on PATH)" -Level ERROR
         return $false
     }
 
@@ -227,7 +286,10 @@ function Test-Environment {
 
 function Test-Dependencies {
     Write-Log "Checking dependencies..." -Level INFO
-    python -c "import discord, google.genai" 2>&1 | Out-Null
+    # Probe the SAME interpreter that will run the bot (see $BotPython above);
+    # probing PATH python while launching the venv one — or vice versa — makes
+    # this gate meaningless.
+    & $BotPython -c "import discord, google.genai" 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) {
         Write-Log "Core dependencies installed" -Level OK
         return $true
@@ -244,8 +306,14 @@ function Test-Dependencies {
 function Stop-ExistingBot {
     $PidFile = Join-Path $ProjectRoot "bot.pid"
     if (Test-Path $PidFile) {
-        $OldPid = (Get-Content $PidFile -Raw).Trim()
-        if ($OldPid -is [string] -and $OldPid -match "^\d+$") {
+        # An empty bot.pid (the bot was killed between create and write) makes
+        # Get-Content -Raw return $null, and `$null.Trim()` throws a
+        # method-invocation error mid-startup. Read defensively and let the
+        # invalid-contents branch below delete the useless file.
+        $RawPid = Get-Content $PidFile -Raw -ErrorAction SilentlyContinue
+        $OldPid = if ($null -eq $RawPid) { "" } else { [string]$RawPid }
+        $OldPid = $OldPid.Trim()
+        if ($OldPid -match "^\d+$") {
             $Process = Get-Process -Id $OldPid -ErrorAction SilentlyContinue
             # The OS can recycle a dead bot's PID onto an unrelated python.exe
             # (another bot, a Jupyter kernel, the dashboard CLI backend). A bare
@@ -316,6 +384,19 @@ Memory: $MemFree GB free
     $Report | Out-File -FilePath $CrashFile -Encoding UTF8
     Write-Log "Crash report saved: $CrashFile" -Level ERROR
 
+    # Keep only the 50 most recent reports. A crash-looping bot writes one per
+    # restart (max_restarts defaults to 50, and the loop can be re-entered
+    # forever), and nothing ever cleaned logs/crashes up.
+    try {
+        Get-ChildItem -LiteralPath $CrashLogsDir -Filter "crash_*.log" -File -ErrorAction Stop |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -Skip 50 |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+    catch {
+        # Pruning is housekeeping; never let it break crash reporting.
+    }
+
     return $CrashFile
 }
 
@@ -352,5 +433,6 @@ function Show-Banner {
     Write-Host ""
 }
 
-# Export functions
-Export-ModuleMember -Function * -Variable Config, ProjectRoot, LogsDir, C, BoxWidth, ScriptsDir
+# Export functions. BotPython/UsingVenvPython are exported so every launcher
+# runs the bot through the same interpreter this module resolved.
+Export-ModuleMember -Function * -Variable Config, ProjectRoot, LogsDir, C, BoxWidth, ScriptsDir, BotPython, UsingVenvPython

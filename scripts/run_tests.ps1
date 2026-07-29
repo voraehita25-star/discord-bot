@@ -44,7 +44,18 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
-Set-Location -Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath))
+# Push, don't Set: PowerShell's current location is per-runspace, not per-scope,
+# so a bare Set-Location here left the CALLER sitting in the repo root after the
+# script exited (and after `exit`, which skips any cleanup written below it).
+# Push here and pop in the trap/exit path so the caller's directory survives.
+Push-Location -Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath))
+# `exit` inside a script does not run `finally`, so route every exit through a
+# helper that restores the location first.
+function Exit-WithCode {
+    param([int]$Code)
+    Pop-Location
+    exit $Code
+}
 
 # Build pytest args — override pyproject.toml's addopts to remove -v
 $args_list = @(
@@ -60,7 +71,7 @@ if ($File) {
     $target = "tests/$File"
     if (-not (Test-Path $target)) {
         Write-Host "ERROR: File not found: $target" -ForegroundColor Red
-        exit 1
+        Exit-WithCode 1
     }
     $args_list += $target
 }
@@ -69,7 +80,7 @@ elseif ($Filter) {
     $matched = Get-ChildItem -Path "tests" -Filter "test_*${Filter}*.py" -Name
     if (-not $matched) {
         Write-Host "ERROR: No test files matching '*${Filter}*'" -ForegroundColor Red
-        exit 1
+        Exit-WithCode 1
     }
     Write-Host "Matched files:" -ForegroundColor Cyan
     $matched | ForEach-Object { Write-Host "  tests/$_" -ForegroundColor DarkCyan }
@@ -88,12 +99,12 @@ if ($Coverage)   { $args_list += "--cov=cogs"; $args_list += "--cov=utils"; $arg
 
 # Use the venv interpreter explicitly. A freshly spawned sandbox shell may not
 # inherit the User PATH, so a bare `python` resolves to system Python 3.14 which
-# has no pytest installed and the run fails. CWD is the repo root (Set-Location
+# has no pytest installed and the run fails. CWD is the repo root (Push-Location
 # above), so this relative path is stable.
 $python = ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
     Write-Host "ERROR: venv interpreter not found at $python — create it with: python -m venv .venv" -ForegroundColor Red
-    exit 1
+    Exit-WithCode 1
 }
 
 # Show command
@@ -117,4 +128,4 @@ else {
     Write-Host "TESTS FAILED (exit code: $exitCode, ${elapsed}s)" -ForegroundColor Red
 }
 
-exit $exitCode
+Exit-WithCode $exitCode

@@ -52,8 +52,10 @@ function Invoke-VerifiedDownload {
         throw "Refusing non-HTTPS download: $Uri"
     }
 
+    # -TimeoutSec: without it a server that accepts the connection and then
+    # stalls hangs the whole installer indefinitely with no output at all.
     Invoke-WebRequest -Uri $Uri -OutFile $OutFile `
-        -UseBasicParsing -MaximumRedirection 5 -ErrorAction Stop
+        -UseBasicParsing -MaximumRedirection 5 -TimeoutSec 300 -ErrorAction Stop
 
     if ([string]::IsNullOrWhiteSpace($ExpectedHash)) {
         # No pin supplied — compute + show the SHA-256 so it can be pinned.
@@ -95,11 +97,80 @@ function Update-Path {
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
 }
 
+function Test-IsElevated {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    return (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Add-PersistentPathEntry {
+    <#
+    .SYNOPSIS
+        Append a directory to the persistent PATH without destroying it.
+    .DESCRIPTION
+        [Environment]::SetEnvironmentVariable(..., "Machine") writes the value
+        back as a plain REG_SZ *and* hands you an already-EXPANDED string when
+        you read it. The machine PATH is REG_EXPAND_SZ and normally contains
+        entries like %SystemRoot%\system32; round-tripping it through that API
+        therefore bakes today's expansion in permanently and downgrades the
+        value type. That is a system-wide, irreversible edit made as a side
+        effect of installing ffmpeg.
+
+        So: read and write the raw registry value with its ExpandString kind
+        preserved, and fall back to the per-user PATH when not elevated rather
+        than failing (or worse, half-writing) the machine one.
+    #>
+    param([Parameter(Mandatory)] [string]$Directory)
+
+    $scope = if (Test-IsElevated) { "Machine" } else { "User" }
+    $key = if ($scope -eq "Machine") {
+        "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+    } else {
+        "HKCU:\Environment"
+    }
+
+    try {
+        $item = Get-Item -LiteralPath $key -ErrorAction Stop
+        # DoNotExpandEnvironmentNames keeps %SystemRoot% as the literal token.
+        $current = $item.GetValue("Path", "", "DoNotExpandEnvironmentNames")
+        $kind = $item.GetValueKind("Path")
+    } catch {
+        Write-Fail "Could not read the $scope PATH: $_"
+        return $false
+    }
+
+    $entries = @($current -split ';' | Where-Object { $_ -ne "" })
+    if ($entries -contains $Directory) {
+        Write-Info "$Directory is already on the $scope PATH"
+        return $true
+    }
+
+    try {
+        $new = (($entries + $Directory) -join ';')
+        Set-ItemProperty -LiteralPath $key -Name "Path" -Value $new -Type $kind -ErrorAction Stop
+        Write-Info "Added $Directory to the $scope PATH"
+        return $true
+    } catch {
+        Write-Fail "Could not update the $scope PATH: $_"
+        return $false
+    }
+}
+
 # ============================================================
 # 0. WINGET
 # ============================================================
-Write-Step "0/9 - Checking winget"
+Write-Step "0/10 - Checking winget"
 Update-Path
+# The header says "Run as Administrator" but nothing checked. Several steps
+# (machine-wide Python, VS Build Tools, the machine PATH edit) silently degrade
+# or fail without elevation, and the failures surface much later as confusing
+# "not in PATH" lines. Say it once, up front.
+if (-not (Test-IsElevated)) {
+    Write-Host "  [WARN] Not running as Administrator." -ForegroundColor Yellow
+    Write-Host "         Machine-wide installs and the system PATH edit will be skipped" -ForegroundColor Yellow
+    Write-Host "         or fall back to per-user. Re-run from an elevated PowerShell" -ForegroundColor Yellow
+    Write-Host "         for a complete provision." -ForegroundColor Yellow
+}
 if (Test-CommandExists "winget") {
     Write-OK "winget already available"
 } else {
@@ -133,7 +204,7 @@ $useWinget = Test-CommandExists "winget"
 # ============================================================
 # 1. GIT
 # ============================================================
-Write-Step "1/9 - Git"
+Write-Step "1/10 - Git"
 Update-Path
 if (Test-CommandExists "git") {
     Write-OK "Git already installed: $(git --version)"
@@ -167,7 +238,7 @@ if (Test-CommandExists "git") {
 # ============================================================
 # 2. PYTHON 3.14
 # ============================================================
-Write-Step "2/9 - Python 3.14"
+Write-Step "2/10 - Python 3.14"
 Update-Path
 $pythonVer = try { python --version 2>&1 } catch { "" }
 if ($pythonVer -match "3\.14") {
@@ -199,7 +270,7 @@ if ($pythonVer -match "3\.14") {
 # ============================================================
 # 3. FFMPEG
 # ============================================================
-Write-Step "3/9 - FFmpeg"
+Write-Step "3/10 - FFmpeg"
 Update-Path
 if (Test-CommandExists "ffmpeg") {
     Write-OK "FFmpeg already installed"
@@ -229,12 +300,9 @@ if (Test-CommandExists "ffmpeg") {
                 Move-Item $ffmpegDir.FullName $ffmpegInstall
                 # Only modify PATH after confirming ffmpeg.exe actually exists under the install dir.
                 if (Test-Path "$ffmpegInstall\bin\ffmpeg.exe") {
-                    # Add to PATH permanently
-                    $currentPath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
-                    if ($currentPath -notlike "*$ffmpegInstall\bin*") {
-                        [System.Environment]::SetEnvironmentVariable("PATH", "$currentPath;$ffmpegInstall\bin", "Machine")
-                        Write-Info "Added $ffmpegInstall\bin to system PATH"
-                    }
+                    # Add to PATH permanently — see Add-PersistentPathEntry for
+                    # why this cannot go through [Environment]::SetEnvironmentVariable.
+                    Add-PersistentPathEntry -Directory "$ffmpegInstall\bin" | Out-Null
                 } else {
                     Write-Fail "ffmpeg.exe not found under $ffmpegInstall\bin — skipping PATH edit"
                 }
@@ -251,7 +319,7 @@ if (Test-CommandExists "ffmpeg") {
 # ============================================================
 # 4. VISUAL STUDIO BUILD TOOLS (C++ for Rust)
 # ============================================================
-Write-Step "4/9 - Visual Studio Build Tools (C++)"
+Write-Step "4/10 - Visual Studio Build Tools (C++)"
 $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $hasBuildTools = $false
 if (Test-Path $vsWhere) {
@@ -286,7 +354,7 @@ if ($hasBuildTools) {
 # ============================================================
 # 5. RUST
 # ============================================================
-Write-Step "5/9 - Rust (via rustup)"
+Write-Step "5/10 - Rust (via rustup)"
 Update-Path
 if (Test-CommandExists "cargo") {
     Write-OK "Rust already installed: $(cargo --version)"
@@ -320,7 +388,7 @@ if (Test-CommandExists "cargo") {
 # ============================================================
 # 6. GO
 # ============================================================
-Write-Step "6/9 - Go"
+Write-Step "6/10 - Go"
 Update-Path
 if (Test-CommandExists "go") {
     Write-OK "Go already installed: $(go version)"
@@ -350,7 +418,7 @@ if (Test-CommandExists "go") {
 # ============================================================
 # 7. NODE.JS
 # ============================================================
-Write-Step "7/9 - Node.js LTS"
+Write-Step "7/10 - Node.js LTS"
 Update-Path
 if (Test-CommandExists "node") {
     Write-OK "Node.js already installed: $(node --version)"
@@ -381,7 +449,7 @@ if (Test-CommandExists "node") {
 # ============================================================
 # 8. DOCKER DESKTOP (Optional)
 # ============================================================
-Write-Step "8/9 - Docker Desktop"
+Write-Step "8/10 - Docker Desktop"
 if ($SkipDocker) {
     Write-Skip "Docker skipped by parameter"
 } else {
@@ -413,7 +481,7 @@ if ($SkipDocker) {
 # ============================================================
 # 9. PYTHON ENVIRONMENT SETUP
 # ============================================================
-Write-Step "9/9 - Python Environment Setup"
+Write-Step "9/10 - Python Environment Setup"
 Update-Path
 
 if (Test-CommandExists "python") {
@@ -442,6 +510,48 @@ if (Test-CommandExists "python") {
     Write-OK "Python environment setup complete"
 } else {
     Write-Fail "Python not available. Skipping venv setup."
+}
+
+# ============================================================
+# 10. DASHBOARD (npm dependencies)
+# ============================================================
+# This step is what -SkipDashboard was always meant to gate: the switch existed
+# from the start but nothing ever read it, so a "complete installation" left
+# native_dashboard without node_modules and `npm test` / `npm run build` /
+# `cargo tauri dev` all failed on a freshly provisioned machine.
+Write-Step "10/10 - Dashboard dependencies"
+if ($SkipDashboard) {
+    Write-Skip "Dashboard skipped by parameter"
+} else {
+    Update-Path
+    $DashboardDir = Join-Path $ProjectRoot "native_dashboard"
+    if (-not (Test-Path (Join-Path $DashboardDir "package.json"))) {
+        Write-Skip "native_dashboard\package.json not found"
+    } elseif (-not (Test-CommandExists "npm")) {
+        Write-Fail "npm not in PATH - restart the terminal, then run: cd native_dashboard; npm ci"
+    } else {
+        Push-Location $DashboardDir
+        try {
+            # `npm ci` when the lockfile is present (reproducible, matches CI);
+            # `npm install` otherwise, because ci hard-fails without one.
+            if (Test-Path "package-lock.json") {
+                Write-Info "Installing dashboard dependencies (npm ci)..."
+                & npm.cmd ci
+            } else {
+                Write-Info "No package-lock.json - falling back to npm install..."
+                & npm.cmd install
+            }
+            if ($LASTEXITCODE -eq 0) {
+                Write-OK "Dashboard dependencies installed"
+            } else {
+                Write-Fail "npm install failed (exit $LASTEXITCODE)"
+            }
+        } catch {
+            Write-Fail "Dashboard dependency install failed: $_"
+        } finally {
+            Pop-Location
+        }
+    }
 }
 
 # ============================================================
@@ -508,6 +618,18 @@ foreach ($r in $results) {
 Write-Host "`n  Installed: $installed / $($results.Count)" -ForegroundColor Cyan
 if ($failed -gt 0) {
     Write-Host "  $failed tool(s) may need a terminal/PC restart to appear in PATH" -ForegroundColor Yellow
+}
+
+# Reclaim the disk the downloaded installers are sitting on. They total well
+# over a gigabyte (VS Build Tools, Docker Desktop, Python, Node, Go) and were
+# left in %TEMP% forever.
+if (Test-Path $DownloadDir) {
+    try {
+        Remove-Item $DownloadDir -Recurse -Force -ErrorAction Stop
+        Write-Info "Cleaned up downloaded installers ($DownloadDir)"
+    } catch {
+        Write-Info "Downloaded installers left at $DownloadDir (delete manually to reclaim space)"
+    }
 }
 
 Write-Host "`n  NEXT STEPS:" -ForegroundColor Magenta

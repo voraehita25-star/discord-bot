@@ -16,93 +16,109 @@ from scripts.bot_manager import (
     get_bot_status,
 )
 
-print("=" * 60)
-print("  BOT MANAGER FUNCTION TESTS")
-print("=" * 60)
-print()
 
-# Test 1: Status Detection
-print("[TEST 1] get_bot_status()")
-try:
-    status = get_bot_status()
-    print(f"  ✅ Running: {status['running']}")
-    print(f"  ✅ All PIDs: {status['all_pids']}")
-    print(f"  ✅ Dev Watcher PIDs: {status['dev_watcher_pids']}")
-    print(f"  ✅ Memory: {status['memory_mb']} MB")
-    print(f"  ✅ Launcher: {status['launcher']['name']}")
-except Exception as e:
-    print(f"  ❌ FAILED: {e}")
-print()
+def main() -> None:
+    """Run every smoke check and print the results.
 
-# Test 2: Process Finding
-print("[TEST 2] find_all_bot_processes()")
-try:
-    bots = find_all_bot_processes()
-    print(f"  ✅ Bot processes found: {len(bots)}")
-    for pid in bots:
-        print(f"      - PID: {pid}")
-except Exception as e:
-    print(f"  ❌ FAILED: {e}")
-print()
+    Wrapped in a function on purpose. This module is named ``test_*.py``, so
+    anything that collects broadly (``pytest scripts/``, an IDE test
+    discovery pass, ``pytest .``) used to EXECUTE the whole file at import
+    time — scanning every process on the machine and instantiating
+    SelfHealer — just to decide there were no test functions in it.
+    pyproject pins ``testpaths = ["tests"]`` so the default run never hit
+    this, but nothing stopped an explicit path from doing so.
+    """
+    print("=" * 60)
+    print("  BOT MANAGER FUNCTION TESTS")
+    print("=" * 60)
+    print()
 
-# Test 3: Dev Watcher Finding
-print("[TEST 3] find_all_dev_watcher_processes()")
-try:
-    watchers = find_all_dev_watcher_processes()
-    print(f"  ✅ Dev watchers found: {len(watchers)}")
-    for pid in watchers:
-        print(f"      - PID: {pid}")
-except Exception as e:
-    print(f"  ❌ FAILED: {e}")
-print()
+    # Test 1: Status Detection
+    print("[TEST 1] get_bot_status()")
+    try:
+        status = get_bot_status()
+        print(f"  ✅ Running: {status['running']}")
+        print(f"  ✅ All PIDs: {status['all_pids']}")
+        print(f"  ✅ Dev Watcher PIDs: {status['dev_watcher_pids']}")
+        print(f"  ✅ Memory: {status['memory_mb']} MB")
+        print(f"  ✅ Launcher: {status['launcher']['name']}")
+    except Exception as e:
+        print(f"  ❌ FAILED: {e}")
+    print()
 
-# Test 4: Colors Module
-print("[TEST 4] Colors class import")
-try:
-    from scripts.bot_manager import Colors
+    # Test 2: Process Finding
+    print("[TEST 2] find_all_bot_processes()")
+    try:
+        bots = find_all_bot_processes()
+        print(f"  ✅ Bot processes found: {len(bots)}")
+        for pid in bots:
+            print(f"      - PID: {pid}")
+    except Exception as e:
+        print(f"  ❌ FAILED: {e}")
+    print()
 
-    print(f"  ✅ Colors.GREEN: {Colors.GREEN!r}")
-    print(f"  ✅ Colors.RED: {Colors.RED!r}")
-    print(f"  ✅ Colors.RESET: {Colors.RESET!r}")
-except Exception as e:
-    print(f"  ❌ FAILED: {e}")
-print()
+    # Test 3: Dev Watcher Finding
+    print("[TEST 3] find_all_dev_watcher_processes()")
+    try:
+        watchers = find_all_dev_watcher_processes()
+        print(f"  ✅ Dev watchers found: {len(watchers)}")
+        for pid in watchers:
+            print(f"      - PID: {pid}")
+    except Exception as e:
+        print(f"  ❌ FAILED: {e}")
+    print()
 
-# Test 5: Box Drawing Functions
-print("[TEST 5] Box drawing functions")
-try:
-    from scripts.bot_manager import box_bottom, box_mid, box_top, get_display_width, pad_line
+    # Test 4: Colors Module
+    print("[TEST 4] Colors class import")
+    try:
+        from scripts.bot_manager import Colors
 
-    top = box_top()
-    mid = box_mid()
-    bottom = box_bottom()
-    line = pad_line("Test Line")
-    width = get_display_width("Hello 🤖 สวัสดี")
-    print(f"  ✅ box_top() works: {len(top)} chars")
-    print(f"  ✅ box_mid() works: {len(mid)} chars")
-    print(f"  ✅ box_bottom() works: {len(bottom)} chars")
-    print(f"  ✅ pad_line() works: {len(line)} chars")
-    print(f"  ✅ get_display_width() = {width}")
-except Exception as e:
-    print(f"  ❌ FAILED: {e}")
-print()
+        print(f"  ✅ Colors.GREEN: {Colors.GREEN!r}")
+        print(f"  ✅ Colors.RED: {Colors.RED!r}")
+        print(f"  ✅ Colors.RESET: {Colors.RESET!r}")
+    except Exception as e:
+        print(f"  ❌ FAILED: {e}")
+    print()
 
-# Test 6: Self-Healer Import
-print("[TEST 6] SelfHealer import")
-try:
-    from scripts.bot_manager import SELF_HEALER_AVAILABLE
+    # Test 5: Box Drawing Functions
+    print("[TEST 5] Box drawing functions")
+    try:
+        from scripts.bot_manager import box_bottom, box_mid, box_top, get_display_width, pad_line
 
-    print(f"  ✅ SELF_HEALER_AVAILABLE: {SELF_HEALER_AVAILABLE}")
-    if SELF_HEALER_AVAILABLE:
-        from utils.reliability.self_healer import SelfHealer
+        top = box_top()
+        mid = box_mid()
+        bottom = box_bottom()
+        line = pad_line("Test Line")
+        width = get_display_width("Hello 🤖 สวัสดี")
+        print(f"  ✅ box_top() works: {len(top)} chars")
+        print(f"  ✅ box_mid() works: {len(mid)} chars")
+        print(f"  ✅ box_bottom() works: {len(bottom)} chars")
+        print(f"  ✅ pad_line() works: {len(line)} chars")
+        print(f"  ✅ get_display_width() = {width}")
+    except Exception as e:
+        print(f"  ❌ FAILED: {e}")
+    print()
 
-        healer = SelfHealer("test_script")
-        diagnosis = healer.diagnose()
-        print(f"  ✅ SelfHealer.diagnose() works: {len(diagnosis['issues'])} issues")
-except Exception as e:
-    print(f"  ❌ FAILED: {e}")
-print()
+    # Test 6: Self-Healer Import
+    print("[TEST 6] SelfHealer import")
+    try:
+        from scripts.bot_manager import SELF_HEALER_AVAILABLE
 
-print("=" * 60)
-print("  ALL TESTS COMPLETED")
-print("=" * 60)
+        print(f"  ✅ SELF_HEALER_AVAILABLE: {SELF_HEALER_AVAILABLE}")
+        if SELF_HEALER_AVAILABLE:
+            from utils.reliability.self_healer import SelfHealer
+
+            healer = SelfHealer("test_script")
+            diagnosis = healer.diagnose()
+            print(f"  ✅ SelfHealer.diagnose() works: {len(diagnosis['issues'])} issues")
+    except Exception as e:
+        print(f"  ❌ FAILED: {e}")
+    print()
+
+    print("=" * 60)
+    print("  ALL TESTS COMPLETED")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

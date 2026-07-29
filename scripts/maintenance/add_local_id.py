@@ -71,11 +71,15 @@ async def add_local_id_column():
                 )
                 rows = await cursor.fetchall()
 
-                # Update local_id with sequential values
-                for idx, row in enumerate(rows, start=1):
-                    await conn.execute(
-                        "UPDATE ai_history SET local_id = ? WHERE id = ?", (idx, row["id"])
-                    )
+                # Update local_id with sequential values. executemany, not a
+                # per-row execute: aiosqlite marshals every call across to its
+                # worker thread and awaits the reply, so a channel with 50k
+                # messages meant 50k round-trips. One executemany prepares the
+                # statement once and runs the whole batch in a single hop.
+                await conn.executemany(
+                    "UPDATE ai_history SET local_id = ? WHERE id = ?",
+                    [(idx, row["id"]) for idx, row in enumerate(rows, start=1)],
+                )
 
                 print(f"  -> Updated {len(rows)} rows (local_id: 1 - {len(rows)})")
 

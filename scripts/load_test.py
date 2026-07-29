@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import random
 import statistics
 import sys
 import time
@@ -120,8 +121,6 @@ async def simulate_ai_request(
     In a real test, this would call the actual AI endpoint.
     For now, it simulates with random delays.
     """
-    import random
-
     start_time = time.perf_counter()
 
     try:
@@ -217,7 +216,14 @@ async def run_rate_limiter_test(
                 await asyncio.sleep(delay_between_bursts)
 
         print(f"\nTotal: {allowed_count} allowed, {blocked_count} blocked")
-        print(f"Block rate: {blocked_count / (allowed_count + blocked_count):.1%}")
+        # Guard the divisor: with --burst-size 0 (or a rate limiter that raised
+        # on every check) both counters stay 0 and this line raised
+        # ZeroDivisionError, killing the run right at the summary.
+        total_checks = allowed_count + blocked_count
+        if total_checks:
+            print(f"Block rate: {blocked_count / total_checks:.1%}")
+        else:
+            print("Block rate: n/a (no checks were performed)")
 
     except ImportError:
         print("Rate limiter not available")
