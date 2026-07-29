@@ -20,7 +20,7 @@
 | ⚡ **Performance Caching** | LRU caching reduces repeat API calls ~50%. |
 | ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
 | 🧪 **Unit Tests** | 613 tests across 21 vitest files: `app.test.ts`, `chat-manager.test.ts` (+`.audit2`), `history-manager.test.ts`, `e2e_smoke.test.ts` + 14 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, document-attach, formatter +3 audit suites, image-attach, message-template +1 audit suite, prism, search, ws-client). |
-| 🤖 **Headless E2E** | 157 Playwright tests across 13 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, pixel-sampled contrast (low-emphasis text + non-text/1.4.11), populated-state a11y + layout, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection, upgrade-audit regression guards (the page-sweep specs cover the History page too). Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
+| 🤖 **Headless E2E** | 159 Playwright tests across 13 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, pixel-sampled contrast (low-emphasis text + non-text/1.4.11), populated-state a11y + layout, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection, upgrade-audit regression guards (the page-sweep specs cover the History page too). Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
 | 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars, sakura, sound, haptic, telemetry. |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
 
@@ -272,7 +272,7 @@ npm run test:coverage          # With coverage report (enforces coverage floors 
 npm run typecheck:test         # Type-check including the *.test.ts specs
 
 # Headless e2e (Playwright + Chromium, ~30s)
-npm run test:e2e               # Run all 157 Playwright tests (smoke + interactions + a11y + contrast + visual + h5/h7 + inspection + upgrade-guards)
+npm run test:e2e               # Run all 159 Playwright tests (smoke + interactions + a11y + contrast + visual + h5/h7 + inspection + upgrade-guards)
 npm run test:e2e:ui            # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots  # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots   # Capture screenshots for manual inspection

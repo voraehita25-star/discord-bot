@@ -529,6 +529,101 @@ test('chat: message bubbles size to their content, and keep their action row', a
     }
 });
 
+// ---------------------------------------------------------------------------
+// AI Chat is an app layout, not a document, and must not be inset like one.
+// `.content > .page` caps every page at 1520px and centres it — the right call
+// for the card columns, which are read top-to-bottom and need a measure. Chat
+// is a fixed rail beside a pane that caps its own reading width per message, so
+// there the page cap only added gutters: at 1920 it left 70px of dead space on
+// each side while the header, the tag bar and the composer INSIDE it all ran
+// edge to edge, leaving the transcript as the one thing that stopped short.
+//
+// The scoping is half the contract, so it is asserted too: uncapping chat must
+// not uncap the document pages.
+// ---------------------------------------------------------------------------
+test('chat: the page fills its column at a wide viewport, and only chat does', async ({ page }) => {
+    await boot(page, { width: 1920, height: 1080 });
+    await show(page, 'chat');
+
+    const r = await page.evaluate(() => {
+        const content = document.querySelector<HTMLElement>('.content')!;
+        const chat = document.querySelector<HTMLElement>('#page-chat')!;
+        const cb = content.getBoundingClientRect();
+        const pb = chat.getBoundingClientRect();
+        return {
+            contentW: Math.round(cb.width),
+            chatW: Math.round(pb.width),
+            insetLeft: Math.round(pb.left - cb.left),
+            insetRight: Math.round(cb.right - pb.right),
+            docOverflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+    });
+
+    // The viewport has to be wide enough for the cap to bite, or this proves nothing.
+    expect(r.contentW, 'viewport too narrow for the 1520px cap to matter').toBeGreaterThan(1520);
+    expect(r.chatW, `chat page is ${r.chatW}px inside a ${r.contentW}px column`)
+        .toBeGreaterThanOrEqual(r.contentW - 2);
+    expect(r.insetLeft + r.insetRight, 'chat page is still being centred inside a cap')
+        .toBeLessThanOrEqual(2);
+    expect(r.docOverflowX, 'widening the chat page must not scroll the document').toBeLessThanOrEqual(1);
+
+    // …and every document page still keeps its measure.
+    for (const name of ['status', 'logs', 'database', 'settings', 'history'] as const) {
+        await show(page, name);
+        const w = await page.evaluate(
+            (n) => Math.round(document.querySelector<HTMLElement>(`#page-${n}`)!.getBoundingClientRect().width),
+            name,
+        );
+        expect(w, `#page-${name} lost its 1520px measure (${w}px)`).toBeLessThanOrEqual(1522);
+    }
+});
+
+// The transcript has to actually USE the room the page just gained — the row
+// cap is the second of the two things that were holding it in (78% of the row
+// was ~265px of dead space at 1920, directly under a full-width header).
+test('chat: a long message fills its row instead of stopping short', async ({ page }) => {
+    await boot(page, { width: 1920, height: 1080 });
+    await show(page, 'chat');
+    await page.evaluate(() => {
+        document.getElementById('chat-not-running-overlay')?.classList.remove('visible');
+        document.getElementById('chat-empty')?.classList.add('hidden');
+        const c = document.getElementById('chat-container');
+        if (c) { c.classList.remove('hidden'); (c as HTMLElement).style.display = 'flex'; }
+        const host = document.getElementById('chat-messages')!;
+        host.replaceChildren();
+        const msg = document.createElement('div');
+        msg.className = 'chat-message assistant';
+        const avatar = document.createElement('div');
+        avatar.className = 'message-avatar';
+        const wrapper = document.createElement('div');
+        wrapper.className = 'message-wrapper';
+        const body = document.createElement('div');
+        body.className = 'message-content';
+        body.textContent = 'A genuinely long answer whose max-content width runs far past the row. '.repeat(12);
+        wrapper.append(body);
+        msg.append(avatar, wrapper);
+        host.appendChild(msg);
+    });
+    await page.waitForTimeout(250);
+
+    const r = await page.evaluate(() => {
+        const host = document.getElementById('chat-messages')!;
+        const cs = getComputedStyle(host);
+        const usable = host.clientWidth
+            - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+        const msg = host.querySelector<HTMLElement>('.chat-message')!;
+        return { usable: Math.round(usable), msgW: Math.round(msg.getBoundingClientRect().width) };
+    });
+
+    // 0.88, against a 0.92 cap: leaves room for the gutter the cap exists to
+    // keep (a bubble must never touch the opposite wall) without letting the
+    // old 0.78 back in.
+    expect(
+        r.msgW / r.usable,
+        `a long message uses ${(100 * r.msgW / r.usable).toFixed(0)}% of its row (${r.msgW}px of ${r.usable}px)`,
+    ).toBeGreaterThanOrEqual(0.88);
+});
+
 test('chat: the composer stays pinned at 800x600 with a conversation open', async ({ page }) => {
     await boot(page, MIN_WIN);
     await show(page, 'chat');

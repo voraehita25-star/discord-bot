@@ -1300,7 +1300,14 @@ html[data-theme="light"] .chat-connection-status.connected {
     background: none;
 }
 .chat-messages { padding: var(--space-4); gap: 11px; }
-.chat-message { gap: 9px; max-width: min(78%, calc(100% - 40px)); }
+/* 92%, was 78%. The cap exists so a bubble never touches the opposite wall —
+   that gap is what makes a transcript read as a conversation with two sides —
+   but 78% of the row is ~265px of dead space at 1920, and it sat directly
+   under a header and above a composer that both run the full width, so the
+   messages were the one thing in the pane that visibly stopped short. 92%
+   keeps the two-sided read and lands the long bubbles within a few px of the
+   composer's own edge. */
+.chat-message { gap: 9px; max-width: min(92%, calc(100% - 32px)); }
 .message-avatar { width: 30px; height: 30px; font-size: 15px; }
 .message-content {
     padding: 9px 13px;
@@ -2878,6 +2885,19 @@ html[data-theme="light"],
     width: 100%;
     max-width: 1520px;
     margin-inline: auto;
+}
+/* …except AI Chat, which is not a document. Every other page is a column of
+   cards reading top-to-bottom, and 1520px is the measure that keeps their text
+   readable on a 2560px monitor. Chat is an app layout — a fixed 280px rail
+   beside a pane whose own measure is set by .chat-message's cap below — so the
+   page-level cap does nothing there but inset the whole thing: at 1920 it left
+   70px of dead gutter on each side while the header, the tag bar and the
+   composer inside it all ran edge to edge, so only the transcript stopped
+   short. The rail grows a little on very wide screens so the reading column
+   does not take the entire gain. */
+.content > #page-chat { max-width: none; }
+@media (min-width: 1600px) {
+    #page-chat .chat-sidebar { width: 320px; min-width: 320px; }
 }
 
 /* ============================================================================
