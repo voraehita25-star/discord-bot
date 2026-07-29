@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: July 4, 2026 | Python 3.14+ | Python Tests: 5,424 ✅ (126 files), 2 skipped, 3 deselected under -Fast | Frontend Tests: 472 ✅ (19 vitest files) + 90 ✅ (9 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots + upgrade-guards) | Timeout: 30s per test
+> Last Updated: July 4, 2026 | Python 3.14+ | Python Tests: 5,338 ✅ (124 files), 1 skipped, 4 deselected under -Fast | Frontend Tests: 613 ✅ (21 vitest files) + 159 ✅ (13 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots + upgrade-guards) | Timeout: 30s per test
 >
 > Counts drift as tests are added — run **`make docs-sync`** to refresh every number in the docs from the live repo in one pass (or `make test` / `npm test` / `npm run test:e2e` for the live numbers directly). CI can guard drift with `make docs-check`.
 
@@ -32,7 +32,7 @@ python -m pytest tests/ --collect-only -q
 > Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
 > ```
 
-## Test Structure (126 Python files, 5,424 tests)
+## Test Structure (124 Python files, 5,338 tests)
 
 ```text
 tests/
@@ -53,9 +53,9 @@ tests/
 > into their base files and parametrized boilerplate tests. A later coverage push
 > (mid-2026) added dedicated/regression suites (e.g. `test_migrations`,
 > `test_url_fetcher_client`, `test_url_safety`, `test_core_performance`,
-> `test_dev_watcher`, `test_imports`, plus cog-coverage files). Current count: **126 files**.
+> `test_dev_watcher`, `test_imports`, plus cog-coverage files). Current count: **124 files**.
 
-## Frontend Test Structure (19 vitest files, 472 tests)
+## Frontend Test Structure (21 vitest files, 613 tests)
 
 TypeScript tests run under [vitest](https://vitest.dev/) with a `jsdom` environment.
 There is no shared setup file; the two suites that need it attach DOMPurify in a per-file `beforeAll` (the real `dompurify` npm build, e.g. `formatter.test.ts`, `chat-manager.test.ts`). KaTeX is intentionally *not* loaded, so the formatter suite exercises the no-KaTeX LaTeX fallback path.
@@ -63,7 +63,7 @@ There is no shared setup file; the two suites that need it attach DOMPurify in a
 ```text
 native_dashboard/src-ts/
 ├── app.test.ts                     # app.ts — status/logs/DB/settings (54 tests, legacy suite)
-├── chat-manager.test.ts            # ChatManager — handleMessage dispatcher + state (64 tests)
+├── chat-manager.test.ts            # ChatManager — handleMessage dispatcher + state (103 tests)
 ├── chat-manager.audit2.test.ts     # ChatManager — audit-round-2 regression guards (4 tests)
 ├── history-manager.test.ts         # AI History page — load/edit/delete/undo + refresh (114 tests)
 ├── e2e_smoke.test.ts               # Smoke-level end-to-end flows (13 tests)
@@ -100,7 +100,7 @@ npm run typecheck:test   # Type-check including the *.test.ts specs
 > numbers as a regression guard — raise them as coverage grows, don't lower
 > them to make a run pass.
 
-## Headless E2E Tests (9 Playwright files, 90 tests)
+## Headless E2E Tests (13 Playwright files, 159 tests)
 
 Playwright drives a real Chromium against the **static dashboard UI** (`native_dashboard/ui/index.html`)
 served by `python -m http.server`. Tauri's IPC layer is replaced at test time by a shim
@@ -128,7 +128,7 @@ native_dashboard/tests-e2e/
 Run from `native_dashboard/`:
 
 ```bash
-npm run test:e2e                 # All 90 tests, headless Chromium
+npm run test:e2e                 # All 159 tests, headless Chromium
 npm run test:e2e:ui              # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots   # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots     # Just the screenshot captures

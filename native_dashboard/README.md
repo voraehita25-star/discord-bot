@@ -148,14 +148,14 @@ native_dashboard/
 │   ├── bot_manager.rs      # Bot process control
 │   └── database.rs         # SQLite queries
 ├── src-ts/
-│   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~2.7k lines)
-│   ├── chat-manager.ts     # ChatManager orchestrator (~3.6k lines) — chat + file memory modal + editor
+│   ├── app.ts              # Main TS — UI, charts, bot control, settings, 3D interactions (~4.1k lines)
+│   ├── chat-manager.ts     # ChatManager orchestrator (~4.3k lines) — chat + file memory modal + editor
 │   ├── history-manager.ts  # AI History page — browse/edit/delete/undo the bot's ai_history rows
 │   ├── shared.ts           # Shared utils (invoke wrapper, errors, settings, toasts, 3D interactions, animateNumber, sound+haptic)
 │   ├── types.ts            # Shared TypeScript interfaces
 │   ├── faust_avatar.ts     # Default AI avatar (base64)
 │   ├── app.test.ts         # app.ts unit tests
-│   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (64 tests)
+│   ├── chat-manager.test.ts # ChatManager handleMessage + state-transition tests (103 tests)
 │   ├── history-manager.test.ts # HistoryManager load/edit/delete/undo + live_session-ack tests
 │   ├── e2e_smoke.test.ts   # Smoke-level end-to-end tests
 │   └── chat/               # Chat modules extracted from chat-manager.ts
