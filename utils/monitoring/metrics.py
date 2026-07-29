@@ -67,12 +67,6 @@ class BotMetrics:
                 ["source"],  # 'youtube', 'spotify', 'search'
             )
 
-            self.search_intent_total = Counter(
-                "discord_bot_search_intent_total",
-                "Search intent classification results",
-                ["method", "result"],  # method: 'prefilter', 'ai'; result: 'search', 'no_search'
-            )
-
             # Gauges (can go up and down)
             self.guilds_count = Gauge("discord_bot_guilds", "Number of guilds bot is in")
 
@@ -170,12 +164,6 @@ class BotMetrics:
             self.songs_played_total.labels(source="youtube")
             self.songs_played_total.labels(source="spotify")
             self.songs_played_total.labels(source="search")
-            self.search_intent_total.labels(method="prefilter", result="search")
-            self.search_intent_total.labels(method="prefilter", result="no_search")
-            self.search_intent_total.labels(method="ai", result="search")
-            self.search_intent_total.labels(method="ai", result="no_search")
-            self.search_intent_total.labels(method="game_keyword", result="search")
-            self.search_intent_total.labels(method="game_keyword", result="no_search")
 
     def start_server(self, port: int = 8000) -> bool:
         """Start the Prometheus metrics HTTP server."""
@@ -389,28 +377,6 @@ class BotMetrics:
         """Record AI response generation time."""
         if self.enabled:
             self.ai_response_time.observe(duration)
-
-    def increment_search_intent(self, method: str, result: str):
-        """Record a search intent classification.
-
-        Args:
-            method: 'prefilter', 'ai', 'game_keyword', or 'uncertain_default'
-                ('uncertain_default' = the pre-filter was UNCERTAIN and no
-                classifier was available, so the turn failed open — see
-                logic.process_chat)
-            result: 'search' or 'no_search'
-        """
-        if self.enabled:
-            # Clamp to known values to bound Prometheus label cardinality, like
-            # the sibling metric methods (a future dynamic caller can't explode
-            # the series count).
-            safe_method = (
-                method
-                if method in ("prefilter", "ai", "game_keyword", "uncertain_default")
-                else "other"
-            )
-            safe_result = result if result in ("search", "no_search") else "other"
-            self.search_intent_total.labels(method=safe_method, result=safe_result).inc()
 
     def set_db_pool(self, total: int, available: int):
         """Set database pool metrics."""

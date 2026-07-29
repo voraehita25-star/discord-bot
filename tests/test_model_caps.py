@@ -315,25 +315,6 @@ class TestThinkingOffKwargsOnUtilityCalls:
         assert "output_config" not in thinking_off_kwargs("claude-opus-5")
 
     @pytest.mark.asyncio
-    async def test_search_intent_classifier_disables_thinking(self) -> None:
-        from types import SimpleNamespace
-        from unittest.mock import AsyncMock, MagicMock
-
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        client = MagicMock()
-        client.messages = MagicMock()
-        client.messages.create = AsyncMock(
-            return_value=SimpleNamespace(content=[SimpleNamespace(type="text", text="SEARCH")])
-        )
-
-        assert await detect_search_intent(client, "claude-opus-5", "what is the latest patch?")
-        kwargs = client.messages.create.await_args.kwargs
-        assert kwargs["thinking"] == {"type": "disabled"}
-        # A 10-token budget shared with adaptive thinking returns no text at all.
-        assert kwargs["max_tokens"] == 10
-
-    @pytest.mark.asyncio
     async def test_summarizer_disables_thinking(self) -> None:
         from types import SimpleNamespace
         from unittest.mock import AsyncMock, MagicMock

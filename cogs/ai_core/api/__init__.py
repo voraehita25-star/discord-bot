@@ -6,7 +6,6 @@ from .api_handler import (
     build_api_config,
     call_claude_api,
     call_claude_api_streaming,
-    detect_search_intent,
 )
 from .ws_dashboard import (
     DASHBOARD_ROLE_PRESETS,
@@ -22,7 +21,6 @@ __all__ = [
     "build_api_config",
     "call_claude_api",
     "call_claude_api_streaming",
-    "detect_search_intent",
     "get_dashboard_ws_server",
     "start_dashboard_ws_server",
     "stop_dashboard_ws_server",

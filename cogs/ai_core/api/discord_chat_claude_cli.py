@@ -20,13 +20,9 @@ Reuse:
     message updates, and the SDK-shape return tuple.
 
 Capabilities / limitations vs the SDK path:
-    - Web tools: WebSearch + WebFetch (claude's built-ins) let the Discord AI
-      look up current info and read URLs. Allowed PER TURN — the operator's
-      DASHBOARD_CLI_WEB_TOOLS says what is permitted, the intent classifier's
-      ``use_search`` verdict says what the turn asks for (see
-      :func:`_turn_web_enabled`), so an ordinary roleplay message carries
-      neither tool. There's no Read tool on this path, so no local-file
-      exfil risk.
+    - Web tools: WebSearch + WebFetch are enabled (claude's built-ins) so the
+      Discord AI can look up current info and read URLs. There's no Read tool
+      on this path, so no local-file exfil risk. Toggle via DASHBOARD_CLI_WEB_TOOLS.
     - No ``temperature`` / ``max_tokens`` overrides (CLI doesn't expose them)
     - No API failover (subscription auth has no proxy concept)
     - Images attached to Discord messages are dropped with a "[image]"
@@ -192,29 +188,6 @@ def _resolve_discord_system_prompt_file(channel_id: int | None = None) -> Path |
     if _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY.exists():
         return _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY
     return _DISCORD_CLI_SYSTEM_PROMPT_FALLBACK
-
-
-def _turn_web_enabled(config_params: dict[str, Any]) -> bool:
-    """Whether THIS turn may use the web tools (WebSearch + WebFetch).
-
-    Two gates, same split the dashboard CLI handler uses: the operator's
-    ``DASHBOARD_CLI_WEB_TOOLS`` env flag says what is PERMITTED, and the
-    per-turn ``use_search`` (``api_handler.build_api_config``, fed by the
-    three-tier intent classifier in ``logic.process_chat``) says what this
-    turn ASKS for. Previously the Discord path ignored the second gate
-    entirely and hard-wired the tools on, so the classifier's verdict was
-    computed and discarded.
-
-    Defaults to True when the key is absent, so a caller that predates this
-    wiring keeps the tools it used to get — the dashboard handler defaults
-    the same value the same way, for the same reason.
-
-    Side benefit worth keeping in mind when editing: an ordinary roleplay or
-    chit-chat message classifies as ``no_search``, so those turns no longer
-    carry WebFetch — which is the one tool on this path that can send
-    conversation content to an arbitrary URL.
-    """
-    return bool(config_params.get("use_search", True)) and _CLI_WEB_TOOLS_ENABLED
 
 
 def _get_channel_lock(channel_id: int) -> asyncio.Lock:
@@ -692,7 +665,6 @@ async def call_claude_cli_streaming(
         return "", "", []
 
     system_instruction = config_params.get("system_instruction", "") or ""
-    web_enabled = _turn_web_enabled(config_params)
 
     placeholder_msg = None
     last_edit_time = 0.0
@@ -848,11 +820,10 @@ async def call_claude_cli_streaming(
                 # nothing per-turn to pass here. Subscription mode redacts the
                 # reasoning content (only start/stop markers reach us — see
                 # on_thinking), but the effort is real.
-                # Web access (WebSearch + WebFetch), gated per turn on the
-                # intent classifier's verdict — see _turn_web_enabled. There's
+                # Give the Discord AI web access (WebSearch + WebFetch). There's
                 # no Read tool on this path, so no local-file exfil risk; both
                 # run server-side at Anthropic.
-                enable_web=web_enabled,
+                enable_web=_CLI_WEB_TOOLS_ENABLED,
                 ai_tool_names=ai_tools,
                 # Discord path pins Opus 5's 1M-context variant and the
                 # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the
@@ -1104,7 +1075,6 @@ async def call_claude_cli(
         return "", "", []
 
     system_instruction = config_params.get("system_instruction", "") or ""
-    web_enabled = _turn_web_enabled(config_params)
 
     accumulated_text = ""
     aborted = False
@@ -1177,11 +1147,10 @@ async def call_claude_cli(
                 # nothing per-turn to pass here. Subscription mode redacts the
                 # reasoning content (only start/stop markers reach us — see
                 # on_thinking), but the effort is real.
-                # Web access (WebSearch + WebFetch), gated per turn on the
-                # intent classifier's verdict — see _turn_web_enabled. There's
+                # Give the Discord AI web access (WebSearch + WebFetch). There's
                 # no Read tool on this path, so no local-file exfil risk; both
                 # run server-side at Anthropic.
-                enable_web=web_enabled,
+                enable_web=_CLI_WEB_TOOLS_ENABLED,
                 ai_tool_names=ai_tools,
                 # Discord path pins Opus 5's 1M-context variant and the
                 # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the

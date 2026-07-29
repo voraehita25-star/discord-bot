@@ -67,27 +67,10 @@ def _utc_now_iso() -> str:
     return datetime.datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-# Import API handler module (direct subfolder import). Wrap the metrics
-# import in the same try/except pattern bot.py uses — every other optional
-# dependency in this codebase has a stub fallback, and a hard import here
-# would crash the whole AI cog at startup if the metrics module fails
-# (e.g., prometheus_client not installed).
-try:
-    from utils.monitoring.metrics import metrics
-except ImportError:
-
-    class _NullMetrics:
-        def __getattr__(self, name):
-            return lambda *args, **kwargs: None
-
-    metrics = _NullMetrics()  # type: ignore[assignment]
-
 from .api.api_handler import (
     build_api_config,
     call_claude_api,
     call_claude_api_streaming,
-    classify_search_intent,
-    detect_search_intent,
 )
 from .character_tags import replace_character_names
 from .claude_payloads import ClaudeContentBlockParam
@@ -102,7 +85,6 @@ from .data.constants import (
     CLAUDE_MODEL,
     CREATOR_ID,
     ENTITY_TOP_K,
-    GAME_SEARCH_KEYWORDS,
     GUILD_ID_RP,
     LOCK_TIMEOUT,
     MAX_HISTORY_ITEMS,
@@ -230,49 +212,6 @@ PATTERN_AT_EVERYONE = re.compile("(?i)@(?!\u200b)everyone")
 PATTERN_AT_HERE = re.compile("(?i)@(?!\u200b)here")
 PATTERN_USER_TAG = re.compile("<@!?(?!\u200b)(\\d+)>")
 PATTERN_ROLE_TAG = re.compile("<@&(?!\u200b)(\\d+)>")
-
-# Game-search keyword matching. ASCII keywords are matched on boundaries so
-# short tokens ("ego", "stats", "cost", "00") don't fire inside unrelated words
-# ("cat\u200begory", "1000") \u2014 the previous ``kw in text`` substring test forced a
-# web search on a lot of false positives. Thai keywords keep substring matching
-# because Thai is written without spaces. Split + compile once at import.
-#
-# Digit-only keywords ("00"/"000" \u2014 Limbus rarity tiers) need stricter
-# anchoring than ``(?<!\w)\u2026(?!\w)``: ':' ',' '.' are non-word chars, so the
-# plain boundary still matched the tail of clock times ("18:00"),
-# thousands-separated prices ("30,000") and decimals ("100.00"), forcing a
-# web search on ordinary chat. Reject digit/number-punctuation context on
-# both sides while keeping standalone tier references ("00 identity") firing.
-_GAME_KW_ASCII: tuple[str, ...] = tuple(kw for kw in GAME_SEARCH_KEYWORDS if kw.isascii())
-_GAME_KW_NONASCII: tuple[str, ...] = tuple(kw for kw in GAME_SEARCH_KEYWORDS if not kw.isascii())
-_GAME_KW_ASCII_WORD: tuple[str, ...] = tuple(kw for kw in _GAME_KW_ASCII if not kw.isdigit())
-_GAME_KW_ASCII_DIGIT: tuple[str, ...] = tuple(kw for kw in _GAME_KW_ASCII if kw.isdigit())
-_GAME_KW_PARTS: list[str] = []
-if _GAME_KW_ASCII_WORD:
-    _GAME_KW_PARTS.append(
-        r"(?<!\w)(?:" + "|".join(re.escape(k) for k in _GAME_KW_ASCII_WORD) + r")(?!\w)"
-    )
-if _GAME_KW_ASCII_DIGIT:
-    _GAME_KW_PARTS.append(
-        r"(?<![\w:.,])(?:"
-        + "|".join(re.escape(k) for k in _GAME_KW_ASCII_DIGIT)
-        + r")(?!\w|[:.,]\d)"
-    )
-_GAME_KW_ASCII_RE = re.compile("|".join(_GAME_KW_PARTS), re.IGNORECASE) if _GAME_KW_PARTS else None
-
-
-def _is_game_search_query(text: str) -> bool:
-    """True when a message references game data that should force a web search.
-
-    ASCII keywords match on word boundaries; Thai keywords match as substrings.
-    """
-    if not text:
-        return False
-    if _GAME_KW_ASCII_RE is not None and _GAME_KW_ASCII_RE.search(text):
-        return True
-    lowered = text.lower()
-    return any(kw in lowered for kw in _GAME_KW_NONASCII)
-
 
 # Thai combining marks (tone marks, vowel marks) cannot appear at the start of
 # a chunk — splitting just before one renders as a stray ◌-form glyph.
@@ -793,31 +732,13 @@ class ChatManager(SessionMixin, ResponseMixin):
     # Response methods (_get_voice_status, _get_chat_history_index, _extract_channel_id_request,
     # _is_asking_about_channels, _get_requested_history) are inherited from ResponseMixin
 
-    async def _detect_search_intent(self, message: str) -> bool:
-        """Detect if message requires web search. Delegates to api_handler.
-
-        In CLI mode the SDK client is None and the search-intent
-        classifier (which currently uses the SDK) is unavailable. The
-        bot's keyword pre-filter already handles the common cases
-        before we ever reach this slow path, so returning False here
-        just means "no web search" — the answer comes from the model's
-        own knowledge instead of a tool call. Better UX than spawning a
-        second subprocess for a yes/no classification.
-        """
-        if self.cli_mode:
-            return False
-        if self.client is None or self.target_model is None:
-            return False
-        return await detect_search_intent(self.client, self.target_model, message)
-
     def _build_api_config(
         self,
         chat_data: dict[str, Any],
         guild_id: int | None = None,
-        use_search: bool = False,
     ) -> dict[str, Any]:
         """Build API configuration. Delegates to api_handler."""
-        return build_api_config(chat_data, guild_id, use_search)
+        return build_api_config(chat_data, guild_id)
 
     async def _call_gemini_api_streaming(
         self,
@@ -1893,57 +1814,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                         )
                         self._message_queue.reset_cancel(channel_id)
 
-                    # 8. Build API config and call Gemini API
-                    # Check for game-related keywords that should ALWAYS use search.
-                    # Use the boundary-aware helper (not a raw substring scan) so short
-                    # ASCII keywords don't fire inside unrelated words. Keywords defined
-                    # in data/constants.py for easy maintenance.
-                    force_search = _is_game_search_query(display_message)
-
-                    if force_search:
-                        use_search = True
-                        logger.info("🔎 Force SEARCH mode (game keyword detected)")
-                        metrics.increment_search_intent("game_keyword", "search")
-                    else:
-                        # Multi-layer pre-filter: classify without AI call when possible
-                        prefilter_result = classify_search_intent(display_message)
-                        if prefilter_result is not None:
-                            use_search = prefilter_result
-                            result_label = "search" if use_search else "no_search"
-                            logger.info(
-                                "🔎 Pre-filter: %s (skipped AI call)",
-                                result_label.upper(),
-                            )
-                            metrics.increment_search_intent("prefilter", result_label)
-                        elif self.cli_mode:
-                            # Uncertain AND no classifier: the AI detector needs
-                            # the SDK client, which CLI mode never builds, so
-                            # ``_detect_search_intent`` would just answer False.
-                            # That answer is no longer inert — ``use_search`` now
-                            # gates whether the CLI turn gets web tools at all —
-                            # and "couldn't decide" must not silently withhold a
-                            # capability the turn would otherwise have had. Fail
-                            # OPEN, matching the dashboard CLI handler's
-                            # default-True rationale for the same value.
-                            use_search = True
-                            logger.info(
-                                "🔎 Pre-filter: UNCERTAIN, defaulting to SEARCH (CLI backend)"
-                            )
-                            metrics.increment_search_intent("uncertain_default", "search")
-                        else:
-                            # Uncertain — fall through to AI-based detection
-                            logger.info(
-                                "🔎 Pre-filter: UNCERTAIN, using AI detection for: %s",
-                                display_message[:50],
-                            )
-                            use_search = await self._detect_search_intent(display_message)
-                            result_label = "search" if use_search else "no_search"
-                            logger.info("🔎 AI search intent result: %s", result_label.upper())
-                            metrics.increment_search_intent("ai", result_label)
-
-                    config_params = self._build_api_config(
-                        chat_data, guild_id, use_search=use_search
-                    )
+                    # 8. Build API config and call the model
+                    config_params = self._build_api_config(chat_data, guild_id)
 
                     # Check if streaming is enabled for this channel
                     use_streaming = self.is_streaming_enabled(channel_id)
@@ -1990,7 +1862,6 @@ class ChatManager(SessionMixin, ResponseMixin):
                         "api_ms": (_trace_now - _trace_api_start) * 1000,
                         "rag_ms": _trace_rag_ms,
                         "rag_results": _trace_rag_results,
-                        "intent": "search" if use_search else "no_search",
                         "cache_hit": False,
                     }
 

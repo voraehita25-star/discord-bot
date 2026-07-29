@@ -141,12 +141,6 @@ class TestApiHandlerImports:
 
         assert callable(call_claude_api)
 
-    def test_detect_search_intent_import(self):
-        """Test detect_search_intent is imported."""
-        from cogs.ai_core.logic import detect_search_intent
-
-        assert callable(detect_search_intent)
-
 
 class TestMediaProcessorImports:
     """Tests for media processor imports."""
@@ -683,27 +677,6 @@ class TestAsyncMethods:
 
                 assert success is True
                 mock_leave.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent(self):
-        """Test _detect_search_intent method."""
-        from cogs.ai_core.logic import ChatManager
-
-        mock_bot = MagicMock()
-
-        with patch.object(ChatManager, "setup_ai"):
-            manager = ChatManager(mock_bot)
-            manager.client = MagicMock()
-            manager.target_model = "test-model"
-
-            with patch(
-                "cogs.ai_core.logic.detect_search_intent", new_callable=AsyncMock
-            ) as mock_detect:
-                mock_detect.return_value = True
-
-                result = await manager._detect_search_intent("what is the weather?")
-
-                assert result is True
 
 
 class TestModuleImports:

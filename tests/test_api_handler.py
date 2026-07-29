@@ -24,19 +24,6 @@ class TestBuildApiConfig:
         assert "system_instruction" in result
         assert "max_tokens" in result
 
-    def test_build_api_config_with_search(self):
-        """Test build_api_config with search enabled."""
-        from cogs.ai_core.api.api_handler import build_api_config
-
-        chat_data = {
-            "system_instruction": "Test instruction",
-            "thinking_enabled": False,
-        }
-
-        result = build_api_config(chat_data, use_search=True)
-
-        assert "system_instruction" in result
-
     def test_build_api_config_max_tokens(self):
         """Test max_tokens is properly configured."""
         from cogs.ai_core.api.api_handler import build_api_config
@@ -69,78 +56,6 @@ class TestBuildApiConfig:
         assert result is not None
 
 
-class TestDetectSearchIntent:
-    """Tests for detect_search_intent function."""
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent_returns_bool(self):
-        """Test detect_search_intent returns boolean."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        mock_client = MagicMock()
-        mock_block = MagicMock()
-        mock_block.type = "text"
-        mock_block.text = "NO_SEARCH"
-        mock_response = MagicMock()
-        mock_response.content = [mock_block]
-
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-
-        result = await detect_search_intent(mock_client, "claude-opus-4-7", "Tell me a joke")
-
-        assert isinstance(result, bool)
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent_search_needed(self):
-        """Test detect_search_intent when search is needed."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        mock_client = MagicMock()
-        mock_block = MagicMock()
-        mock_block.type = "text"
-        mock_block.text = "SEARCH"
-        mock_response = MagicMock()
-        mock_response.content = [mock_block]
-
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-
-        result = await detect_search_intent(
-            mock_client, "claude-opus-4-7", "What is the latest news?"
-        )
-
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent_no_search(self):
-        """Test detect_search_intent when no search needed."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        mock_client = MagicMock()
-        mock_block = MagicMock()
-        mock_block.type = "text"
-        mock_block.text = "NO_SEARCH"
-        mock_response = MagicMock()
-        mock_response.content = [mock_block]
-
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-
-        result = await detect_search_intent(mock_client, "claude-opus-4-7", "Tell me a story")
-
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent_error_returns_false(self):
-        """Test detect_search_intent returns False on error."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(side_effect=ValueError("API Error"))
-
-        result = await detect_search_intent(mock_client, "claude-opus-4-7", "Test message")
-
-        assert result is False
-
-
 class TestApiHandlerImports:
     """Tests for api_handler module imports."""
 
@@ -149,12 +64,6 @@ class TestApiHandlerImports:
         from cogs.ai_core.api.api_handler import build_api_config
 
         assert callable(build_api_config)
-
-    def test_import_detect_search_intent(self):
-        """Test importing detect_search_intent."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        assert callable(detect_search_intent)
 
     def test_import_call_claude_api(self):
         """Test importing call_claude_api."""
@@ -178,13 +87,11 @@ class TestBackwardCompatibilityModule:
             build_api_config,
             call_claude_api,
             call_claude_api_streaming,
-            detect_search_intent,
         )
 
         assert callable(build_api_config)
         assert callable(call_claude_api)
         assert callable(call_claude_api_streaming)
-        assert callable(detect_search_intent)
 
 
 class TestBuildApiConfigFaustMode:
@@ -328,29 +235,6 @@ class TestBuildApiConfig:
         assert isinstance(result["max_tokens"], int)
         assert result["max_tokens"] > 0
 
-    def test_build_api_config_with_search(self):
-        """Test API config with search enabled."""
-        try:
-            from cogs.ai_core.api.api_handler import build_api_config
-        except ImportError:
-            pytest.skip("api_handler not available")
-            return
-
-        chat_data = {"system_instruction": "", "thinking_enabled": True}
-
-        result = build_api_config(chat_data, use_search=True)
-
-        # Claude has no built-in search tool; use_search only logs
-        assert "system_instruction" in result
-        # Thinking is off for this chat_data. On generations that think by
-        # default (Opus 5, Sonnet 5) "off" is an explicit disabled payload;
-        # on Opus 4.8 and earlier the key is simply absent. Compare against the
-        # capability helper so the assertion holds under either CLAUDE_MODEL.
-        from cogs.ai_core.data.constants import CLAUDE_MODEL
-        from cogs.ai_core.data.model_caps import thinking_off_config
-
-        assert result.get("thinking") == thinking_off_config(CLAUDE_MODEL)
-
     def test_build_api_config_default_thinking(self):
         """Test API config defaults to thinking enabled."""
         try:
@@ -365,36 +249,6 @@ class TestBuildApiConfig:
         build_api_config(chat_data)
 
         # Default behavior depends on mode
-
-
-class TestDetectSearchIntent:
-    """Tests for detect_search_intent function."""
-
-    async def test_detect_search_intent_basic(self):
-        """Test detect_search_intent function exists."""
-        try:
-            from cogs.ai_core.api.api_handler import detect_search_intent
-        except ImportError:
-            pytest.skip("api_handler not available")
-            return
-
-        assert callable(detect_search_intent)
-
-    async def test_detect_search_intent_error_handling(self):
-        """Test detect_search_intent handles errors gracefully."""
-        try:
-            from cogs.ai_core.api.api_handler import detect_search_intent
-        except ImportError:
-            pytest.skip("api_handler not available")
-            return
-
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(side_effect=ValueError("API Error"))
-
-        result = await detect_search_intent(mock_client, "claude-opus-4-7", "test message")
-
-        # Should return False on error
-        assert result is False
 
 
 class TestCircuitBreakerImport:
@@ -627,17 +481,6 @@ class TestBuildApiConfig:
         assert isinstance(config["max_tokens"], int)
         assert config["max_tokens"] > 0
 
-    def test_build_api_config_use_search(self):
-        """Test build_api_config with search enabled."""
-        from cogs.ai_core.api.api_handler import build_api_config
-
-        chat_data = {"system_instruction": "Test"}
-
-        config = build_api_config(chat_data, use_search=True)
-
-        # Claude has no built-in search tool; use_search only logs
-        assert "system_instruction" in config
-
     def test_build_api_config_with_guild_id(self):
         """Test build_api_config with guild_id."""
         from cogs.ai_core.api.api_handler import build_api_config
@@ -648,60 +491,6 @@ class TestBuildApiConfig:
 
         # Should still work with guild_id
         assert "system_instruction" in config
-
-
-class TestDetectSearchIntent:
-    """Tests for detect_search_intent function."""
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent_returns_false_on_error(self):
-        """Test detect_search_intent returns False on error."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(side_effect=ValueError("API Error"))
-
-        result = await detect_search_intent(mock_client, "claude-opus-4-7", "test")
-
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent_search(self):
-        """Test detect_search_intent returns True for SEARCH."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        mock_block = MagicMock()
-        mock_block.type = "text"
-        mock_block.text = "SEARCH"
-        mock_response = MagicMock()
-        mock_response.content = [mock_block]
-
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-
-        result = await detect_search_intent(
-            mock_client, "claude-opus-4-7", "What is today's weather?"
-        )
-
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent_no_search(self):
-        """Test detect_search_intent returns False for NO_SEARCH."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        mock_block = MagicMock()
-        mock_block.type = "text"
-        mock_block.text = "NO_SEARCH"
-        mock_response = MagicMock()
-        mock_response.content = [mock_block]
-
-        mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-
-        result = await detect_search_intent(mock_client, "claude-opus-4-7", "Hello!")
-
-        assert result is False
 
 
 class TestModuleImports:
@@ -724,12 +513,6 @@ class TestModuleImports:
         from cogs.ai_core.api.api_handler import call_claude_api_streaming
 
         assert call_claude_api_streaming is not None
-
-    def test_import_detect_search_intent(self):
-        """Test detect_search_intent can be imported."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        assert detect_search_intent is not None
 
 
 class TestCircuitBreakerAvailability:
@@ -886,20 +669,6 @@ class TestBuildApiConfig:
 
         assert "thinking" in config
 
-    def test_build_config_with_search(self):
-        """Test config with search enabled."""
-        from cogs.ai_core.api.api_handler import build_api_config
-
-        chat_data = {
-            "system_instruction": "Test",
-            "thinking_enabled": True,
-        }
-
-        config = build_api_config(chat_data, use_search=True)
-
-        # Claude doesn't have built-in search tools, search is handled via URL fetcher
-        assert "system_instruction" in config
-
     def test_build_config_default_instruction(self):
         """Test config with default system instruction."""
         from cogs.ai_core.api.api_handler import build_api_config
@@ -909,80 +678,6 @@ class TestBuildApiConfig:
         config = build_api_config(chat_data)
 
         assert config["system_instruction"] == ""
-
-
-class TestDetectSearchIntent:
-    """Tests for detect_search_intent function."""
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent_error(self):
-        """Test detect_search_intent handles errors."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        mock_client = MagicMock()
-        mock_client.messages = MagicMock()
-        mock_client.messages.create = AsyncMock(side_effect=ValueError("API error"))
-
-        result = await detect_search_intent(mock_client, "claude-opus-4-7", "test message")
-
-        # Should return False on error
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent_search_needed(self):
-        """Test detect_search_intent when search is needed."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        mock_block = MagicMock()
-        mock_block.type = "text"
-        mock_block.text = "SEARCH"
-
-        mock_response = MagicMock()
-        mock_response.content = [mock_block]
-
-        mock_client = MagicMock()
-        mock_client.messages = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-
-        result = await detect_search_intent(mock_client, "claude-opus-4-7", "what is the weather?")
-
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent_no_search(self):
-        """Test detect_search_intent when search not needed."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        mock_block = MagicMock()
-        mock_block.type = "text"
-        mock_block.text = "NO_SEARCH"
-
-        mock_response = MagicMock()
-        mock_response.content = [mock_block]
-
-        mock_client = MagicMock()
-        mock_client.messages = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-
-        result = await detect_search_intent(mock_client, "claude-opus-4-7", "hello")
-
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_detect_search_intent_empty_response(self):
-        """Test detect_search_intent with empty response."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        mock_response = MagicMock()
-        mock_response.content = []
-
-        mock_client = MagicMock()
-        mock_client.messages = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
-
-        result = await detect_search_intent(mock_client, "claude-opus-4-7", "test")
-
-        assert result is False
 
 
 class TestClaudeConfig:
@@ -1037,12 +732,6 @@ class TestModuleImports:
 
         assert callable(build_api_config)
 
-    def test_import_detect_search_intent(self):
-        """Test importing detect_search_intent."""
-        from cogs.ai_core.api.api_handler import detect_search_intent
-
-        assert callable(detect_search_intent)
-
     def test_import_call_claude_api_streaming(self):
         """Test importing call_claude_api_streaming."""
         from cogs.ai_core.api.api_handler import call_claude_api_streaming
@@ -1060,187 +749,6 @@ class TestFallbackFunctions:
         # Test it works
         is_silent_block("any response")
         # Should return False when guardrails unavailable
-
-
-class TestClassifySearchIntent:
-    """Tests for classify_search_intent pre-filter."""
-
-    def test_import(self):
-        """Test importing classify_search_intent."""
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert callable(classify_search_intent)
-
-    # --- Empty / trivial inputs ---
-
-    def test_empty_string_returns_false(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("") is False
-
-    def test_whitespace_only_returns_false(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("   ") is False
-
-    # --- Layer 1: Search patterns ---
-
-    def test_factual_question_english(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("What is the capital of France?") is True
-
-    def test_factual_question_who(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("Who is the president of the United States?") is True
-
-    def test_factual_question_how_much(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("How much does a Tesla Model 3 cost?") is True
-
-    def test_factual_question_thai(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("กรุงเทพมีประชากรเท่าไหร่") is True
-
-    def test_time_sensitive_latest(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        result = classify_search_intent("What are the latest patch notes for Genshin Impact?")
-        assert result is True
-
-    def test_time_sensitive_thai(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        result = classify_search_intent("ข่าวล่าสุดเกี่ยวกับ AI คืออะไร")
-        assert result is True
-
-    def test_explicit_search_request(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("Can you search for Python documentation on asyncio?") is True
-
-    def test_explicit_search_thai(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("ค้นหาราคา iPhone 16 ให้หน่อย") is True
-
-    def test_lookup_comparison(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        result = classify_search_intent("Compare RTX 4090 vs RTX 5090 benchmark results")
-        assert result is True
-
-    def test_definition_question(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        result = classify_search_intent("What does SSRF mean in cybersecurity?")
-        assert result is True
-
-    # --- Layer 2: No-search patterns ---
-
-    def test_roleplay_action(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("*walks into the room and smiles*") is False
-
-    def test_greeting_hello(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("Hello!") is False
-
-    def test_greeting_thai(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("สวัสดี") is False
-
-    def test_emotion_lol(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("lol") is False
-
-    def test_emotion_555(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("555555") is False
-
-    def test_creative_write_story(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("Write me a story about a dragon") is False
-
-    def test_creative_thai(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("เขียนบทกวีให้หน่อย") is False
-
-    def test_opinion_question(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("Do you think AI will take over the world?") is False
-
-    def test_short_casual(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("ok cool") is False
-
-    def test_short_thai_casual(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("โอเค") is False
-
-    # --- Layer 3: Borderline / uncertain ---
-
-    def test_ambiguous_returns_none(self):
-        """Messages that could go either way should return None for AI fallback."""
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        # A medium-length message with no strong signals either way
-        result = classify_search_intent("Tell me about the history of this place")
-        assert result is None or isinstance(result, bool)
-
-    def test_search_signal_words_boost_score(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        # Message with multiple search signal words
-        result = classify_search_intent("What is the price and release date for this version?")
-        assert result is True
-
-    def test_no_search_signal_words_boost(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        # Message with no-search signal words
-        result = classify_search_intent("I feel happy and love chatting with you")
-        assert result is False
-
-    # --- Edge cases ---
-
-    def test_question_mark_alone(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        result = classify_search_intent("?")
-        # Short message, should be False or None
-        assert result is not True  # Should not trigger search
-
-    def test_long_roleplay_with_asterisks(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        result = classify_search_intent(
-            "*She looked up at the stars and whispered softly, remembering the ancient tales her grandmother used to tell*"
-        )
-        assert result is False
-
-    def test_goodbye(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("bye!") is False
-
-    def test_good_morning(self):
-        from cogs.ai_core.api.api_handler import classify_search_intent
-
-        assert classify_search_intent("Good morning!") is False
 
 
 class TestStreamingPlaceholderSendBreaker:
