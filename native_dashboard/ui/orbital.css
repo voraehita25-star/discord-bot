@@ -1953,6 +1953,19 @@ html[data-theme="light"] .message-avatar {
 .btn-send .ic, .send-icon .ic { color: #2b1226; }
 html[data-theme="light"] .btn-send .ic,
 html[data-theme="light"] .send-icon .ic { color: #fff; }
+/* …and the plate that #fff glyph is supposed to sit on. `.btn-send` above is
+   (0,1,0); styles.css's `html[data-theme="light"] .btn` is (0,2,0), so on dawn
+   the GENERIC button surface outranked the CTA and repainted it --surface-2 —
+   near-white paper — while the (0,2,1) rule above still painted the glyph #fff.
+   White on #f9f0f3 is 1.05:1: the app's primary action was an empty rounded
+   square with a ghost of a paper plane in it. Same specificity trap the
+   `.btn.btn:disabled` block below documents, just on the REST state, and the
+   same fix `.btn-primary` already carries (styles.css "unify the primary CTA").
+   Kept at (0,2,0) on purpose so the (0,4,1) disabled treatment still wins. */
+html[data-theme="light"] .btn-send {
+    background: var(--brand-grad);
+    border: none;
+}
 /* Disabled send — the page's primary action must stay VISIBLE while it is
    unavailable, not just dimmed out of existence. The base sheet drops the whole
    button to opacity .5, which composites dawn's deep-rose --brand-grad plate

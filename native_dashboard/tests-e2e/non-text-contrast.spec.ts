@@ -108,6 +108,21 @@ async function boot(page: Page, theme: 'dark' | 'light'): Promise<void> {
 }
 
 /**
+ * Show the chat composer. The mock reports the bot as running, but the
+ * transcript only mounts once a conversation is open, so the overlay and the
+ * empty state are dismissed directly.
+ */
+async function openComposer(page: Page): Promise<void> {
+    await page.evaluate(() => {
+        (window as unknown as { showPage?: (s: string) => void }).showPage?.('chat');
+        document.getElementById('chat-not-running-overlay')?.classList.remove('visible');
+        document.getElementById('chat-empty')?.classList.add('hidden');
+        const c = document.getElementById('chat-container');
+        if (c) { c.classList.remove('hidden'); (c as HTMLElement).style.display = 'flex'; }
+    });
+}
+
+/**
  * Every control whose ink is hardcoded over an accent fill, with the AA floor
  * its content type owes: 4.5 for a word, 3.0 for a bare glyph (1.4.11).
  *
@@ -236,17 +251,35 @@ for (const theme of ['dark', 'light'] as const) {
     // -----------------------------------------------------------------------
     test(`the disabled send button still shows its glyph — ${theme}`, async ({ page }) => {
         await boot(page, theme);
+        await openComposer(page);
         await page.evaluate(() => {
-            (window as unknown as { showPage?: (s: string) => void }).showPage?.('chat');
-            document.getElementById('chat-not-running-overlay')?.classList.remove('visible');
-            document.getElementById('chat-empty')?.classList.add('hidden');
-            const c = document.getElementById('chat-container');
-            if (c) { c.classList.remove('hidden'); (c as HTMLElement).style.display = 'flex'; }
             (document.getElementById('btn-send') as HTMLButtonElement).disabled = true;
         });
         await page.waitForTimeout(400);
         const r = await inkRatio(page, '#btn-send');
         expect(r.ratio, `disabled send glyph ${r.ink} on ${r.plate} = ${r.ratio.toFixed(2)}:1`)
+            .toBeGreaterThanOrEqual(3);
+    });
+
+    // -----------------------------------------------------------------------
+    // …and the state it is in for the other 99% of its life. The case above
+    // forces `disabled = true` before measuring, so the REST state — the one
+    // the user actually looks at — was never sampled, and it was the broken
+    // one: `.btn-send` sets the brand plate at (0,1,0), but styles.css's
+    // `html[data-theme="light"] .btn` is (0,2,0), so on dawn the generic button
+    // surface outranked the CTA and repainted it near-white --surface-2, while
+    // `html[data-theme="light"] .btn-send .ic` (0,2,1) still painted the glyph
+    // #fff. 1.05:1 — the app's primary action was a blank rounded square.
+    // -----------------------------------------------------------------------
+    test(`the enabled send button shows its glyph — ${theme}`, async ({ page }) => {
+        await boot(page, theme);
+        await openComposer(page);
+        await page.evaluate(() => {
+            (document.getElementById('btn-send') as HTMLButtonElement).disabled = false;
+        });
+        await page.waitForTimeout(400);
+        const r = await inkRatio(page, '#btn-send');
+        expect(r.ratio, `enabled send glyph ${r.ink} on ${r.plate} = ${r.ratio.toFixed(2)}:1`)
             .toBeGreaterThanOrEqual(3);
     });
 }

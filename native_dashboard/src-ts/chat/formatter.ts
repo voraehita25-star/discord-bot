@@ -225,6 +225,54 @@ export function formatStreamingMessage(content: string): string {
     return formatMessageUncached(content);
 }
 
+/**
+ * The paragraph spacer emitted for a blank line between two text paragraphs.
+ * A `<br>` ends the first line; the 0.5em div is the gap between them.
+ */
+const PARA_BREAK = '<br><div class="paragraph-break"></div>';
+
+/**
+ * Block-level markup this formatter emits, as an alternation of OPENING tags.
+ * `.paragraph-break` is deliberately absent — it is the inline paragraph
+ * spacer being cleaned up here, not a content block.
+ */
+const BLOCK_OPEN =
+    '(?:<(?:ul|ol|blockquote|pre|table|hr|h[1-6])\\b' +
+    '|<div class="(?:code-block-wrapper|md-table-wrap|math-block)")';
+
+/** The same set, as CLOSING tags (`</div>` covers the three wrapper divs). */
+const BLOCK_CLOSE = '(?:</(?:ul|ol|blockquote|pre|table|h[1-6])>|</div>|<hr\\b[^>]*>)';
+
+/**
+ * Drop the inline line-spacing that ends up welded to a block element.
+ *
+ * The `\n{2,}` → `<br><div class="paragraph-break">` and `\n` → `<br>` passes
+ * both run BEFORE the code/list/table placeholders are restored, so they see a
+ * block as if it were a line of text and pad it like one. Every code block,
+ * list, quote, table, heading and rule therefore shipped wrapped in dead space:
+ * a `<br>` is a full line-height, stacked on the 0.5em spacer, stacked on the
+ * block's own margin — a ~50px hole above AND below every block in a reply.
+ *
+ * Blocks already break the line and already carry their margins (`8px 0` for
+ * code/quote/table, `12px 0 6px` for headings), so the inline spacing that
+ * touches them contributes nothing but the hole. Spacing between two text
+ * paragraphs is untouched.
+ *
+ * Runs before DOMPurify, on markup this module generated itself. A stray match
+ * inside user text can only delete a `<br>`, never change what is sanitized.
+ */
+function tightenBlockSpacing(html: string): string {
+    // Fold each paragraph gap into one sentinel so the `<br>` that belongs to
+    // it is never mistaken for a stray one standing next to a block.
+    let out = html.split(PARA_BREAK).join('\x05');
+    // Spacing immediately BEFORE a block…
+    out = out.replace(new RegExp(`(?:<br>|\x05)+(?=${BLOCK_OPEN})`, 'g'), '');
+    // …and immediately AFTER one.
+    out = out.replace(new RegExp(`(${BLOCK_CLOSE})(?:<br>|\x05)+`, 'g'), '$1');
+    // Whatever survives is a genuine paragraph gap between two runs of text.
+    return out.split('\x05').join(PARA_BREAK);
+}
+
 export function formatMessage(content: string): string {
     const cached = formatCache.get(content);
     if (cached !== undefined) {
@@ -553,6 +601,8 @@ function formatMessageUncached(content: string): string {
         /\x04ICODE_(\d+)\x04/g,
         (_match, idx) => inlineCodeBlocks[parseInt(idx)] || '',
     );
+
+    html = tightenBlockSpacing(html);
 
     // Sanitize final HTML output with DOMPurify (whitelist approach). DOMPurify
     // is bundled locally in vendor/; if it fails to load we return '' rather

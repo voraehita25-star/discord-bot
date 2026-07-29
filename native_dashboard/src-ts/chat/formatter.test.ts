@@ -341,6 +341,55 @@ describe('formatMessage — newline handling', () => {
     });
 });
 
+/**
+ * The `\n` → `<br>` passes run BEFORE the code/list/table placeholders are
+ * restored, so they used to pad every block as if it were a line of text: a
+ * `<br>` (a full line-height) stacked on the 0.5em paragraph spacer stacked on
+ * the block's own margin left a ~50px hole above AND below every code block,
+ * list, quote, table, heading and rule in a reply. tightenBlockSpacing() drops
+ * the inline spacing that touches a block; the block's own margin is the gap.
+ */
+describe('formatMessage — spacing around block elements', () => {
+    const BLOCKS: ReadonlyArray<readonly [string, string, string]> = [
+        ['fenced code', '```js\nx=1\n```', '<div class="code-block-wrapper">'],
+        ['unordered list', '- a\n- b', '<ul>'],
+        ['ordered list', '1. a\n2. b', '<ol>'],
+        ['blockquote', '> quoted', '<blockquote>'],
+        ['table', '| A | B |\n| --- | --- |\n| 1 | 2 |', '<div class="md-table-wrap">'],
+        ['heading', '# Title', '<h1 class="md-heading">'],
+        ['horizontal rule', '---', '<hr class="md-hr">'],
+    ];
+
+    for (const [name, md, openTag] of BLOCKS) {
+        it(`leaves no <br> or spacer welded to a ${name}`, () => {
+            const html = formatMessage(`before\n\n${md}\n\nafter`);
+            expect(html).toContain(openTag);
+            // Nothing inline may sit between the surrounding text and the block.
+            expect(html).not.toMatch(/<br><div class="paragraph-break"><\/div>\s*</);
+            expect(html).not.toMatch(/before(?:<br>|<div class="paragraph-break">)/);
+            expect(html).not.toMatch(/(?:<br>|<\/div>)\s*<br>\s*after/);
+        });
+    }
+
+    it('drops the <br> between two consecutive headings', () => {
+        expect(formatMessage('# H1\n## H2')).toBe(
+            '<h1 class="md-heading">H1</h1><h2 class="md-heading">H2</h2>',
+        );
+    });
+
+    it('drops the <br> between a rule and the text after it', () => {
+        expect(formatMessage('---\nafter')).toBe('<hr class="md-hr">after');
+    });
+
+    it('still spaces two plain text paragraphs', () => {
+        expect(formatMessage('one\n\ntwo')).toContain('<br><div class="paragraph-break"></div>');
+    });
+
+    it('still breaks a single newline inside a paragraph', () => {
+        expect(formatMessage('line 1\nline 2')).toContain('line 1<br>line 2');
+    });
+});
+
 describe('formatMessage — blockquotes', () => {
     it('wraps > prefixed lines in <blockquote>', () => {
         const html = formatMessage('> quoted line');

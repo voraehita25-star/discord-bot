@@ -4,7 +4,7 @@
 > **Version:** 3.5.0
 > **Python Version:** 3.14+
 > **Framework:** discord.py 2.x
-> **Total Files:** 124 Python test files (5,338 tests) + 21 vitest files (613 frontend tests) + 13 Playwright spec files (159 e2e + a11y + visual regression tests)
+> **Total Files:** 124 Python test files (5,338 tests) + 21 vitest files (624 frontend tests) + 13 Playwright spec files (161 e2e + a11y + visual regression tests)
 > **Native Extensions:** Rust (RAG, Media) + Go (URL Fetcher, Health API)
 > **Code Quality:** All imports verified ✅ | All tests passing ✅ | Full-project audit complete ✅ | Memory & Shutdown managers ✅ | Security hardening ✅ | Test suite consolidated ✅ | Dead code removed ✅ | CSP hardened ✅ | Anthropic prompt caching ✅ | chat-manager.ts split into 11 focused modules under `src-ts/chat/` ✅ | Headless Playwright + axe-core a11y + visual regression in CI ✅
 
@@ -248,8 +248,8 @@ BOT/
 │   │       ├── types.ts, ws-client.ts, formatter.ts, message-template.ts,
 │   │       ├── context-window.ts, conversation-list.ts, conversation-modals.ts,
 │   │       ├── search.ts, prism.ts, image-attach.ts, document-attach.ts, export-picker.ts
-│   │       └── *.test.ts     # 21 vitest files total (613 tests)
-│   ├── tests-e2e/            # Playwright (Chromium) — headless against the static UI (159 tests, incl. the history page)
+│   │       └── *.test.ts     # 21 vitest files total (624 tests)
+│   ├── tests-e2e/            # Playwright (Chromium) — headless against the static UI (161 tests, incl. the history page)
 │   │   ├── _fixtures/mock-tauri.ts      # Tauri IPC shim + WS mock + page-error tracker
 │   │   ├── dashboard-smoke.spec.ts      # 18 smoke tests covering UI fixes
 │   │   ├── interactions.spec.ts         # 20 user-flow tests
@@ -1142,4 +1142,4 @@ async def mycommand(self, ctx):
 
 ---
 
-<!-- Documentation last updated: June 15, 2026 - Version 3.5.0 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 5,338 Python tests + 613 frontend vitest tests + 159 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) | Dashboard AI History editor (browse/edit/delete/undo + live-session sync) + Claude CLI overhaul: delta-on-resume, session self-heal on errors, transcript cleanup, CLI_PROMPT_MAX_CHARS over-limit choice flow (2026-06-12) -->
+<!-- Documentation last updated: June 15, 2026 - Version 3.5.0 | Full-project audit complete (196+ issues fixed across Python, Rust, Go, TypeScript, HTML/CSS) | Security hardening: SSRF, auth, permission allowlists, mention sanitization, AllowedMentions, path traversal guard (incl. RAG engine), SQL injection guard, sensitive data filter, ISO timestamp validation | Reliability: asyncio.shield, RLock, atomic persistence, lazy Event/Lock, per-guild queue locks, unified circuit breaker locks, cog reload task cleanup, bot restart cleanup | Memory Manager, Shutdown Manager, Structured Logging | Error Recovery with smart backoff | Database indexes optimized | 5,338 Python tests + 624 frontend vitest tests + 161 Playwright e2e/a11y/visual tests | CI/CD with Codecov & Dependabot | chat-manager.ts split into 11 focused modules (2026-04) | AI Round 1+2 audit: CLI memory parity with API, cache invalidation hooks, tz-aware datetimes, full-content dedup, code-fence-aware splitting (2026-04-27) | Dashboard AI History editor (browse/edit/delete/undo + live-session sync) + Claude CLI overhaul: delta-on-resume, session self-heal on errors, transcript cleanup, CLI_PROMPT_MAX_CHARS over-limit choice flow (2026-06-12) -->

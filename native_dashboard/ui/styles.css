@@ -3128,7 +3128,9 @@ mark.chat-search-hit.active {
 /* Lists in messages */
 .message-content ul,
 .message-content ol {
-    margin: 4px 0;
+    /* 8px matches code blocks, quotes and tables. Was 4px, from when a stray
+       <br> either side of every list padded the gap out to a full line. */
+    margin: 8px 0;
     padding-left: 22px;
 }
 
