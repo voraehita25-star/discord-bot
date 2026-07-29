@@ -2654,6 +2654,57 @@ html[data-theme="light"] .nav-items::after { opacity: 0.13; }
 }
 
 /* ============================================================================
+   BUBBLES HUG THEIR CONTENT
+   ----------------------------------------------------------------------------
+   .message-content is a plain block inside a flex:1 wrapper, so every bubble
+   was drawn at the FULL width of the row no matter what was in it: "สวัสดี"
+   got the same 630px slab as a 40-line answer, and the two-word replies that
+   make up most of a conversation each carried a few hundred px of empty tinted
+   surface. A bubble that never changes size stops reading as a bubble.
+
+   fit-content is the whole mechanism: it resolves to
+   min(max-content, max(min-content, available)), so a short message takes its
+   own width and a long one still fills the row and wraps exactly as before —
+   no max-width guesswork, no measuring in JS. A <pre>, a table or a wide image
+   contributes its own max-content, so code blocks keep the full row too.
+
+   Three things have to follow the bubble or they read as belonging to nothing:
+   the hairline action row underneath it, and (for a user message) the side it
+   is anchored to. And the STREAMING bubble is deliberately exempt — chunks
+   arrive many times a second, and a fit-content box would step wider on every
+   one of them until the first line filled. It holds full width until the
+   `streaming` class is dropped, at which point the message is re-rendered
+   anyway, so the handover costs nothing.
+   ============================================================================ */
+.message-content {
+    width: fit-content;
+    max-width: 100%;
+}
+.message-actions {
+    width: fit-content;
+    max-width: 100%;
+    /* The row cannot shrink below its six buttons; wrap rather than spill out
+       of a bubble that is now allowed to be narrower than they are. */
+    flex-wrap: wrap;
+}
+/* The other blocks in the wrapper are part of the same utterance and have to
+   size the same way, or a two-word answer ends up under a full-row "Thought
+   Process" bar and a full-row strip of attachment chips. */
+.thinking-container,
+.message-images,
+.message-documents {
+    width: fit-content;
+    max-width: 100%;
+}
+.chat-message.user .message-content,
+.chat-message.user .message-actions,
+.chat-message.user .message-images,
+.chat-message.user .message-documents {
+    margin-left: auto;
+}
+.chat-message.streaming .message-content { width: 100%; }
+
+/* ============================================================================
    LOG VIEWER — actually fill the window.
    v4 added `#page-logs.active { display:flex }` + `.log-container { flex:1 }`
    to replace the base sheet's calc(100vh - 220px), but the fill never

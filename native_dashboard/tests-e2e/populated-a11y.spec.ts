@@ -419,6 +419,116 @@ test('chat: a user message caption sits with its own avatar, not across the row'
     ).toBeLessThanOrEqual(12);
 });
 
+// ---------------------------------------------------------------------------
+// Bubbles size to what is in them. .message-content is a plain block in a flex:1
+// wrapper, so every bubble used to be drawn at the full width of the row — "ok"
+// got the same slab as a 40-line answer. fit-content fixes it, but only if all
+// four of these hold at once, and each one is a different failure:
+//   * a short bubble that did not shrink  -> the bug is back
+//   * a long bubble that did not fill     -> answers wrap in a narrow column
+//   * a bubble that overflows itself      -> fit-content beat max-width
+//   * an action row that lost its bubble  -> a toolbar floating in dead space
+// Plus the streaming exemption: chunks land many times a second and a
+// fit-content box would step wider on every one of them.
+// ---------------------------------------------------------------------------
+test('chat: message bubbles size to their content, and keep their action row', async ({ page }) => {
+    await boot(page, NORMAL);
+    await show(page, 'chat');
+    const LONG = 'A genuinely long assistant answer whose max-content width runs '
+        + 'far past anything the row can give it, so it must still fill and wrap. ';
+    await page.evaluate(({ long }) => {
+        document.getElementById('chat-not-running-overlay')?.classList.remove('visible');
+        document.getElementById('chat-empty')?.classList.add('hidden');
+        const c = document.getElementById('chat-container');
+        if (c) { c.classList.remove('hidden'); (c as HTMLElement).style.display = 'flex'; }
+        const host = document.getElementById('chat-messages')!;
+        host.replaceChildren();
+        const rows: Array<[string, string, string]> = [
+            ['user', 'short', 'ok'],
+            ['assistant', 'short', 'Yes.'],
+            ['user', 'long', long.repeat(3)],
+            ['assistant', 'long', long.repeat(3)],
+            ['assistant streaming', 'streaming', 'Short answer.'],
+        ];
+        for (const [cls, kind, text] of rows) {
+            const msg = document.createElement('div');
+            msg.className = `chat-message ${cls}`;
+            msg.dataset.kind = `${cls.split(' ')[0]}-${kind}`;
+            const avatar = document.createElement('div');
+            avatar.className = 'message-avatar';
+            const wrapper = document.createElement('div');
+            wrapper.className = 'message-wrapper';
+            const body = document.createElement('div');
+            body.className = 'message-content';
+            body.textContent = text;
+            const actions = document.createElement('div');
+            actions.className = 'message-actions';
+            for (const label of ['Copy', 'Pin', 'Edit', 'Delete']) {
+                const b = document.createElement('button');
+                b.className = 'copy-message-btn';
+                b.textContent = label;
+                actions.appendChild(b);
+            }
+            wrapper.append(body, actions);
+            msg.append(avatar, wrapper);
+            host.appendChild(msg);
+        }
+    }, { long: LONG });
+    await page.waitForTimeout(300);
+
+    const rows = await page.evaluate(() =>
+        Array.from(document.querySelectorAll<HTMLElement>('#chat-messages .chat-message')).map((m) => {
+            const wrapper = m.querySelector<HTMLElement>('.message-wrapper')!;
+            const body = m.querySelector<HTMLElement>('.message-content')!;
+            const actions = m.querySelector<HTMLElement>('.message-actions')!;
+            const wb = wrapper.getBoundingClientRect();
+            const bb = body.getBoundingClientRect();
+            const ab = actions.getBoundingClientRect();
+            const isUser = m.classList.contains('user');
+            return {
+                kind: m.dataset.kind!,
+                wrapperW: Math.round(wb.width),
+                bubbleW: Math.round(bb.width),
+                // Distance between the action row and the bubble on the side the
+                // avatar is on — the edge they are both anchored to.
+                actionsOffset: Math.round(isUser
+                    ? Math.abs(ab.right - bb.right)
+                    : Math.abs(ab.left - bb.left)),
+                selfOverflow: body.scrollWidth - body.clientWidth,
+            };
+        }));
+    const by = (k: string) => rows.find((r) => r.kind === k)!;
+
+    for (const k of ['user-short', 'assistant-short']) {
+        const r = by(k);
+        expect(r.wrapperW, `${k}: wrapper too narrow to judge`).toBeGreaterThan(120);
+        expect(
+            r.bubbleW,
+            `${k} bubble is ${r.bubbleW}px in a ${r.wrapperW}px wrapper — it did not shrink`,
+        ).toBeLessThan(r.wrapperW * 0.6);
+    }
+    for (const k of ['user-long', 'assistant-long']) {
+        const r = by(k);
+        expect(
+            r.bubbleW,
+            `${k} bubble is ${r.bubbleW}px in a ${r.wrapperW}px wrapper — it stopped filling`,
+        ).toBeGreaterThanOrEqual(r.wrapperW - 2);
+    }
+    // A live response holds full width for the whole stream.
+    const s = by('assistant-streaming');
+    expect(
+        s.bubbleW,
+        `a streaming bubble must not resize per chunk (${s.bubbleW}px of ${s.wrapperW}px)`,
+    ).toBeGreaterThanOrEqual(s.wrapperW - 2);
+
+    for (const r of rows) {
+        expect(r.selfOverflow, `${r.kind} bubble overflows itself by ${r.selfOverflow}px`)
+            .toBeLessThanOrEqual(2);
+        expect(r.actionsOffset, `${r.kind} action row sits ${r.actionsOffset}px off its bubble`)
+            .toBeLessThanOrEqual(2);
+    }
+});
+
 test('chat: the composer stays pinned at 800x600 with a conversation open', async ({ page }) => {
     await boot(page, MIN_WIN);
     await show(page, 'chat');
