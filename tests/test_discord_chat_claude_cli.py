@@ -1853,3 +1853,49 @@ class TestResetEpochGuardsInFlightTurn:
 
         assert text == "hello"
         assert _CHANNEL_SESSIONS[702] == "fresh-session-ghi"
+
+
+class TestPerTurnWebToolGate:
+    """Web tools are gated on the turn's ``use_search`` verdict, not just env.
+
+    The Discord path used to hard-wire ``enable_web=_CLI_WEB_TOOLS_ENABLED``,
+    so the three-tier intent classifier in ``logic.process_chat`` computed a
+    verdict that nothing ever read. The dashboard CLI handler already gated
+    its own ``use_search`` this way; these pin the Discord side to match.
+    """
+
+    def test_search_turn_keeps_web_tools(self):
+        from cogs.ai_core.api import discord_chat_claude_cli as mod
+
+        with patch.object(mod, "_CLI_WEB_TOOLS_ENABLED", True):
+            assert mod._turn_web_enabled({"use_search": True}) is True
+
+    def test_no_search_turn_drops_web_tools(self):
+        from cogs.ai_core.api import discord_chat_claude_cli as mod
+
+        # An ordinary roleplay / chit-chat message classifies as no_search, so
+        # it carries neither WebSearch nor WebFetch.
+        with patch.object(mod, "_CLI_WEB_TOOLS_ENABLED", True):
+            assert mod._turn_web_enabled({"use_search": False}) is False
+
+    def test_missing_key_fails_open(self):
+        from cogs.ai_core.api import discord_chat_claude_cli as mod
+
+        # A caller predating this wiring keeps the tools it used to get —
+        # same default-True rationale as the dashboard handler.
+        with patch.object(mod, "_CLI_WEB_TOOLS_ENABLED", True):
+            assert mod._turn_web_enabled({}) is True
+
+    def test_operator_flag_still_wins(self):
+        from cogs.ai_core.api import discord_chat_claude_cli as mod
+
+        # The env flag says what is PERMITTED; a turn cannot ask its way past it.
+        with patch.object(mod, "_CLI_WEB_TOOLS_ENABLED", False):
+            assert mod._turn_web_enabled({"use_search": True}) is False
+
+    def test_build_api_config_carries_the_verdict(self):
+        from cogs.ai_core.api.api_handler import build_api_config
+
+        chat_data = {"system_instruction": "Test", "thinking_enabled": False}
+        assert build_api_config(chat_data, use_search=True)["use_search"] is True
+        assert build_api_config(chat_data, use_search=False)["use_search"] is False

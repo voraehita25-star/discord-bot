@@ -394,14 +394,21 @@ class BotMetrics:
         """Record a search intent classification.
 
         Args:
-            method: 'prefilter', 'ai', or 'game_keyword'
+            method: 'prefilter', 'ai', 'game_keyword', or 'uncertain_default'
+                ('uncertain_default' = the pre-filter was UNCERTAIN and no
+                classifier was available, so the turn failed open — see
+                logic.process_chat)
             result: 'search' or 'no_search'
         """
         if self.enabled:
             # Clamp to known values to bound Prometheus label cardinality, like
             # the sibling metric methods (a future dynamic caller can't explode
             # the series count).
-            safe_method = method if method in ("prefilter", "ai", "game_keyword") else "other"
+            safe_method = (
+                method
+                if method in ("prefilter", "ai", "game_keyword", "uncertain_default")
+                else "other"
+            )
             safe_result = result if result in ("search", "no_search") else "other"
             self.search_intent_total.labels(method=safe_method, result=safe_result).inc()
 

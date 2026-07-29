@@ -114,7 +114,10 @@ def build_api_config(
     Args:
         chat_data: Chat configuration data containing system_instruction and thinking_enabled.
         guild_id: Optional guild ID.
-        use_search: If True, indicates search was requested (logged only, Claude has no built-in search).
+        use_search: Whether this turn should be allowed to search the web.
+            Returned in ``config_params`` for the CLI backends, which use it to
+            decide whether to allow-list WebSearch/WebFetch for the turn. The
+            SDK paths ignore it — they wire no search tool.
 
     Returns:
         Dict of configuration parameters for Claude API.
@@ -129,6 +132,11 @@ def build_api_config(
     config_params: dict[str, Any] = {
         "system_instruction": system_instruction,
         "max_tokens": CLAUDE_MAX_TOKENS,
+        # The per-turn web-search decision, carried so the CLI backends can
+        # gate this turn's WebSearch/WebFetch on it — the same thing the
+        # dashboard CLI handler already does with its own ``use_search``.
+        # Inert for the SDK paths: they read only the keys they know.
+        "use_search": use_search,
     }
 
     # Enable adaptive thinking for RP/Faust modes when thinking is enabled.
@@ -149,7 +157,10 @@ def build_api_config(
         logger.info("💬 Standard Mode (no extended thinking)")
 
     if use_search:
-        logger.info("🔍 Search was requested (content added via URL fetcher)")
+        # Says what the flag now BUYS, per backend — the old wording claimed
+        # "content added via URL fetcher" on every path, which was never what
+        # this flag controlled.
+        logger.info("🔍 Search allowed this turn (CLI: web tools on; SDK: no search tool wired)")
 
     return config_params
 

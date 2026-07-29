@@ -1915,6 +1915,21 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 result_label.upper(),
                             )
                             metrics.increment_search_intent("prefilter", result_label)
+                        elif self.cli_mode:
+                            # Uncertain AND no classifier: the AI detector needs
+                            # the SDK client, which CLI mode never builds, so
+                            # ``_detect_search_intent`` would just answer False.
+                            # That answer is no longer inert — ``use_search`` now
+                            # gates whether the CLI turn gets web tools at all —
+                            # and "couldn't decide" must not silently withhold a
+                            # capability the turn would otherwise have had. Fail
+                            # OPEN, matching the dashboard CLI handler's
+                            # default-True rationale for the same value.
+                            use_search = True
+                            logger.info(
+                                "🔎 Pre-filter: UNCERTAIN, defaulting to SEARCH (CLI backend)"
+                            )
+                            metrics.increment_search_intent("uncertain_default", "search")
                         else:
                             # Uncertain — fall through to AI-based detection
                             logger.info(
