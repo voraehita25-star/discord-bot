@@ -1180,3 +1180,56 @@ test('every settings card heading covers the rows beneath it', async ({ page }) 
     );
     expect(headings).not.toContain('Refresh Settings');
 });
+
+// ---------------------------------------------------------------------------
+// One component, one design — whichever theme is active.
+// ---------------------------------------------------------------------------
+// The telemetry strip is drawn as CELLS in a divided grid: `.stats-grid` paints
+// the frame and the 1px gaps, and orbital.css's "TELEMETRY TILES" rule strips
+// each tile back to `background: var(--tile); border: 0; border-radius: 0;
+// box-shadow: none`. That rule is (0,1,0). styles.css carried `.stat-card` in
+// its `html[data-theme="light"] .stat-card, .control-card, …` card-chrome list
+// at (0,2,0), so on dawn — and ONLY on dawn — every tile also drew a rose
+// hairline on all four sides and an 8px drop shadow, inside a grid that already
+// draws the dividers itself. The strip read as five outlined boxes crammed
+// together in light and one quiet panel in dark.
+//
+// Nothing caught it because both themes passed contrast and axe independently;
+// no test compared them to each other. This does: the tile's chrome is theme-
+// independent by construction, so the two themes must agree on it exactly.
+test('the telemetry tiles wear the same chrome in both themes', async ({ page }) => {
+    const read = async (theme: 'dark' | 'light'): Promise<Record<string, string>> => {
+        await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+        await show(page, 'status');
+        await freezeMotion(page);
+        return page.evaluate((): Record<string, string> => {
+            const el = document.querySelector('#page-status .stat-card');
+            if (!el) return { MISSING: 'y' };
+            const cs = getComputedStyle(el);
+            return {
+                borderTopWidth: cs.borderTopWidth,
+                borderRightWidth: cs.borderRightWidth,
+                borderBottomWidth: cs.borderBottomWidth,
+                borderLeftWidth: cs.borderLeftWidth,
+                borderTopStyle: cs.borderTopStyle,
+                borderRadius: cs.borderTopLeftRadius,
+                boxShadow: cs.boxShadow,
+                backdropFilter: cs.backdropFilter,
+            };
+        });
+    };
+
+    await boot(page);
+    const dark = await read('dark');
+    const light = await read('light');
+
+    expect(dark.MISSING, 'the status tiles did not render').toBeUndefined();
+    // The fill is the one thing that SHOULD differ (--tile is per-theme); every
+    // frame property is structural and must match.
+    expect(light, 'light theme paints the telemetry tile differently from dark')
+        .toEqual(dark);
+    // …and the structure it must match is "no chrome at all": the grid owns it.
+    expect(dark.boxShadow, 'the tile grew a shadow back').toBe('none');
+    expect(dark.borderTopWidth, 'the tile grew a border back').toBe('0px');
+    expect(dark.borderRadius, 'the tile grew a corner radius back').toBe('0px');
+});

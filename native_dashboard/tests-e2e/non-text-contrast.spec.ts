@@ -283,3 +283,86 @@ for (const theme of ['dark', 'light'] as const) {
             .toBeGreaterThanOrEqual(3);
     });
 }
+
+// ---------------------------------------------------------------------------
+// Text selection is a STATE, and it has to look like one.
+// ---------------------------------------------------------------------------
+// `::selection` shipped as `background: var(--cyan-300)` with no `color` — a
+// 24/28% wash that measured 1.68:1 (night) and 1.62:1 (dawn) against the
+// surface it replaced. Leaving the ink free is what capped it there: with
+// selected text keeping its own colour, night could not push the wash past
+// ~2.05:1 before muted text ON the highlight fell under AA. Setting the ink
+// (the same brand plate + ink pairing .btn-primary/.btn-send already use, which
+// inverts between themes) lifts both numbers together.
+//
+// Measured by diffing an unselected and a selected screenshot of the same box:
+// the pixels that CHANGED are the highlight. A "most common colour" probe reads
+// 1.00:1 here, because a selection only paints the text run and the modal
+// colour stays the card underneath.
+for (const theme of ['dark', 'light'] as const) {
+    test(`the selection highlight reads as a state — ${theme}`, async ({ page }) => {
+        await boot(page, theme);
+        await page.evaluate(() =>
+            (window as unknown as { showPage?: (s: string) => void }).showPage?.('settings'));
+        await page.waitForTimeout(900);
+
+        const target = page.locator('#page-settings .settings-hint, #page-settings p').first();
+        await expect(target, 'no body text on the settings page to select').toHaveCount(1);
+        await target.scrollIntoViewIfNeeded();
+        await page.waitForTimeout(250);
+        const box = (await target.boundingBox())!;
+        const clip = {
+            x: Math.floor(box.x), y: Math.floor(box.y),
+            width: Math.max(4, Math.floor(box.width)), height: Math.max(4, Math.floor(box.height)),
+        };
+
+        const plain = PNG.sync.read(await page.screenshot({ clip, animations: 'disabled' }));
+        await target.evaluate((el) => {
+            const r = document.createRange();
+            r.selectNodeContents(el);
+            const s = getSelection();
+            s?.removeAllRanges();
+            s?.addRange(r);
+        });
+        await page.waitForTimeout(200);
+        const sel = PNG.sync.read(await page.screenshot({ clip, animations: 'disabled' }));
+
+        const before: string[] = [], after: string[] = [];
+        for (let i = 0; i < plain.data.length; i += 4) {
+            if (plain.data[i] === sel.data[i] && plain.data[i + 1] === sel.data[i + 1]
+                && plain.data[i + 2] === sel.data[i + 2]) continue;
+            before.push(`${plain.data[i]},${plain.data[i + 1]},${plain.data[i + 2]}`);
+            after.push(`${sel.data[i]},${sel.data[i + 1]},${sel.data[i + 2]}`);
+        }
+        expect(before.length, 'selecting the text changed no pixels').toBeGreaterThan(200);
+
+        const modal = (xs: string[]): [number, number, number] => {
+            const h = new Map<string, number>();
+            for (const x of xs) h.set(x, (h.get(x) ?? 0) + 1);
+            let k = '0,0,0', n = -1;
+            for (const [key, c] of h) if (c > n) { n = c; k = key; }
+            return k.split(',').map(Number) as [number, number, number];
+        };
+        const surface = modal(before);
+        const plate = modal(after);
+        const pl = relLum(...plate);
+        // Ink = the changed pixel furthest in luminance from the highlight fill.
+        let ink: [number, number, number] = plate, best = 0;
+        for (const x of new Set(after)) {
+            const c = x.split(',').map(Number) as [number, number, number];
+            const d = Math.abs(relLum(...c) - pl);
+            if (d > best) { best = d; ink = c; }
+        }
+
+        const vsSurface = contrast(pl, relLum(...surface));
+        const inkOnPlate = contrast(relLum(...ink), pl);
+        expect(
+            vsSurface,
+            `${theme} highlight rgb(${plate}) on surface rgb(${surface}) = ${vsSurface.toFixed(2)}:1`,
+        ).toBeGreaterThanOrEqual(3);
+        expect(
+            inkOnPlate,
+            `${theme} selected ink rgb(${ink}) on highlight rgb(${plate}) = ${inkOnPlate.toFixed(2)}:1`,
+        ).toBeGreaterThanOrEqual(4.5);
+    });
+}

@@ -1,6 +1,6 @@
 # Testing Guide
 
-> Last Updated: July 4, 2026 | Python 3.14+ | Python Tests: 5,338 ✅ (124 files), 1 skipped, 4 deselected under -Fast | Frontend Tests: 624 ✅ (21 vitest files) + 161 ✅ (13 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots + upgrade-guards) | Timeout: 30s per test
+> Last Updated: July 4, 2026 | Python 3.14+ | Python Tests: 5,338 ✅ (124 files), 1 skipped, 4 deselected under -Fast | Frontend Tests: 624 ✅ (21 vitest files) + 164 ✅ (13 Playwright spec files: smoke + interactions + a11y + visual regression + h5-importmap + h7-csp + inspection + screenshots + upgrade-guards) | Timeout: 30s per test
 >
 > Counts drift as tests are added — run **`make docs-sync`** to refresh every number in the docs from the live repo in one pass (or `make test` / `npm test` / `npm run test:e2e` for the live numbers directly). CI can guard drift with `make docs-check`.
 
@@ -128,7 +128,7 @@ native_dashboard/tests-e2e/
 Run from `native_dashboard/`:
 
 ```bash
-npm run test:e2e                 # All 161 tests, headless Chromium
+npm run test:e2e                 # All 164 tests, headless Chromium
 npm run test:e2e:ui              # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots   # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots     # Just the screenshot captures

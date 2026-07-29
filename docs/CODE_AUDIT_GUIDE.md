@@ -1,7 +1,7 @@
 # 📋 Code Audit Guide - คู่มือตรวจสอบโค้ด
 
 > เอกสารนี้อธิบายวิธีการตรวจสอบไฟล์ทั้งหมดในโปรเจค Discord Bot
-> **Last Updated:** July 4, 2026 | **Tests:** 5,338 Python ✅ + 624 frontend vitest ✅ + 161 Playwright ✅ | **Skipped:** 1 ✅ | **Python Test Files:** 124 | **Frontend Test Files:** 21 vitest + 13 Playwright e2e
+> **Last Updated:** July 4, 2026 | **Tests:** 5,338 Python ✅ + 624 frontend vitest ✅ + 164 Playwright ✅ | **Skipped:** 1 ✅ | **Python Test Files:** 124 | **Frontend Test Files:** 21 vitest + 13 Playwright e2e
 >
 > Tooling configs live in `pyproject.toml`: `[tool.ruff]`, `[tool.mypy]`, `[tool.pytest.ini_options]`, `[tool.bandit]`, `[tool.coverage]`. There is no separate `requirements-dev.txt` — dev tooling installs are listed in `Makefile`'s `install` target.
 

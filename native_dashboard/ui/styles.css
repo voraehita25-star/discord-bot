@@ -48,7 +48,15 @@ html[data-theme="light"] .nav-item.active {
     border-left-color: var(--accent-cyan);
 }
 
-html[data-theme="light"] .stat-card,
+/* `.stat-card` was in this list and it was the ONLY rule still giving the
+   telemetry tile a card's chrome. This selector is (0,2,0); the tile rule that
+   retired that chrome (orbital.css "TELEMETRY TILES" — `border: 0;
+   box-shadow: none`) is (0,1,0), so on dawn every tile kept a rose hairline on
+   all four sides AND an 8px drop shadow — inside a grid that already draws the
+   dividers with its own background through a 1px gap. The strip read as five
+   outlined boxes crammed together in light and one quiet panel in dark: the
+   same component, two different designs, decided by which theme was active.
+   Dropped so both themes get the tile rule. The three real cards keep it. */
 html[data-theme="light"] .control-card,
 html[data-theme="light"] .settings-card,
 html[data-theme="light"] .chart-card {
@@ -722,21 +730,11 @@ h2 {
     margin-bottom: 28px;
 }
 
-.stat-card {
-    background: var(--card-bg);
-    border: 1px solid var(--border-color);
-    border-radius: 20px;
-    padding: 24px;
-    text-align: center;
-    backdrop-filter: blur(10px);
-    transition: all 0.3s ease;
-}
-
-.stat-card:hover {
-    transform: translateY(-4px);
-    box-shadow: 0 12px 40px rgba(168, 85, 247, 0.2);
-    border-color: var(--accent-purple);
-}
+/* legacy v1 .stat-card + :hover (20px radius, 24px padding, centred text,
+   blur(10px), translateY(-4px), purple hover glow) DELETED — every declaration
+   was overridden downstream, and the telemetry tile is now a CELL in a divided
+   grid, not a standalone card. Single canonical rule: orbital.css "TELEMETRY
+   TILES" (`background: var(--tile); border: 0; border-radius: 0`). */
 
 /* legacy emoji-era .stat-icon (font-size + pink drop-shadow) DELETED — the SVG
    icon chip is owned by orbital.css (single canonical .stat-icon rule). */
@@ -5138,19 +5136,9 @@ h2 { color: var(--text-primary); font-weight: 700; letter-spacing: -0.01em; }
 /* ---- Headline metrics (stat cards) ---- */
 .stats-grid { gap: 16px; }
 
-.stat-card {
-    background: var(--card-bg);
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-md);
-    transition: transform .25s var(--ease), box-shadow .25s var(--ease), border-color .25s var(--ease);
-}
-
-.stat-card:hover {
-    transform: translateY(-3px);
-    border-color: var(--border-strong);
-    box-shadow: var(--shadow-lg), var(--shadow-glow);
-}
+/* legacy v2 .stat-card + :hover DELETED for the same reason as the v1 pair
+   above — every declaration (card-bg fill, hairline, --radius, --shadow-md, the
+   lift-on-hover) is overridden by the orbital.css tile rule. */
 
 /* legacy v2 emoji-era .stat-icon (font-size + purple drop-shadow) DELETED —
    owned by orbital.css single canonical .stat-icon rule. */
@@ -5279,12 +5267,43 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
     box-shadow: var(--focus-ring);
 }
 
-/* ---- Selection ---- */
-/* Don't force white selected text: --cyan-300 is a translucent wash that
-   composites LIGHT over the white light-theme surfaces, so white-on-that was
-   ~1.6:1 (illegible). Dropping the color lets selected text keep its own
-   (theme-appropriate) color, which stays readable over the tint in both themes. */
-::selection { background: var(--cyan-300); }
+/* ---- Selection ----
+   Was `background: var(--cyan-300)` with no `color`. --cyan-300 is a 24/28%
+   wash, so the highlight measured 1.68:1 (night) and 1.62:1 (dawn) against the
+   surface it replaced — a selection you had to hunt for. Dropping `color` is
+   what forced the wash to stay that weak: with the ink left free, night could
+   not go past ~2.05:1 before muted text on the highlight fell under AA.
+
+   Setting the ink lifts BOTH numbers at once, and the pairing is already in the
+   design system — a brand plate carries #2b1226 at night and #fff on dawn
+   (.btn-primary, .btn-send). Selection now uses that same plate + ink, so a
+   selected run reads like the primary CTA rather than a smudge. Tokens (not
+   literals) because the two themes invert: night's sakura is pale, dawn's rose
+   is deep, so each needs the opposite ink.
+
+   Measured: highlight-vs-surface 7.1:1 night / 5.1:1 dawn; ink-on-highlight
+   6.9:1 night / 5.3:1 dawn. Pinned by non-text-contrast.spec.ts ("the selection
+   highlight reads as a state"), which diffs an unselected against a selected
+   screenshot — the pixels that CHANGED are the highlight. A "most common
+   colour" probe reads 1.00:1 here, since a selection only paints the text run
+   and the modal colour stays the card underneath. */
+:root {
+    --selection-bg: rgba(255, 161, 194, 0.85);
+    --selection-ink: #2b1226;
+}
+html[data-theme="light"],
+:root[data-theme="light"] {
+    --selection-bg: rgba(163, 37, 93, 0.85);
+    --selection-ink: #fff;
+}
+::selection {
+    background: var(--selection-bg);
+    color: var(--selection-ink);
+    /* Several surfaces set -webkit-text-fill-color (the metric numerals pin it
+       to currentColor, gradient-clipped headings to transparent). Without this
+       it wins over `color` and the selected glyph keeps its unselected fill. */
+    -webkit-text-fill-color: var(--selection-ink);
+}
 
 /* ---- Respect reduced motion ---- */
 @media (prefers-reduced-motion: reduce) {
@@ -5342,8 +5361,14 @@ h1, h2, .page-header h1, .page-header h2, .stat-value, .empty-state h2, .empty-s
 
 .page-header h1, h1 { font-weight: 800; letter-spacing: -0.025em; font-size: clamp(26px, 2.5vw, 34px); }
 
-/* — Glass surfaces with gradient hairline borders — */
-.stat-card, .control-card, .settings-card, .chart-card {
+/* — Glass surfaces with gradient hairline borders —
+   `.stat-card` is NOT in these two selectors: a telemetry tile is a cell in a
+   divided grid, so it carries no glass, no hairline and no lift. Every
+   declaration here was overridden for it anyway (orbital.css sets
+   `backdrop-filter: none` on the tile), so this is the same no-op deletion as
+   the two legacy blocks above — it just also keeps the next editor from
+   assuming a tile is one of these cards. */
+.control-card, .settings-card, .chart-card {
     background:
         var(--glass) padding-box,
         var(--hairline) border-box;
@@ -5353,7 +5378,7 @@ h1, h2, .page-header h1, .page-header h2, .stat-value, .empty-state h2, .empty-s
     box-shadow: var(--shadow-md), var(--glass-hi);
 }
 
-.stat-card:hover, .control-card:hover {
+.control-card:hover {
     box-shadow: var(--shadow-lg), var(--shadow-glow), var(--glass-hi);
 }
 
