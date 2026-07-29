@@ -33,6 +33,7 @@ from ..data.constants import (
     MAX_RECENT_MESSAGES_FOR_EXTRACTION,
     MIN_CONVERSATION_LENGTH,
 )
+from ..data.model_caps import thinking_off_kwargs
 from .entity_memory import EntityFacts, entity_memory
 
 logger = logging.getLogger(__name__)
@@ -401,11 +402,19 @@ class MemoryConsolidator:
             prompt = FACT_EXTRACTION_PROMPT.replace("{conversation}", _wrapped)
 
             try:
+                # Thinking OFF explicitly: this call must return parseable JSON
+                # within 1000 tokens, and on the generations that think by
+                # default (Opus 5 / Sonnet 5 — the repo default) an omitted
+                # ``thinking`` field means adaptive thinking while max_tokens
+                # caps thinking PLUS visible text. Reasoning consumes the budget
+                # and the JSON arrives truncated, so _parse_extraction fails and
+                # this returns 0 entities on every run.
                 response = await asyncio.wait_for(
                     client.messages.create(
                         model=self.model,
                         max_tokens=1000,
                         messages=build_single_user_text_messages(prompt),
+                        **thinking_off_kwargs(self.model),
                     ),
                     timeout=60.0,  # 60 second timeout
                 )

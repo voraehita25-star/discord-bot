@@ -273,3 +273,88 @@ class TestOpus5Pricing:
             model="claude-opus-5[1m]",
         )
         assert usage.estimated_cost == pytest.approx(30.0)
+
+
+class TestThinkingOffKwargsOnUtilityCalls:
+    """The non-conversational helpers must send thinking OFF explicitly.
+
+    They run on tiny ``max_tokens`` budgets (10 for the search-intent
+    classifier, 1000 for the summarizer and the fact extractor), and on the
+    generations that reason by DEFAULT (Opus 5 / Sonnet 5 — the repo default)
+    an omitted ``thinking`` field means adaptive thinking while ``max_tokens``
+    caps thinking PLUS visible text. Without the explicit disable the budget is
+    spent on reasoning and these calls return empty or truncated output.
+    """
+
+    def test_kwargs_disable_thinking_on_think_by_default_models(self) -> None:
+        from cogs.ai_core.data.model_caps import thinking_off_kwargs
+
+        for model in ("claude-opus-5", "claude-opus-5[1m]", "claude-sonnet-5"):
+            assert thinking_off_kwargs(model) == {"thinking": {"type": "disabled"}}
+
+    def test_kwargs_empty_where_omitting_already_means_off(self) -> None:
+        from cogs.ai_core.data.model_caps import thinking_off_kwargs
+
+        # Opus 4.8 and earlier: omitting the field genuinely means "no thinking".
+        for model in ("claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6"):
+            assert thinking_off_kwargs(model) == {}
+
+    def test_kwargs_empty_for_always_on_models(self) -> None:
+        from cogs.ai_core.data.model_caps import thinking_off_kwargs
+
+        # Fable/Mythos 400 on an explicit disable — the field must be omitted.
+        for model in ("claude-fable-5", "claude-mythos-5"):
+            assert thinking_off_kwargs(model) == {}
+
+    def test_no_output_config_emitted(self) -> None:
+        from cogs.ai_core.data.model_caps import thinking_off_kwargs
+
+        # The API's default effort is `high`, which is exactly what a
+        # disabled-thinking request accepts — emitting one would change
+        # reasoning depth rather than only switching thinking off.
+        assert "output_config" not in thinking_off_kwargs("claude-opus-5")
+
+    @pytest.mark.asyncio
+    async def test_search_intent_classifier_disables_thinking(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from cogs.ai_core.api.api_handler import detect_search_intent
+
+        client = MagicMock()
+        client.messages = MagicMock()
+        client.messages.create = AsyncMock(
+            return_value=SimpleNamespace(content=[SimpleNamespace(type="text", text="SEARCH")])
+        )
+
+        assert await detect_search_intent(client, "claude-opus-5", "what is the latest patch?")
+        kwargs = client.messages.create.await_args.kwargs
+        assert kwargs["thinking"] == {"type": "disabled"}
+        # A 10-token budget shared with adaptive thinking returns no text at all.
+        assert kwargs["max_tokens"] == 10
+
+    @pytest.mark.asyncio
+    async def test_summarizer_disables_thinking(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from cogs.ai_core.memory.summarizer import ConversationSummarizer
+
+        summarizer = ConversationSummarizer()
+        summarizer.model = "claude-opus-5"
+        summarizer.client = MagicMock()
+        summarizer.client.messages = MagicMock()
+        summarizer.client.messages.create = AsyncMock(
+            return_value=SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="A summary of the chat.")]
+            )
+        )
+
+        history = [
+            {"role": "user", "parts": [f"message number {i} with enough text to pass the floor"]}
+            for i in range(12)
+        ]
+        assert await summarizer.summarize(history) == "A summary of the chat."
+        assert summarizer.client.messages.create.await_args.kwargs["thinking"] == {
+            "type": "disabled"
+        }

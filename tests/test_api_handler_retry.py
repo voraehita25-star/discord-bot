@@ -266,3 +266,99 @@ class TestClaudeCoreRetry:
         assert client.messages.stream.call_count == FakeBreaker.threshold
         assert client.messages.stream.call_count < _CLAUDE_MAX_STREAM_RETRIES
         fallback_mock.assert_not_awaited()
+
+
+class TestEmptyResponseThinkingFallback:
+    """The empty-response fallback must actually DISABLE thinking.
+
+    ``build_api_config`` encodes "thinking off" as an explicit
+    ``{"type": "disabled"}`` on the generations that reason by default
+    (Opus 5 / Sonnet 5 — see ``data/model_caps.py``). Dropping the key there
+    means "use the default", i.e. adaptive thinking ON — so the fallback used
+    to do the exact opposite of what it logs, and let ``effort`` un-clamp from
+    ``high`` back to ``xhigh`` on the retry. These pin the corrected contract
+    per generation.
+    """
+
+    @staticmethod
+    def _client_empty_then_text():
+        client = MagicMock()
+        client.messages = MagicMock()
+        client.messages.create = AsyncMock(
+            side_effect=[FakeClaudeResponse(""), FakeClaudeResponse("second try")]
+        )
+        return client
+
+    @staticmethod
+    def _patches(sleep_mock):
+        return (
+            patch(
+                "cogs.ai_core.api.api_handler.convert_to_claude_messages",
+                return_value=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            ),
+            patch("cogs.ai_core.api.api_handler.CIRCUIT_BREAKER_AVAILABLE", False),
+            patch("cogs.ai_core.api.api_handler.ERROR_RECOVERY_AVAILABLE", False),
+            patch("cogs.ai_core.api.api_handler.PERF_TRACKER_AVAILABLE", False),
+            patch("cogs.ai_core.api.api_handler.CLAUDE_EFFORT", "xhigh"),
+            patch("cogs.ai_core.api.api_handler.asyncio.sleep", new=sleep_mock),
+        )
+
+    async def _run(self, model: str, thinking: dict | None):
+        from cogs.ai_core.api.api_handler import call_claude_api
+
+        client = self._client_empty_then_text()
+        config: dict = {"system_instruction": "Test", "max_tokens": 100}
+        if thinking is not None:
+            config["thinking"] = thinking
+        sleep_mock = AsyncMock()
+
+        p1, p2, p3, p4, p5, p6 = self._patches(sleep_mock)
+        with p1, p2, p3, p4, p5, p6:
+            result = await call_claude_api(
+                client,
+                model,
+                [{"role": "user", "parts": [{"text": "hi"}]}],
+                config,
+            )
+
+        assert result[0] == "second try"
+        assert client.messages.create.await_count == 2
+        return [call.kwargs for call in client.messages.create.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_opus5_disabled_thinking_stays_disabled_on_retry(self):
+        first, retry = await self._run("claude-opus-5", {"type": "disabled"})
+        # Attempt 1 honours the caller's explicit disable + the required clamp.
+        assert first["thinking"] == {"type": "disabled"}
+        assert first["output_config"] == {"effort": "high"}
+        # The retry must NOT drop the key — dropping it re-enables adaptive
+        # thinking on Opus 5 and un-clamps effort back to xhigh.
+        assert retry["thinking"] == {"type": "disabled"}
+        assert retry["output_config"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_opus5_adaptive_thinking_is_disabled_on_retry(self):
+        first, retry = await self._run("claude-opus-5", {"type": "adaptive"})
+        assert first["thinking"] == {"type": "adaptive"}
+        assert first["output_config"] == {"effort": "xhigh"}
+        # Adaptive -> explicitly disabled (popping would leave adaptive on).
+        assert retry["thinking"] == {"type": "disabled"}
+        assert retry["output_config"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_pre_opus5_generation_drops_the_field_on_retry(self):
+        # On Opus 4.8 and earlier, omitting `thinking` genuinely means "off",
+        # and an explicit disable is not part of that generation's contract —
+        # so the fallback still removes the key there.
+        first, retry = await self._run("claude-opus-4-8", {"type": "adaptive"})
+        assert first["thinking"] == {"type": "adaptive"}
+        assert "thinking" not in retry
+        assert retry["output_config"] == {"effort": "xhigh"}
+
+    @pytest.mark.asyncio
+    async def test_always_on_model_drops_the_field_on_retry(self):
+        # Fable/Mythos 400 on an explicit disable, so the key must be removed
+        # rather than set — the turn simply keeps thinking.
+        first, retry = await self._run("claude-fable-5", {"type": "adaptive"})
+        assert first["thinking"] == {"type": "adaptive"}
+        assert "thinking" not in retry

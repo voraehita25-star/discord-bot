@@ -347,3 +347,139 @@ class TestApplySearchReplace:
         # rather than persisting the raw <<<SEARCH/REPLACE>>> markup.
         patch_text = "<<<SEARCH\nMISSING\n>>>\n<<<REPLACE\nNEW\n>>>"
         assert apply_search_replace("nothing useful here", patch_text) == "nothing useful here"
+
+
+class _PartialThenFailStream:
+    """Yields events, raising any Exception instance found among them.
+
+    Lets an attempt stream partial text and THEN fail — the shape that drives
+    the continuation-prefill retry path.
+    """
+
+    def __init__(self, events: list[object]):
+        self._events = events
+        self._index = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._index >= len(self._events):
+            raise StopAsyncIteration
+        event = self._events[self._index]
+        self._index += 1
+        if isinstance(event, Exception):
+            raise event
+        return event
+
+    async def get_final_message(self):
+        return None
+
+
+class _PartialThenFailContext:
+    def __init__(self, events: list[object]):
+        self._events = events
+
+    async def __aenter__(self):
+        return _PartialThenFailStream(self._events)
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _RecordingClaudeClient:
+    """Fake client recording the kwargs of each ``messages.stream`` call.
+
+    The handler mutates ONE ``api_kwargs`` dict across attempts, so each call is
+    snapshotted (one level deep) rather than stored by reference.
+    """
+
+    def __init__(self, outcomes: list[list[object]]):
+        self._outcomes = outcomes
+        self._attempts = 0
+        self.calls: list[dict] = []
+        self.messages = SimpleNamespace(stream=self._stream)
+
+    def _stream(self, **kwargs):
+        self.calls.append({k: (dict(v) if isinstance(v, dict) else v) for k, v in kwargs.items()})
+        if self._attempts >= len(self._outcomes):
+            raise AssertionError("No more fake Claude outcomes configured")
+        outcome = self._outcomes[self._attempts]
+        self._attempts += 1
+        return _PartialThenFailContext(outcome)
+
+
+class TestClaudeDashboardContinuationThinking:
+    """The continuation retry must actually DISABLE thinking, not drop the key.
+
+    On the generations that reason by default (Opus 5 / Sonnet 5 — see
+    ``data/model_caps.py``) an ABSENT ``thinking`` field means adaptive
+    thinking, so popping it left reasoning ON for the continuation. When the
+    user had thinking OFF that also silently overrode their setting, while the
+    stream handlers discard thinking frames whenever ``thinking_enabled`` is
+    False — so the reasoning was generated, billed, and thrown away.
+    """
+
+    async def _run(self, ws: FakeWS, *, model: str, thinking_enabled: bool) -> list[dict]:
+        from cogs.ai_core.api import dashboard_chat_claude as mod
+
+        client = _RecordingClaudeClient(
+            [
+                [_text_event("partial "), RuntimeError("dropped mid-stream")],
+                [_text_event("rest")],
+            ]
+        )
+
+        with (
+            patch.object(mod, "_SDK_MODEL", model),
+            patch.object(mod, "CLAUDE_EFFORT", "xhigh"),
+            patch.object(mod, "DB_AVAILABLE", False),
+            patch.object(mod, "_RETRYABLE_ERRORS", (RuntimeError,)),
+            patch.object(
+                mod, "build_user_context", new=AsyncMock(return_value=("User context", False))
+            ),
+            patch("cogs.ai_core.api.dashboard_chat_claude.asyncio.sleep", new=AsyncMock()),
+        ):
+            await mod.handle_chat_message_claude(
+                cast(Any, ws),
+                {
+                    "content": "hello",
+                    "conversation_id": "conv-thinking",
+                    "thinking_enabled": thinking_enabled,
+                },
+                cast(Any, client),
+                stream_timeout=0,
+            )
+
+        assert ws.find("stream_end"), "stream should have completed after the retry"
+        return client.calls
+
+    @pytest.mark.asyncio
+    async def test_thinking_off_stays_off_on_continuation(self, ws: FakeWS):
+        calls = await self._run(ws, model="claude-opus-5", thinking_enabled=False)
+        assert len(calls) == 2
+        assert calls[0]["thinking"] == {"type": "disabled"}
+        assert calls[0]["output_config"] == {"effort": "high"}
+        # Regression: this key used to be popped, which re-enables adaptive
+        # thinking on Opus 5 and overrides the user's explicit "thinking off".
+        assert calls[1]["thinking"] == {"type": "disabled"}
+        assert calls[1]["output_config"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_thinking_on_is_disabled_and_effort_clamped_on_continuation(self, ws: FakeWS):
+        calls = await self._run(ws, model="claude-opus-5", thinking_enabled=True)
+        assert len(calls) == 2
+        assert calls[0]["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert calls[0]["output_config"] == {"effort": "xhigh"}
+        # The continuation drops reasoning to avoid repetition overhead — which
+        # on Opus 5 needs the explicit disable AND the matching effort clamp.
+        assert calls[1]["thinking"] == {"type": "disabled"}
+        assert calls[1]["output_config"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_pre_opus5_generation_drops_the_field_on_continuation(self, ws: FakeWS):
+        calls = await self._run(ws, model="claude-opus-4-8", thinking_enabled=True)
+        assert len(calls) == 2
+        assert calls[0]["thinking"] == {"type": "adaptive", "display": "summarized"}
+        # Omitting genuinely means "off" on this generation, so the key goes.
+        assert "thinking" not in calls[1]

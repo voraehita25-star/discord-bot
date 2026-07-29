@@ -1153,9 +1153,27 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
                             ),
                         },
                     ]
-                    # Disable thinking for the continuation (no-op if absent) to
-                    # avoid repetition overhead.
-                    api_kwargs.pop("thinking", None)
+                    # Disable thinking for the continuation to avoid repetition
+                    # overhead. Dropping the key is NOT the same as disabling
+                    # it: on the generations that think by DEFAULT (Opus 5 /
+                    # Sonnet 5 — see data/model_caps.py) an absent field means
+                    # adaptive thinking, so the old ``pop`` left thinking ON.
+                    # Worse, when the user had thinking OFF it silently
+                    # overrode that setting while the frame handlers above
+                    # discard thinking frames (`if … and thinking_enabled`) —
+                    # so the reasoning was generated, billed, and thrown away.
+                    # Send the explicit off-payload where one exists, clamping
+                    # effort alongside it (Opus 5 rejects disabled thinking
+                    # above `high`), and only drop the field on generations
+                    # where omission really does mean off.
+                    _cont_thinking_off = thinking_off_config(_SDK_MODEL)
+                    if _cont_thinking_off is not None:
+                        api_kwargs["thinking"] = _cont_thinking_off
+                        _cont_effort = effort_with_thinking_off(_effort)
+                        if _cont_effort:
+                            api_kwargs["output_config"] = {"effort": _cont_effort}
+                    else:
+                        api_kwargs.pop("thinking", None)
 
                 attempt += 1
                 # On the last attempt the loop is about to exit and re-raise; don't

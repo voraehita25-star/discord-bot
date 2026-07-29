@@ -38,7 +38,11 @@ from ..data.constants import (
     STREAMING_TIMEOUT_CHUNK,
     STREAMING_TIMEOUT_INITIAL,
 )
-from ..data.model_caps import effort_with_thinking_off, thinking_off_config
+from ..data.model_caps import (
+    effort_with_thinking_off,
+    thinking_off_config,
+    thinking_off_kwargs,
+)
 
 # Import circuit breaker for API protection
 try:
@@ -521,11 +525,19 @@ Reply ONE word: SEARCH or NO_SEARCH"""
         # deadline would otherwise be the SDK's default. Cap this classification
         # call so a stalled endpoint degrades to "no search" instead of hanging
         # the search-intent path.
+        # ``thinking`` must be switched OFF explicitly here. This is a 10-token
+        # yes/no classification, and on the generations that think by default
+        # (Opus 5 / Sonnet 5 — the repo's default model) an omitted field means
+        # adaptive thinking, while max_tokens caps thinking PLUS visible text.
+        # The whole budget goes to reasoning, no text block comes back, and the
+        # ``needs_search`` test below silently reads that as NO_SEARCH on every
+        # call — the classifier would be dead rather than merely wrong.
         response = await client.messages.create(
             model=target_model,
             max_tokens=10,
             messages=build_single_user_text_messages(prompt),
             timeout=15.0,
+            **thinking_off_kwargs(target_model),
         )
 
         result = ""
@@ -802,10 +814,24 @@ async def call_claude_api_streaming(
         # explicitly for those generations. Opus 5 rejects disabled thinking above
         # `high`, so effort is clamped to match; on Opus 4.8 and earlier nothing
         # is sent and the configured effort is forwarded untouched.
+        #
+        # Resolved ONCE here rather than per attempt: both depend only on
+        # ``target_model``, and computing them up front lets the log below
+        # report the effort that actually goes on the wire. It previously
+        # printed the raw ``CLAUDE_EFFORT`` (xhigh) while the request carried
+        # the clamped ``high`` on Opus 5 — an operator debugging a shallow
+        # stream read a value that was never sent.
+        stream_thinking_off = thinking_off_config(target_model)
+        stream_effort = CLAUDE_EFFORT
+        if stream_thinking_off is not None:
+            stream_effort = effort_with_thinking_off(stream_effort)
         if "thinking" in config_params:
             logger.info(
-                "🌊 Streaming mode: forwarding effort=%s; thinking suppressed for real-time first-token latency",
+                "🌊 Streaming mode: forwarding effort=%s (configured=%s); thinking %s "
+                "for real-time first-token latency",
+                stream_effort,
                 CLAUDE_EFFORT,
+                "explicitly disabled" if stream_thinking_off is not None else "omitted",
             )
     except Exception as e:
         logger.warning("⚠️ Streaming setup failed, falling back to normal API: %s", e)
@@ -862,12 +888,11 @@ async def call_claude_api_streaming(
             # Forward effort for depth (xhigh by default). Adaptive-thinking
             # models read this from output_config; suppressed thinking keeps the
             # first token fast — see the note above for why the disable has to be
-            # explicit (and the effort clamped) on Opus 5 / Sonnet 5.
-            stream_effort = CLAUDE_EFFORT
-            stream_thinking_off = thinking_off_config(target_model)
+            # explicit (and the effort clamped) on Opus 5 / Sonnet 5. Both values
+            # were resolved in the setup block above (they are model-derived and
+            # loop-invariant), so the logged effort and the sent effort agree.
             if stream_thinking_off is not None:
                 stream_kwargs["thinking"] = stream_thinking_off
-                stream_effort = effort_with_thinking_off(stream_effort)
             if stream_effort:
                 stream_kwargs["output_config"] = {"effort": stream_effort}
             stream = client.messages.stream(**stream_kwargs)
@@ -1364,10 +1389,27 @@ async def call_claude_api(
             await _failover_record_failure(api_error)
             break
 
-        # Fallback strategies for empty responses
-        if "thinking" in config_params:
+        # Fallback strategies for empty responses.
+        #
+        # "Disable thinking" is NOT the same as dropping the field. On the
+        # generations that think by DEFAULT (Opus 5 / Sonnet 5 — see
+        # data/model_caps.py) an absent ``thinking`` key means adaptive
+        # thinking, so the old ``pop`` did the exact inverse of what this
+        # fallback claims: a turn that build_api_config had explicitly
+        # disabled came back with thinking ON, and `effort` un-clamped from
+        # ``high`` back to ``xhigh`` on the next attempt — a more expensive
+        # retry, not the de-escalation the log promises. Send the model's
+        # explicit off-payload instead; only drop the key on generations
+        # where omission genuinely means "off" (Opus 4.8 and earlier) or
+        # that reject an explicit disable outright (Fable/Mythos).
+        _thinking_now = config_params.get("thinking")
+        if isinstance(_thinking_now, dict) and _thinking_now.get("type") != "disabled":
             logger.warning("⚠️ Fallback: Disabling 'Thinking Mode' for retry")
-            config_params.pop("thinking", None)
+            _thinking_off = thinking_off_config(target_model)
+            if _thinking_off is not None:
+                config_params["thinking"] = _thinking_off
+            else:
+                config_params.pop("thinking", None)
 
         # Content reduction for large messages
         if content_retry_attempt >= 2 and contents:

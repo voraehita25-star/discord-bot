@@ -18,6 +18,8 @@ the Discord SDK path and the two dashboard SDK paths cannot drift apart.
 
 from __future__ import annotations
 
+from typing import Any
+
 # Models that use adaptive thinking (``thinking: {"type": "adaptive"}``) rather
 # than the deprecated manual ``budget_tokens`` form. Older extended-thinking-only
 # models (Opus 4.5/4.1, Sonnet 4.5) are absent on purpose: callers fall through
@@ -93,6 +95,33 @@ def thinking_off_config(model: str) -> dict[str, str] | None:
     if _matches(model, THINKING_ON_BY_DEFAULT_MODELS):
         return {"type": "disabled"}
     return None
+
+
+def thinking_off_kwargs(model: str) -> dict[str, Any]:
+    """Messages-API kwargs that turn thinking OFF for a *utility* call.
+
+    The non-conversational helpers in this package — search-intent
+    classification, summarization, entity-fact extraction — run on small
+    ``max_tokens`` budgets and want no reasoning at all. On the generations
+    that think by DEFAULT (Opus 5 / Sonnet 5) an omitted ``thinking`` field
+    means adaptive thinking, and ``max_tokens`` caps thinking PLUS response
+    text — so the budget is spent before any visible text is produced. A
+    10-token classifier returns an empty string (its caller then reads that
+    as "no search"), and a 1000-token summarizer/extractor returns truncated
+    or empty output. Those callers pre-date Opus 5 and never opted into
+    reasoning; this restores their intent.
+
+    Returns ``{}`` where omission is already correct (Opus 4.8 and earlier)
+    or where the model rejects an explicit disable (Fable/Mythos), so it is
+    always safe to splat into a ``messages.create`` call.
+
+    No ``output_config`` is emitted on purpose: the API's default effort is
+    ``high``, which is exactly the tier a disabled-thinking request accepts
+    (see :data:`DISABLED_THINKING_MAX_EFFORT`), so sending one would change
+    reasoning depth rather than just switching thinking off.
+    """
+    off = thinking_off_config(model)
+    return {"thinking": off} if off is not None else {}
 
 
 def effort_with_thinking_off(effort: str | None) -> str | None:

@@ -25,6 +25,7 @@ from ..data.constants import (
     MIN_CONVERSATION_LENGTH,
     SUMMARIZATION_MAX_OUTPUT_TOKENS,
 )
+from ..data.model_caps import thinking_off_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -120,11 +121,20 @@ class ConversationSummarizer:
                     # timeout, so a network stall would otherwise hang
                     # the summarizer forever (consolidator's caller has
                     # a separate 60s wrap; keep them in sync).
+                    # Thinking OFF explicitly: this is a 2-3 sentence summary on
+                    # a 1000-token budget, and on the generations that think by
+                    # default (Opus 5 / Sonnet 5 — the repo default) an omitted
+                    # ``thinking`` field means adaptive thinking while
+                    # max_tokens caps thinking PLUS visible text. Reasoning eats
+                    # the budget and the summary comes back truncated or empty —
+                    # which then trips the "empty summary from model" retry
+                    # below on every attempt.
                     response = await asyncio.wait_for(
                         self.client.messages.create(
                             model=self.model,
                             max_tokens=SUMMARIZATION_MAX_OUTPUT_TOKENS,
                             messages=build_single_user_text_messages(prompt),
+                            **thinking_off_kwargs(self.model),
                         ),
                         timeout=60.0,
                     )
