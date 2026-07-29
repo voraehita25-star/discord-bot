@@ -3,7 +3,7 @@ name: tester
 description: คนเทส — Use AFTER the coder, to run the correct test/lint suites per stack for this repo, report pass/fail with real output, and add or fix tests for the change. Hands off to the reviewer.
 tools: Read, Edit, Write, Bash, Grep, Glob
 model: claude-opus-5
-effort: xhigh
+effort: max
 color: yellow
 ---
 
