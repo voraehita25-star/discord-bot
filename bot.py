@@ -26,12 +26,25 @@ from dotenv import load_dotenv
 # Load .env EARLY - before any modules that might use env vars
 load_dotenv()
 
+# ...then take back the handful of keys an inherited environment would otherwise
+# win, because load_dotenv() leaves already-set variables alone. Must run before
+# any module reads them at import time. See config._DOTENV_OWNED_KEYS.
+from config import reclaim_dotenv_overrides
+
+_reclaimed_env = reclaim_dotenv_overrides()
+
 # Module logger — declared before the optional-import blocks below use it.
 # setup_smart_logging() below wires up handlers; until then this logger
 # delegates to the root logger's default config.
 from utils.monitoring.logger import cleanup_cache, setup_smart_logging
 
 logger = logging.getLogger(__name__)
+
+if _reclaimed_env:
+    logger.info(
+        "♻️ Reclaimed %s from .env — an inherited environment value was overriding it",
+        ", ".join(f"{k}={v}" for k, v in sorted(_reclaimed_env.items())),
+    )
 
 # Import Health API
 try:

@@ -183,3 +183,88 @@ class TestGlobalSettings:
         from config import BotSettings, settings
 
         assert isinstance(settings, BotSettings)
+
+
+class TestReclaimDotenvOverrides:
+    """Tests for reclaim_dotenv_overrides.
+
+    Guards the launch path where Claude Code exports CLAUDE_EFFORT into the
+    environment of the bot process it spawns: load_dotenv() leaves an
+    already-set variable alone, so .env would lose without this reclaim.
+    """
+
+    def _write_env(self, tmp_path, body: str):
+        env_file = tmp_path / ".env"
+        env_file.write_text(body, encoding="utf-8")
+        return env_file
+
+    def test_dotenv_wins_over_inherited_value(self, tmp_path):
+        """An inherited CLAUDE_EFFORT is replaced by the .env value."""
+        from config import reclaim_dotenv_overrides
+
+        env_file = self._write_env(tmp_path, "CLAUDE_EFFORT=max\n")
+        with patch.dict(os.environ, {"CLAUDE_EFFORT": "high"}):
+            reclaimed = reclaim_dotenv_overrides(env_file)
+
+            assert reclaimed == {"CLAUDE_EFFORT": "max"}
+            assert os.environ["CLAUDE_EFFORT"] == "max"
+
+    def test_sets_key_absent_from_environment(self, tmp_path):
+        """With nothing inherited the .env value is still applied."""
+        from config import reclaim_dotenv_overrides
+
+        env_file = self._write_env(tmp_path, "CLAUDE_EFFORT=max\n")
+        env = os.environ.copy()
+        env.pop("CLAUDE_EFFORT", None)
+        with patch.dict(os.environ, env, clear=True):
+            assert reclaim_dotenv_overrides(env_file) == {"CLAUDE_EFFORT": "max"}
+            assert os.environ["CLAUDE_EFFORT"] == "max"
+
+    def test_reports_nothing_when_values_already_agree(self, tmp_path):
+        """No reclaim is reported when the environment already matches .env."""
+        from config import reclaim_dotenv_overrides
+
+        env_file = self._write_env(tmp_path, "CLAUDE_EFFORT=max\n")
+        with patch.dict(os.environ, {"CLAUDE_EFFORT": "max"}):
+            assert reclaim_dotenv_overrides(env_file) == {}
+            assert os.environ["CLAUDE_EFFORT"] == "max"
+
+    def test_key_missing_from_dotenv_leaves_environment_alone(self, tmp_path):
+        """A key absent from .env keeps whatever the environment provided."""
+        from config import reclaim_dotenv_overrides
+
+        env_file = self._write_env(tmp_path, "DISCORD_TOKEN=irrelevant\n")
+        with patch.dict(os.environ, {"CLAUDE_EFFORT": "high"}):
+            assert reclaim_dotenv_overrides(env_file) == {}
+            assert os.environ["CLAUDE_EFFORT"] == "high"
+
+    def test_unowned_keys_are_not_reclaimed(self, tmp_path):
+        """Ordinary config keeps normal precedence — the real environment wins.
+
+        Only the explicitly owned keys are forced; deploys and CI must still be
+        able to override everything else from the environment.
+        """
+        from config import reclaim_dotenv_overrides
+
+        env_file = self._write_env(
+            tmp_path, "CLAUDE_EFFORT=max\nCLAUDE_MODEL=from-dotenv\nCLAUDE_BACKEND=cli\n"
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "CLAUDE_EFFORT": "high",
+                "CLAUDE_MODEL": "from-environment",
+                "CLAUDE_BACKEND": "api",
+            },
+        ):
+            assert reclaim_dotenv_overrides(env_file) == {"CLAUDE_EFFORT": "max"}
+            assert os.environ["CLAUDE_MODEL"] == "from-environment"
+            assert os.environ["CLAUDE_BACKEND"] == "api"
+
+    def test_missing_dotenv_file_is_not_an_error(self, tmp_path):
+        """A deploy with no .env on disk must not crash startup."""
+        from config import reclaim_dotenv_overrides
+
+        with patch.dict(os.environ, {"CLAUDE_EFFORT": "high"}):
+            assert reclaim_dotenv_overrides(tmp_path / "does-not-exist.env") == {}
+            assert os.environ["CLAUDE_EFFORT"] == "high"

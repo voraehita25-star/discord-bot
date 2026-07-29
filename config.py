@@ -35,6 +35,54 @@ def _first_env(*keys: str) -> str | None:
     return None
 
 
+# Env vars the bot owns whose names another tool also exports into the
+# environment of the processes it spawns. ``load_dotenv()`` never overwrites an
+# already-set variable, so without an explicit reclaim the inherited value wins
+# over ``.env`` — silently, and only under one specific launch path, which makes
+# it a miserable thing to debug.
+#
+# ``CLAUDE_EFFORT``: Claude Code exports its own session effort into every Bash
+# subprocess it spawns. A bot started from inside a Claude Code session would
+# therefore reason at whatever depth that session happened to use, instead of
+# the operator-configured tier that ``cogs/ai_core/api/dashboard_chat_claude_cli.py``
+# passes to ``claude -p`` as ``--effort``.
+_DOTENV_OWNED_KEYS: tuple[str, ...] = ("CLAUDE_EFFORT",)
+
+
+def reclaim_dotenv_overrides(
+    dotenv_path: str | os.PathLike[str] | None = None,
+) -> dict[str, str]:
+    """Force ``.env`` to win over inherited values for the keys the bot owns.
+
+    Call once, immediately after ``load_dotenv()``. Only the keys in
+    :data:`_DOTENV_OWNED_KEYS` are touched — every other variable keeps the
+    usual precedence, where the real environment beats ``.env``, because that
+    is how deploys and CI legitimately override configuration.
+
+    Returns the keys that were actually reclaimed, mapped to the value now in
+    ``os.environ``, so the caller can log the fact instead of silently
+    changing behaviour under the operator.
+    """
+    try:
+        from dotenv import dotenv_values, find_dotenv
+    except ImportError:  # pragma: no cover - python-dotenv is a hard dependency
+        return {}
+
+    path = str(dotenv_path) if dotenv_path is not None else find_dotenv(usecwd=True)
+    if not path:
+        return {}
+
+    file_values = dotenv_values(path)
+    reclaimed: dict[str, str] = {}
+    for key in _DOTENV_OWNED_KEYS:
+        value = file_values.get(key)
+        if value is None or os.environ.get(key) == value:
+            continue
+        os.environ[key] = value
+        reclaimed[key] = value
+    return reclaimed
+
+
 @dataclass
 class BotSettings:
     """Bot configuration settings loaded from environment variables."""
