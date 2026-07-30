@@ -418,6 +418,14 @@
     <path d="M5 9 12 16l7-7"/>
   </symbol>
 
+  <!-- i-panel-left — side panel: framed page with a divided left column.
+       One glyph for both states of the chat rail toggle (the state is carried
+       by aria-expanded and the tooltip, not by rotating the icon). -->
+  <symbol id="i-panel-left" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="18" height="16" rx="2"/>
+    <path d="M9 4v16"/>
+  </symbol>
+
 </defs></svg>
     <!-- Toast Container — a persistent polite live region (must exist at load
          to reliably announce dynamically-added toasts to screen readers). -->
@@ -620,7 +628,7 @@
                 
                 <div class="chat-layout">
                     <!-- Conversations Sidebar -->
-                    <aside class="chat-sidebar">
+                    <aside class="chat-sidebar" id="chat-conversation-rail">
                         <div class="chat-sidebar-header">
                             <h2><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg> Conversations</h2>
                             <button class="btn btn-primary btn-new-chat" id="btn-new-chat">
@@ -671,6 +679,24 @@
 
                     <!-- Chat Main Area -->
                     <div class="chat-main">
+                        <!-- Fold the conversation rail away. ONE button for both
+                             directions rather than a collapse control in the rail
+                             plus an expand control elsewhere, and it lives in
+                             .chat-main (not in the rail) for two reasons: the rail
+                             header is already full at 280px — a third control there
+                             would not fit — and a button anchored to the reading
+                             column's leading edge survives the rail vanishing.
+                             It sits outside #chat-empty / #chat-container so it is
+                             present whether or not a conversation is open.
+                             Disclosure semantics (aria-expanded + aria-controls)
+                             carry the state; app.ts keeps the label and tooltip in
+                             sync with it. -->
+                        <button class="chat-rail-toggle" id="btn-toggle-chat-rail"
+                                aria-expanded="true" aria-controls="chat-conversation-rail"
+                                aria-label="Collapse conversation list"
+                                title="Collapse conversation list">
+                            <svg class="ic" aria-hidden="true"><use href="#i-panel-left"/></svg>
+                        </button>
                         <!-- No conversation selected -->
                         <div class="chat-empty" id="chat-empty">
                             <div class="chat-empty-content">

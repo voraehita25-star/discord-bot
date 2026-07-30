@@ -85,6 +85,10 @@ export interface Settings {
     // is set so the CSS [data-density="compact"]{--density:.7} recipe tightens
     // card/section paddings. Defaults OFF (comfortable spacing).
     densityCompact?: boolean;
+    // AI Chat's conversation rail folded away (CONTRACT): when true,
+    // .chat-layout carries .rail-collapsed and the CSS hides .chat-sidebar,
+    // handing its 280px to the transcript. Defaults OFF (rail shown).
+    chatRailCollapsed?: boolean;
 }
 
 // ----------------------------------------------------------------------------

@@ -1411,3 +1411,151 @@ test('every toast variant wears its own left rail', async ({ page }) => {
     // A toast raised with no type at all is an info toast, rail included.
     expect(rails.every((t) => t.variant !== 'none'), 'an untyped toast got no variant').toBe(true);
 });
+
+// ---------------------------------------------------------------------------
+// The conversation rail folds away.
+//
+// At the 1280 default the rail is 280px of the page's 1020, so a transcript
+// reads in 738 — and the rail is dead weight for anyone working inside ONE
+// conversation. Folding it hands the whole 280 to the transcript.
+//
+// The three things that can go wrong with a disclosure like this, pinned here:
+// the fold has to actually hand the width over; ONE button has to work both
+// ways with a name that says which way it goes; and a folded rail must not
+// leave its controls in the tab order.
+// ---------------------------------------------------------------------------
+async function openRailConversation(page: Page): Promise<void> {
+    await show(page, 'chat');
+    await sendWsFrame(page, { type: 'conversations_list', conversations: [FENCE_CONV] });
+    await page.waitForTimeout(150);
+    await sendWsFrame(page, {
+        type: 'conversation_loaded',
+        conversation: FENCE_CONV,
+        messages: FENCE_MESSAGES,
+    });
+    await page.waitForTimeout(500);
+}
+
+const railState = (page: Page) =>
+    page.evaluate(() => {
+        const w = (sel: string) => {
+            const el = document.querySelector(sel);
+            return el ? Math.round(el.getBoundingClientRect().width) : -1;
+        };
+        const btn = document.getElementById('btn-toggle-chat-rail');
+        const header = document.querySelector('#page-chat .chat-header');
+        return {
+            rail: w('#chat-conversation-rail'),
+            main: w('#page-chat .chat-main'),
+            headerContentLeft: (() => {
+                const el = document.querySelector('#page-chat .chat-header-info');
+                return el ? Math.round(el.getBoundingClientRect().left) : -1;
+            })(),
+            headerLeft: header ? Math.round(header.getBoundingClientRect().left) : -1,
+            expanded: btn?.getAttribute('aria-expanded') ?? null,
+            label: btn?.getAttribute('aria-label') ?? null,
+            title: btn?.getAttribute('title') ?? null,
+            controls: btn?.getAttribute('aria-controls') ?? null,
+        };
+    });
+
+test('folding the conversation rail hands its width to the transcript', async ({ page }) => {
+    await boot(page);
+    await openRailConversation(page);
+    await freezeMotion(page);
+
+    const open = await railState(page);
+    expect(open.rail, 'the rail did not render').toBeGreaterThan(0);
+    expect(open.expanded, 'the toggle does not start expanded').toBe('true');
+    // aria-controls has to point at the thing that folds, or the disclosure is
+    // a decoration.
+    expect(open.controls).toBe('chat-conversation-rail');
+
+    await page.click('#btn-toggle-chat-rail');
+    await page.waitForTimeout(200);
+    const folded = await railState(page);
+
+    expect(folded.rail, 'the rail is still taking space when folded').toBe(0);
+    expect(
+        folded.main,
+        `the transcript did not take the rail's ${open.rail}px: ${open.main} → ${folded.main}`,
+    ).toBe(open.main + open.rail);
+
+    // The button is anchored to the reading column, so the header content
+    // beneath it must keep the SAME offset from the column's edge in both
+    // states — a gutter that only exists in one of them means the header jumps
+    // sideways every time you fold.
+    expect(
+        folded.headerContentLeft - folded.headerLeft,
+        'the header shifted under the toggle when the rail folded',
+    ).toBe(open.headerContentLeft - open.headerLeft);
+});
+
+test('the rail toggle says which way it goes, both ways', async ({ page }) => {
+    await boot(page);
+    await openRailConversation(page);
+    await freezeMotion(page);
+
+    const open = await railState(page);
+    expect(open.label, 'the expanded toggle does not offer to collapse').toMatch(/collapse/i);
+    // A tooltip still reading "Collapse" over a button that expands is the same
+    // defect twice, so they are pinned to each other rather than separately.
+    expect(open.title, 'tooltip and accessible name disagree').toBe(open.label);
+
+    await page.click('#btn-toggle-chat-rail');
+    await page.waitForTimeout(200);
+    const folded = await railState(page);
+    expect(folded.expanded).toBe('false');
+    expect(folded.label, 'the folded toggle does not offer to show the rail').toMatch(/show/i);
+    expect(folded.title, 'tooltip and accessible name disagree').toBe(folded.label);
+
+    // …and it comes back.
+    await page.click('#btn-toggle-chat-rail');
+    await page.waitForTimeout(200);
+    const reopened = await railState(page);
+    expect(reopened.rail, 'the rail did not come back').toBe(open.rail);
+    expect(reopened.expanded).toBe('true');
+    expect(reopened.label).toBe(open.label);
+});
+
+test('a folded rail leaves nothing behind in the tab order', async ({ page }) => {
+    await boot(page);
+    await openRailConversation(page);
+    await page.click('#btn-toggle-chat-rail');
+    await page.waitForTimeout(200);
+
+    const reachable = await page.evaluate(() => {
+        const rail = document.getElementById('chat-conversation-rail')!;
+        return Array.from(
+            rail.querySelectorAll<HTMLElement>(
+                'button, input, textarea, select, a[href], [tabindex]:not([tabindex="-1"])',
+            ),
+        )
+            .filter((el) => el.checkVisibility())
+            .map((el) => `${el.tagName.toLowerCase()}#${el.id || '-'}`);
+    });
+    expect(
+        reachable,
+        `a folded rail still exposes focusable controls: ${reachable.join(', ')}`,
+    ).toEqual([]);
+});
+
+test('the folded rail is still folded after a restart', async ({ page }) => {
+    await boot(page);
+    await openRailConversation(page);
+    await page.click('#btn-toggle-chat-rail');
+    await page.waitForTimeout(200);
+    expect((await railState(page)).rail).toBe(0);
+
+    // A layout preference nobody would reach for twice a session is only worth
+    // having if it survives the app closing, so it rides in dashboard-settings.
+    await page.reload();
+    await page.waitForLoadState('domcontentloaded');
+    await waitForDashboardReady(page);
+    await show(page, 'chat');
+
+    const after = await railState(page);
+    expect(after.rail, 'the fold did not survive a reload').toBe(0);
+    expect(after.expanded, 'the restored fold left the toggle claiming expanded').toBe('false');
+    expect(after.label).toMatch(/show/i);
+});

@@ -231,6 +231,7 @@ document.addEventListener("DOMContentLoaded", () => {
         initSakuraAnimation();
     initKeyboardShortcuts();
     initChatOverlayA11y();
+    initChatRailToggle();
     initChatManager();
     initHistoryManager();
     // Update AI avatars after all init
@@ -468,6 +469,35 @@ function applyDensity(compact) {
     else {
         document.documentElement.removeAttribute('data-density');
     }
+}
+// AI Chat's conversation rail folds away (CONTRACT): .rail-collapsed on
+// .chat-layout is what the CSS reads; this keeps the button's disclosure state
+// and its label in step with it. The rail costs 280px of the page's 1020 at the
+// default window, so the fold is worth ~38% more reading width for anyone
+// working inside one conversation — and it has to survive a restart to be worth
+// reaching for, hence settings.chatRailCollapsed.
+function applyChatRailCollapsed(collapsed) {
+    document.querySelector('#page-chat .chat-layout')
+        ?.classList.toggle('rail-collapsed', collapsed);
+    const btn = document.getElementById('btn-toggle-chat-rail');
+    if (!btn)
+        return;
+    btn.setAttribute('aria-expanded', String(!collapsed));
+    // One control, so its name has to say which way it goes. Both the
+    // accessible name and the tooltip move together — a tooltip that still
+    // reads "Collapse" over a button that expands is the same defect twice.
+    const label = collapsed ? 'Show conversation list' : 'Collapse conversation list';
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('title', label);
+}
+// Exported as a test seam, like initTheme().
+export function initChatRailToggle() {
+    applyChatRailCollapsed(settings.chatRailCollapsed === true);
+    document.getElementById('btn-toggle-chat-rail')?.addEventListener('click', () => {
+        const next = settings.chatRailCollapsed !== true;
+        updateSetting('chatRailCollapsed', next);
+        applyChatRailCollapsed(next);
+    });
 }
 // ============================================================================
 // Settings Management

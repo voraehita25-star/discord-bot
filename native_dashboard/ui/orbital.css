@@ -3805,6 +3805,61 @@ html[data-theme="light"] .message-content pre[class*="language-"] .token.inserte
    footer of an empty list. */
 .chat-sidebar { border-right: 1px solid var(--edge); }
 .chat-sidebar-footer { border-top: 1px solid var(--edge); }
+
+/* ---- …and it folds away -----------------------------------------------------
+   At the 1280 default the rail costs 280px out of the page's 1020, so the
+   transcript reads in 738. Folding it hands all of that back (+38% reading
+   width) for the stretches spent inside ONE conversation, and the choice
+   persists (settings.chatRailCollapsed). Below 820px the layout is stacked
+   rather than side by side, so there the same fold buys height instead.
+
+   The button is anchored to .chat-main, not to the rail: the rail header is
+   already full at 280px (CONVERSATIONS + New leave ~0 slack), and a control
+   that lives in the thing it hides has to be duplicated somewhere else to get
+   it back. The left padding it reserves is the SAME in both states, so folding
+   never shifts the header under it. */
+.chat-main { position: relative; }
+.chat-rail-toggle {
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.chat-rail-toggle:hover {
+    background: rgba(255, 161, 194, 0.10);
+    color: var(--text-primary);
+    border-color: var(--edge-strong);
+}
+html[data-theme="light"] .chat-rail-toggle:hover { background: rgba(163, 37, 93, 0.08); }
+.chat-rail-toggle .ic { width: 17px; height: 17px; }
+#page-chat .chat-header { padding-left: 56px; }
+.chat-layout.rail-collapsed .chat-sidebar { display: none; }
+/* The compact-window block further up already cuts .chat-header's own padding
+   to 8px; this override has to sit AFTER it (same specificity, later wins) or
+   the 56px gutter would survive into an 800px window. */
+@media (max-width: 820px) and (max-height: 720px) {
+    #page-chat .chat-rail-toggle { top: 6px; left: 8px; width: 28px; height: 28px; }
+    #page-chat .chat-header { padding-left: 44px; }
+}
+/* Below 700px the rail is display:none unconditionally (styles.css), so there
+   is nothing left for the toggle to fold — and no way for it to bring the rail
+   back. Take the control away with the thing it controls. */
+@media (max-width: 700px) {
+    .chat-rail-toggle { display: none; }
+    #page-chat .chat-header { padding-left: var(--space-2); }
+}
 #btn-export-all {
     background: none;
     border-color: transparent;
