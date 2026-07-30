@@ -9,7 +9,7 @@
  * (contrast.spec.ts) because it needs pixel sampling.
  */
 import { test, expect, type Page } from '@playwright/test';
-import { installPopulatedMocks, waitForDashboardReady } from './_fixtures/mock-tauri';
+import { installPopulatedMocks, waitForDashboardReady, sendWsFrame } from './_fixtures/mock-tauri';
 
 const PAGES = ['status', 'chat', 'logs', 'database', 'settings', 'history'] as const;
 
@@ -1232,4 +1232,182 @@ test('the telemetry tiles wear the same chrome in both themes', async ({ page })
     expect(dark.boxShadow, 'the tile grew a shadow back').toBe('none');
     expect(dark.borderTopWidth, 'the tile grew a border back').toBe('0px');
     expect(dark.borderRadius, 'the tile grew a corner radius back').toBe('0px');
+});
+
+// ---------------------------------------------------------------------------
+// A code block is one component, and orbital.css already says so: it defines
+// --code-bg/--code-head per theme and routes the fence and its header through
+// them, with the comment "so a snippet is readable in either theme".
+//
+// Only the header ever got it. vendor/prism/prism-tomorrow.min.css is <link>ed
+// AFTER orbital.css, and its `pre[class*=language-]{background:#2d2d2d}` carries
+// the same (0,1,1) specificity as `.message-content pre` — so source order
+// handed the black slab back to every fence Prism had touched, while an
+// un-highlighted fence kept the token. One message holding a ```python and a
+// bare ``` rendered them on OPPOSITE surfaces, and on dawn paper the
+// highlighted one wore a light header glued to a midnight body.
+//
+// Nothing caught it because a code block only exists once a conversation with a
+// fence in it is open, which no other spec does.
+// ---------------------------------------------------------------------------
+const FENCE_CONV = {
+    id: 'fence-1', title: 'Fences', role_preset: 'default', role_name: 'General Assistant',
+    role_emoji: '\u{1F338}', role_color: '#ff6ba8', thinking_enabled: false, is_starred: false,
+    message_count: 2, created_at: '2026-07-25T09:00:00Z', ai_provider: 'gemini',
+};
+const FENCE_MESSAGES = [
+    { id: 1, role: 'user', content: 'two fences', created_at: '2026-07-29T18:00:00Z' },
+    {
+        id: 2, role: 'assistant', created_at: '2026-07-29T18:00:05Z',
+        content:
+            'Highlighted:\n\n```python\ndef hello(name):\n    return f"hi {name}"\n```\n\n' +
+            'Plain:\n\n```\ndef hello(name):\n    return f"hi {name}"\n```',
+    },
+];
+
+async function openFenceConversation(page: Page): Promise<void> {
+    await show(page, 'chat');
+    await sendWsFrame(page, { type: 'conversations_list', conversations: [FENCE_CONV] });
+    await page.waitForTimeout(150);
+    await sendWsFrame(page, {
+        type: 'conversation_loaded',
+        conversation: FENCE_CONV,
+        messages: FENCE_MESSAGES,
+    });
+    await page.waitForTimeout(600);
+}
+
+test('both fences in one message stand on the same surface, in either theme', async ({ page }) => {
+    await boot(page);
+    await openFenceConversation(page);
+
+    for (const theme of ['dark', 'light'] as const) {
+        await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+        await freezeMotion(page);
+        await page.waitForTimeout(120);
+
+        const r = await page.evaluate(() => {
+            const pres = Array.from(document.querySelectorAll('#chat-messages pre'));
+            return {
+                token: getComputedStyle(document.documentElement)
+                    .getPropertyValue('--code-bg').trim(),
+                highlighted: pres
+                    .filter((p) => /language-/.test(p.className))
+                    .map((p) => getComputedStyle(p).backgroundColor),
+                plain: pres
+                    .filter((p) => !/language-/.test(p.className))
+                    .map((p) => getComputedStyle(p).backgroundColor),
+            };
+        });
+
+        expect(r.highlighted.length, `${theme}: no highlighted fence rendered`).toBeGreaterThan(0);
+        expect(r.plain.length, `${theme}: no plain fence rendered`).toBeGreaterThan(0);
+        expect(
+            new Set([...r.highlighted, ...r.plain]).size,
+            `${theme}: fences painted on different surfaces — ` +
+                `highlighted ${r.highlighted.join(',')} vs plain ${r.plain.join(',')}`,
+        ).toBe(1);
+        // …and the surface both share is the theme's, not the vendor's #2d2d2d.
+        expect(
+            r.highlighted[0],
+            `${theme}: the highlighted fence is not painted with --code-bg (${r.token})`,
+        ).not.toBe('rgb(45, 45, 45)');
+    }
+});
+
+// On dawn paper Prism Tomorrow's palette is pastel-on-white — it is drawn for a
+// #2d2d2d canvas. Once the fence honours --code-bg (#f5eff2 in light), every
+// token has to be repointed or the snippet becomes unreadable in exactly the
+// theme the fix was for.
+test('light-theme code tokens stay legible on the light code surface', async ({ page }) => {
+    await boot(page);
+    await openFenceConversation(page);
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+    await freezeMotion(page);
+    await page.waitForTimeout(120);
+
+    const readings = await page.evaluate(() => {
+        const srgb = (v: number): number => {
+            v /= 255;
+            return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+        };
+        const lum = (c: string): number => {
+            const [r, g, b] = c.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+            return 0.2126 * srgb(r) + 0.7152 * srgb(g) + 0.0722 * srgb(b);
+        };
+        const pre = document.querySelector<HTMLElement>('#chat-messages pre[class*="language-"]');
+        if (!pre) return [];
+        const bg = lum(getComputedStyle(pre).backgroundColor);
+        const seen = new Map<string, { cls: string; ratio: number }>();
+        for (const t of Array.from(pre.querySelectorAll<HTMLElement>('.token'))) {
+            if (!(t.textContent ?? '').trim()) continue;
+            const color = getComputedStyle(t).color;
+            if (seen.has(color)) continue;
+            const [hi, lo] = [lum(color), bg].sort((a, b) => b - a);
+            seen.set(color, {
+                cls: t.className,
+                ratio: +((hi + 0.05) / (lo + 0.05)).toFixed(2),
+            });
+        }
+        return Array.from(seen.values());
+    });
+
+    expect(readings.length, 'no highlighted tokens to measure').toBeGreaterThan(2);
+    for (const t of readings) {
+        expect(t.ratio, `light code token ${t.cls} is ${t.ratio}:1 on the code surface`)
+            .toBeGreaterThanOrEqual(4.5);
+    }
+});
+
+// ---------------------------------------------------------------------------
+// styles.css states the toast contract outright: border, fill and left rail are
+// all mixed off the SAME token, "so a toast is one colour in three places
+// instead of two colours in two". orbital.css drew the rail for success, error
+// and warning and simply had no rule for info — which is the DEFAULT type
+// (showToast with no options), i.e. the most common toast in the app. It was
+// the one variant that read as a plain card.
+//
+// Toasts only exist while one is on screen, which is why every static sweep of
+// the resting DOM missed it.
+// ---------------------------------------------------------------------------
+test('every toast variant wears its own left rail', async ({ page }) => {
+    await boot(page);
+    await page.evaluate(async () => {
+        // Variable specifier so `tsc -p tsconfig.e2e.json` does not try to
+        // resolve the server-root path as a module.
+        const sharedPath = '/shared.js';
+        const mod = (await import(sharedPath)) as {
+            showToast: (m: string, o?: { type?: string; duration?: number }) => void;
+        };
+        for (const type of ['success', 'error', 'warning', 'info']) {
+            mod.showToast(`a ${type} toast`, { type, duration: 60_000 });
+        }
+        mod.showToast('a toast with no type at all', { duration: 60_000 });
+    });
+    await page.waitForTimeout(400);
+    await freezeMotion(page);
+
+    const rails = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('.toast')).map((el) => {
+            const cs = getComputedStyle(el);
+            // The rail is the inset layer of the box-shadow stack. --glass-hi is
+            // also inset, so match on the 3px offset that only the rail uses.
+            const rail = cs.boxShadow.match(/(rgba?\([^)]*\))[^,]*\b3px 0px 0px 0px inset/);
+            return {
+                variant: (el.className.match(/toast-(success|error|warning|info)/) ?? [, 'none'])[1],
+                rail: rail ? rail[1] : null,
+                border: cs.borderLeftColor,
+            };
+        }),
+    );
+
+    expect(rails.length, 'no toasts on screen to measure').toBe(5);
+    for (const t of rails) {
+        expect(t.rail, `the ${t.variant} toast has no left rail`).not.toBeNull();
+        // One colour in three places: the rail must be the border's colour.
+        expect(t.rail, `the ${t.variant} toast's rail disagrees with its border`)
+            .toBe(t.border);
+    }
+    // A toast raised with no type at all is an info toast, rail included.
+    expect(rails.every((t) => t.variant !== 'none'), 'an untyped toast got no variant').toBe(true);
 });

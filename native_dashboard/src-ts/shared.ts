@@ -537,10 +537,19 @@ export async function showConfirmDialog(message: string): Promise<boolean> {
 }
 
 export function showToast(message: string, options: ToastOptions = { type: 'info' }): void {
+    // The `info` default sat on the PARAMETER, so it only applied when options
+    // was omitted whole. `showToast(msg, { duration: 5000 })` — a shape the
+    // window.showToast surface below advertises as `options?: ToastOptions` —
+    // left type undefined, and the toast came out as `.toast-undefined`: no
+    // border colour, no fill, no left rail and (per the icon fallback below) no
+    // glyph either. An unstyled bare card. Resolve the type ONCE here so the
+    // class, the icon and the notifications gate all read the same value.
+    const type: ToastOptions['type'] = options.type ?? 'info';
+
     // Errors and warnings always surface — they report real failures (bot
     // start failed, load failed, connection lost, …) the user must see even
     // with notifications muted. Only info/success toasts respect the toggle.
-    if (!settings.notifications && options.type !== 'error' && options.type !== 'warning') {
+    if (!settings.notifications && type !== 'error' && type !== 'warning') {
         return;
     }
 
@@ -548,11 +557,11 @@ export function showToast(message: string, options: ToastOptions = { type: 'info
     if (!container) return;
 
     const toast = document.createElement('div');
-    toast.className = `toast toast-${options.type}`;
+    toast.className = `toast toast-${type}`;
     // a11y: errors interrupt (assertive alert); the container's polite
     // live region announces the rest. Without any role, AT users never hear
     // success/error feedback.
-    if (options.type === 'error') {
+    if (type === 'error') {
         toast.setAttribute('role', 'alert');
         toast.setAttribute('aria-live', 'assertive');
     }
@@ -569,9 +578,9 @@ export function showToast(message: string, options: ToastOptions = { type: 'info
         info: 'info'
     };
 
-    // ?? '' so an unknown ``options.type`` doesn't render a broken <use> href
+    // ?? '' so an unknown ``type`` doesn't render a broken <use> href
     // into the toast \u2014 falls back to a silent icon.
-    const glyph = icons[options.type] ? icon(icons[options.type]) : '';
+    const glyph = icons[type] ? icon(icons[type]) : '';
     toast.innerHTML = `
         <span class="toast-icon">${glyph}</span>
         <span class="toast-message">${escapeHtml(message)}</span>

@@ -1479,9 +1479,16 @@ html[data-theme="light"] .modal-overlay { background: rgba(240, 226, 231, .62); 
     from { opacity: 0; transform: translateX(110%); }
     to   { opacity: 1; transform: translateX(0); }
 }
+/* The left rail. styles.css states the contract for these: a toast is "one
+   colour in three places" — border, fill and rail all mixed off the same
+   token. Info was the one variant with no rail rule here, so it was one colour
+   in TWO places and the only toast that read as a plain card. It is also the
+   DEFAULT type (showToast with no options), i.e. the most common toast in the
+   app. --accent-cyan is the token its own border, fill and icon already use. */
 .toast-success { box-shadow: var(--shadow-lg), var(--glass-hi), inset 3px 0 0 var(--sev-info); }
 .toast-error   { box-shadow: var(--shadow-lg), var(--glass-hi), inset 3px 0 0 var(--sev-error); }
 .toast-warning { box-shadow: var(--shadow-lg), var(--glass-hi), inset 3px 0 0 var(--sev-warn); }
+.toast-info    { box-shadow: var(--shadow-lg), var(--glass-hi), inset 3px 0 0 var(--accent-cyan); }
 
 /* ============================================================================
    SCROLLBAR — sakura
@@ -3701,6 +3708,63 @@ html[data-theme="light"],
     color: var(--text-tertiary);
 }
 .message-content pre code { color: var(--text-primary); }
+
+/* …which only ever reached an UN-highlighted fence. vendor/prism/prism-tomorrow
+   is <link>ed after orbital.css, and its `pre[class*=language-]{background:#2d2d2d}`
+   carries the same (0,1,1) specificity as `.message-content pre` above, so
+   source order handed the black slab straight back to every fence Prism had
+   touched. One message with two fences rendered them on opposite surfaces, and
+   on dawn paper a ```python block wore a light header glued to a midnight body.
+   Out-specify the vendor rule rather than moving the <link>: Prism has to stay
+   last so its own token rules land. */
+.message-content pre[class*="language-"] { background: var(--code-bg); }
+
+/* Prism Tomorrow's token colours are drawn for that #2d2d2d canvas. Two of them
+   are also in the retired cyan/blue band the palette guard bans (#6196cc hue
+   210, #67cdcc hue 179) — they escaped the sweep only because no page in it
+   holds a code block. Fold function-name in with the other function colour and
+   give operators the sakura accent. */
+.message-content pre[class*="language-"] .token.function-name { color: #f08d49; }
+.message-content pre[class*="language-"] .token.entity,
+.message-content pre[class*="language-"] .token.operator,
+.message-content pre[class*="language-"] .token.url { color: var(--accent-cyan); }
+
+/* On dawn paper the whole palette is pastel-on-white, so repoint it. Tomorrow's
+   hue ROLES are kept (strings green, keywords violet, numbers warm) so a
+   snippet still reads the same way; every colour holds >= 5:1 on --code-bg
+   #f5eff2, and none lands in the retired 165-250 hue band. */
+html[data-theme="light"] .message-content pre[class*="language-"] .token.block-comment,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.cdata,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.comment,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.doctype,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.prolog { color: #6b5b70; }
+html[data-theme="light"] .message-content pre[class*="language-"] .token.punctuation { color: #5b4a60; }
+html[data-theme="light"] .message-content pre[class*="language-"] .token.attr-name,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.deleted,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.namespace,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.tag { color: #b3223c; }
+html[data-theme="light"] .message-content pre[class*="language-"] .token.boolean,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.function,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.function-name,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.number { color: #8f5310; }
+html[data-theme="light"] .message-content pre[class*="language-"] .token.class-name,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.constant,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.property,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.symbol { color: #7a5a00; }
+html[data-theme="light"] .message-content pre[class*="language-"] .token.atrule,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.builtin,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.important,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.keyword,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.selector { color: #7b3ea8; }
+html[data-theme="light"] .message-content pre[class*="language-"] .token.attr-value,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.char,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.regex,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.string,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.variable { color: #0b6b42; }
+html[data-theme="light"] .message-content pre[class*="language-"] .token.entity,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.operator,
+html[data-theme="light"] .message-content pre[class*="language-"] .token.url { color: #a3255d; }
+html[data-theme="light"] .message-content pre[class*="language-"] .token.inserted { color: #0b6b42; }
 
 /* Messages — a legible name/time line and roomier avatars. The bubbles were
    fine; the metadata around them was 11px grey mush. */

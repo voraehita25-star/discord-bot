@@ -80,6 +80,12 @@ test('screenshot: light theme — every page', async ({ page }) => {
     await page.evaluate(() => {
         document.documentElement.setAttribute('data-theme', 'light');
     });
+    // Every colour token animates over --dur-base (.22s) on the flip, and the
+    // per-page wait below is shorter than that — so each "light" frame here used
+    // to be a half-interpolated one. That is not a cosmetic detail for shots
+    // whose whole job is human review: the nav labels rendered pale enough to
+    // read as a contrast bug that does not exist in the settled theme.
+    await page.waitForTimeout(400);
     for (const p of ['status', 'chat']) {
         await page.evaluate((n) => {
             const fn = (window as unknown as { showPage?: (s: string) => void }).showPage;

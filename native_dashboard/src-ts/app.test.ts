@@ -11,6 +11,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 import { escapeHtml, normalizeSqliteUtc, loadSettings, saveSettings, settings, showToast } from './shared';
+import type { ToastOptions } from './types.js';
 import {
     VALID_PAGES,
     resolvePage,
@@ -884,6 +885,29 @@ describe('Toast Notifications', () => {
         const container = document.getElementById('toast-container')!;
         expect(container.children).toHaveLength(1);
         expect(container.querySelector('.toast-error')?.getAttribute('role')).toBe('alert');
+    });
+
+    // The `info` default used to sit on the PARAMETER (`options = {type:'info'}`),
+    // so it only applied when options was omitted whole. Passing only a duration
+    // — the shape window.showToast advertises as `options?: ToastOptions` — left
+    // type undefined and produced `.toast-undefined`: no border colour, no fill,
+    // no left rail, and no icon. An unstyled bare card.
+    it('falls back to info when options are given without a type', () => {
+        // Cast: the call is illegal in TS, which is exactly why nothing in the
+        // repo hit it — the guard is for the untyped callers of window.showToast.
+        showToast('no type', { duration: 1200 } as unknown as ToastOptions);
+        const container = document.getElementById('toast-container')!;
+        expect(container.children).toHaveLength(1);
+        expect(container.querySelector('.toast-info'), 'no variant class').not.toBeNull();
+        expect(container.querySelector('.toast-undefined')).toBeNull();
+        // …and the variant drives the icon, so that has to land too.
+        expect(container.querySelector('.toast-icon svg'), 'no icon glyph').not.toBeNull();
+    });
+
+    it('mutes an untyped toast with the info toasts, not with the errors', () => {
+        settings.notifications = false;
+        showToast('no type', { duration: 1200 } as unknown as ToastOptions);
+        expect(document.getElementById('toast-container')!.children).toHaveLength(0);
     });
 });
 
