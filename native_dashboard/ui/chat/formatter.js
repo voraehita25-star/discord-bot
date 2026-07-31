@@ -69,7 +69,13 @@ export function stripThinkTagsStreaming(content) {
 // image host-allowlist / https-only posture used elsewhere in this file.
 const HTTPS_URL = 'https:\\/\\/[^\\s<>"\']+';
 // [text](https://url) — text may not contain ] or a newline; URL is https-only.
-const MD_LINK_RE = new RegExp('\\[([^\\]\\n]+)\\]\\((' + HTTPS_URL + ')\\)', 'g');
+//
+// The leading `!` of an IMAGE reference is matched and dropped. <img> is
+// deliberately not in ALLOWED_TAGS (see the note there — remote images were a
+// tracking-pixel vector, and the CSP's img-src has no remote host anyway), so
+// `![alt](url)` can only ever become a link. Without consuming the `!` it
+// became a link with a literal "!" stranded in front of it.
+const MD_LINK_RE = new RegExp('!?\\[([^\\]\\n]+)\\]\\((' + HTTPS_URL + ')\\)', 'g');
 // Bare https:// autolink. Run on text OUTSIDE existing anchors only (see the
 // split in applyLinks), so it never re-wraps a URL we already turned into a
 // link. A URL must start at the string start or after whitespace/`(` so a URL
@@ -249,6 +255,83 @@ function tightenBlockSpacing(html) {
     out = out.replace(new RegExp(`(${BLOCK_CLOSE})(?:<br>|\x05)+`, 'g'), '$1');
     // Whatever survives is a genuine paragraph gap between two runs of text.
     return out.split('\x05').join(PARA_BREAK);
+}
+/**
+ * A run of consecutive list lines, as a whole block.
+ *
+ * `[ \t]*` up front is the fix: the two passes this replaces anchored the
+ * marker at column 0, so an indented sub-item was not a list line at all and
+ * ENDED the run.
+ */
+const LIST_RUN_RE = /((?:^|\n)(?:[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+.+(?:\n|$))+)/g;
+/**
+ * One list line: indent, a bullet (`-`, `*`, `+`) or a number (`1.` / `1)`),
+ * then horizontal whitespace and the text.
+ *
+ * `[ \t]+` (not `\s+`) after the marker: `\s` matches a NEWLINE, so a line
+ * holding only "-" would swallow the following line into a list item
+ * ("-\nhello" → <ul><li>-</li>…). Requiring text on the same line keeps a lone
+ * marker as prose. `+` and `1)` are accepted because CommonMark accepts them
+ * and models emit both — they used to render as literal "+ alpha" / "1) first".
+ */
+const LIST_LINE_RE = /^([ \t]*)(?:([-*+])|(\d{1,9})[.)])[ \t]+(.+)$/;
+/**
+ * Render a run of list lines as nested <ul>/<ol>, honouring both the
+ * indentation and the number the author wrote.
+ *
+ * The two column-0 passes this replaces broke a run in half at the first
+ * indented item: the sub-item leaked as literal "  - nested" text, AND the
+ * items after it opened a brand-new list. For <ol> that continuation list had
+ * no `start`, so it restarted at 1 — which is why the single most common shape
+ * an assistant emits,
+ *
+ *     1. do this
+ *     ```sh
+ *     …
+ *     ```
+ *     2. then this
+ *
+ * numbered BOTH steps "1.": the fence splits the run and the second <ol> began
+ * again from one. Emitting `start` from the authored number fixes that, and
+ * with it `3. third` (a list resuming after prose) and every nested <ol>.
+ */
+function buildListHtml(items) {
+    if (items.length === 0)
+        return '';
+    const open = (it) => it.ordered ? `<ol${it.number === 1 ? '' : ` start="${it.number}"`}>` : '<ul>';
+    const close = (ordered) => (ordered ? '</ol>' : '</ul>');
+    const stack = [];
+    let out = '';
+    for (const it of items) {
+        if (stack.length === 0 || it.indent > stack[stack.length - 1].indent) {
+            // Deeper (or the very first item). The nested list opens INSIDE the
+            // <li> that is still open — that is what makes it a sub-list rather
+            // than a sibling.
+            stack.push({ indent: it.indent, ordered: it.ordered });
+            out += open(it);
+        }
+        else {
+            out += '</li>';
+            while (stack.length > 1 && it.indent < stack[stack.length - 1].indent) {
+                out += close(stack.pop().ordered) + '</li>';
+            }
+            const top = stack[stack.length - 1];
+            if (top.ordered !== it.ordered) {
+                // Marker type changed at this depth: one list ends, another starts.
+                out += close(top.ordered);
+                stack[stack.length - 1] = { indent: it.indent, ordered: it.ordered };
+                out += open(it);
+            }
+        }
+        out += `<li>${it.text}`;
+    }
+    out += '</li>';
+    while (stack.length) {
+        out += close(stack.pop().ordered);
+        if (stack.length)
+            out += '</li>';
+    }
+    return out;
 }
 export function formatMessage(content) {
     const cached = formatCache.get(content);
@@ -531,23 +614,32 @@ function formatMessageUncached(content) {
         // \n → <br> pass keeps a boundary between the table and adjacent text.
         return `\n${placeholders.join('\n')}\n`;
     });
-    // Unordered lists: consecutive lines starting with - or *.
-    // [ \t]+ (not \s+) after the marker, mirroring the heading fix above:
-    // \s+ matches a NEWLINE, so a line containing only "-" swallowed the
-    // following line into a list item ("-\nhello" → <ul><li>-</li>…).
+    // Lists — ONE pass over each run of consecutive list lines, ordered and
+    // unordered together, so an indented sub-item nests instead of ending the
+    // run. See buildListHtml() for what the two split passes used to do to it.
     const listBlocks = [];
     const listPlaceholder = '\x03LIST_BLOCK_';
-    html = html.replace(/((?:^|\n)(?:[-*][ \t]+.+(?:\n|$))+)/g, (match) => {
-        const items = match.trim().split('\n').map(line => line.replace(/^[-*][ \t]+/, '').trim());
+    html = html.replace(LIST_RUN_RE, (match) => {
+        const items = [];
+        for (const line of match.split('\n')) {
+            const m = LIST_LINE_RE.exec(line);
+            if (!m)
+                continue; // the empty segment left by the run's leading \n
+            const [, indent, bullet, number, text] = m;
+            items.push({
+                // A tab indents to the next 4-column stop in every markdown
+                // implementation worth matching; without this a tab-indented
+                // sub-item measures 1 column and never nests.
+                indent: indent.replace(/\t/g, '    ').length,
+                ordered: bullet === undefined,
+                number: bullet === undefined ? parseInt(number, 10) : 1,
+                text: text.trim(),
+            });
+        }
+        if (items.length === 0)
+            return match;
         const i = listBlocks.length;
-        listBlocks.push('<ul>' + items.map(item => `<li>${item}</li>`).join('') + '</ul>');
-        return `\n${listPlaceholder}${i}\x03\n`;
-    });
-    // Ordered lists: consecutive lines starting with 1. 2. etc.
-    html = html.replace(/((?:^|\n)(?:\d+\.[ \t]+.+(?:\n|$))+)/g, (match) => {
-        const items = match.trim().split('\n').map(line => line.replace(/^\d+\.[ \t]+/, '').trim());
-        const i = listBlocks.length;
-        listBlocks.push('<ol>' + items.map(item => `<li>${item}</li>`).join('') + '</ol>');
+        listBlocks.push(buildListHtml(items));
         return `\n${listPlaceholder}${i}\x03\n`;
     });
     // Paragraph breaks: double+ newlines become a spaced paragraph break.
@@ -611,6 +703,12 @@ function formatMessageUncached(content) {
             // which is exactly why the MathML tag/attr whitelist below exists.
             'class', 'alt',
             'title', 'colspan', 'rowspan',
+            // <ol start> — the formatter emits it so a numbered list that
+            // resumes after a code fence or prose keeps counting instead of
+            // restarting at 1. Inert (presentational integer, no script
+            // surface), so allowing it for raw markdown-supplied <ol> too
+            // costs nothing.
+            'start',
             // <a> link attributes. href is constrained to https by
             // ALLOWED_URI_REGEXP; target/rel are (re)written by the hook so even
             // an AI-supplied target/rel is normalised to _blank/noopener.
@@ -621,6 +719,32 @@ function formatMessageUncached(content) {
             'width', 'height',
         ],
         ADD_ATTR: ['data-img-idx', 'data-code-copy'],
+        // Attributes whose VALUE must not be run through ALLOWED_URI_REGEXP.
+        //
+        // This is not an optional nicety — without it most of the ALLOWED_ATTR
+        // list above is dead. DOMPurify validates a name against ALLOWED_ATTR
+        // and THEN validates the value: anything that is not a known
+        // URI-safe attribute has to match ALLOWED_URI_REGEXP or the attribute
+        // is dropped. Ours is pinned to /^https:/i for href safety, so every
+        // attribute carrying an ordinary value ("3", "block", "normal", "1em")
+        // failed that test and was silently stripped while still LOOKING
+        // allowed. Measured: start, colspan, rowspan, width, height, display,
+        // mathvariant, encoding and focusable were all being removed; only
+        // class/alt/title/role/xmlns (DOMPurify's own URI-safe defaults) plus
+        // aria-*/data-* survived.
+        //
+        // The visible casualty was math: KaTeX renders `$$…$$` as
+        // <math display="block">, and losing that attribute dropped every
+        // block equation back to inline style — cramped fractions, and limits
+        // set beside operators instead of above and below them.
+        //
+        // href/src/target/rel are deliberately NOT listed: they must keep the
+        // https gate. Everything here is an inert presentational value that
+        // cannot execute, and the name allowlist above still applies.
+        ADD_URI_SAFE_ATTR: [
+            'start', 'colspan', 'rowspan', 'width', 'height',
+            'display', 'mathvariant', 'encoding', 'focusable',
+        ],
         // Must stay true: it is the ONLY setting that lets our own data-*
         // attributes survive DOMPurify. ADD_ATTR / ALLOWED_ATTR alone do NOT
         // whitelist data-* (proven), so without this the per-block copy button

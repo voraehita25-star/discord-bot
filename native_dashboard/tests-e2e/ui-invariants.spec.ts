@@ -1559,3 +1559,149 @@ test('the folded rail is still folded after a restart', async ({ page }) => {
     expect(after.expanded, 'the restored fold left the toggle claiming expanded').toBe('false');
     expect(after.label).toMatch(/show/i);
 });
+
+// ---------------------------------------------------------------------------
+// A reply's LISTS, in the DOM the user actually gets.
+//
+// formatter.audit5.test.ts pins the markup the formatter emits; these pin that
+// the browser then renders it as one list, with the right numbers, on screen.
+// None of it was reachable before: every spec that opened a conversation put
+// flat prose or a single code fence in it, so a nested bullet — and a numbered
+// list resuming after a fence — had never once been rendered under test.
+// ---------------------------------------------------------------------------
+const LIST_CONV = {
+    id: 'list-1', title: 'Lists', role_preset: 'default', role_name: 'General Assistant',
+    role_emoji: '\u{1F338}', role_color: '#ff6ba8', thinking_enabled: false, is_starred: false,
+    message_count: 2, created_at: '2026-07-25T09:00:00Z', ai_provider: 'gemini',
+};
+
+async function openListConversation(page: Page, content: string): Promise<void> {
+    await show(page, 'chat');
+    await sendWsFrame(page, { type: 'conversations_list', conversations: [LIST_CONV] });
+    await page.waitForTimeout(150);
+    await sendWsFrame(page, {
+        type: 'conversation_loaded',
+        conversation: LIST_CONV,
+        messages: [
+            { id: 1, role: 'user', content: 'go', created_at: '2026-07-29T18:00:00Z' },
+            { id: 2, role: 'assistant', content, created_at: '2026-07-29T18:00:05Z' },
+        ],
+    });
+    await page.waitForTimeout(600);
+}
+
+test('an indented sub-item renders as a sub-list, not as literal text', async ({ page }) => {
+    await boot(page);
+    await openListConversation(page, '- one\n- two\n  - nested item\n- three');
+
+    const seen = await page.evaluate(() => {
+        const bodies = document.querySelectorAll<HTMLElement>('#chat-messages .message-content');
+        const root = bodies[bodies.length - 1];
+        return {
+            text: (root.textContent ?? '').replace(/\s+/g, ' '),
+            topLevelLists: root.querySelectorAll(':scope > ul').length,
+            nestedLists: root.querySelectorAll('ul ul').length,
+            topItems: root.querySelectorAll(':scope > ul > li').length,
+        };
+    });
+
+    // The marker itself must never reach the page — it used to, as "- nested item".
+    expect(seen.text, 'the sub-item leaked its markdown marker').not.toContain('- nested');
+    expect(seen.nestedLists, 'the sub-item did not become a nested list').toBe(1);
+    // …and the item after it stays in the SAME list rather than starting a new one.
+    expect(seen.topLevelLists, 'the sub-list split the list in two').toBe(1);
+    expect(seen.topItems, 'the tail item left the original list').toBe(3);
+});
+
+test('a numbered list resuming after a code fence keeps counting', async ({ page }) => {
+    await boot(page);
+    await openListConversation(page, '1. first step\n\n```python\nx = 1\n```\n\n2. second step');
+
+    // The <ol> after the fence is a separate list — the fence genuinely ends the
+    // run — so the number the user sees rests entirely on `start` surviving both
+    // the formatter and DOMPurify.
+    const lists = await page.evaluate(() =>
+        Array.from(document.querySelectorAll<HTMLOListElement>('#chat-messages ol')).map((ol) => ({
+            start: ol.getAttribute('start'),
+            text: ol.textContent?.trim(),
+        })),
+    );
+
+    expect(lists.length, 'expected the fence to split the list in two').toBe(2);
+    expect(lists[0].start, 'the first list should not carry a redundant start').toBeNull();
+    expect(lists[1].start, `the second step restarted at 1 (start=${lists[1].start})`).toBe('2');
+});
+
+test('a block equation keeps its display mode through sanitisation', async ({ page }) => {
+    await boot(page);
+    // KaTeX emits <math display="block"> for $$…$$, and DOMPurify was stripping
+    // it: ALLOWED_URI_REGEXP is value-checked against non-URI attributes too, so
+    // "block" failed the https test. Every block equation silently dropped to
+    // inline style — cramped fractions, and limits set beside the operator
+    // instead of above and below it.
+    await openListConversation(page, 'Sum:\n\n$$\\sum_{i=1}^{n} \\frac{1}{i}$$');
+
+    const math = await page.evaluate(() => {
+        const el = document.querySelector('#chat-messages .math-block math');
+        return el
+            ? { display: el.getAttribute('display'), hasLimits: !!el.querySelector('munderover') }
+            : null;
+    });
+
+    expect(math, 'no MathML was rendered for the block equation').not.toBeNull();
+    expect(math!.display, 'the block equation lost display="block"').toBe('block');
+    expect(math!.hasLimits, 'expected munderover limits in display mode').toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// Pointer targets under the 24px floor (WCAG 2.5.8), in the populated states
+// that are the only place they exist. `.tag-remove` measured 12x14 — a hit box
+// smaller than the glyph drawn on it, on the one control in that strip whose
+// job is to destroy something. See the note in orbital.css.
+// ---------------------------------------------------------------------------
+test('every control in a populated chat clears the 24px target floor', async ({ page }) => {
+    await boot(page);
+    await show(page, 'chat');
+    const tagged = { ...LIST_CONV, id: 'tagged-1', tags: ['research', 'urgent'] };
+    await sendWsFrame(page, { type: 'conversations_list', conversations: [tagged] });
+    await page.waitForTimeout(150);
+    await sendWsFrame(page, {
+        type: 'conversation_loaded',
+        conversation: tagged,
+        messages: [
+            { id: 1, role: 'user', content: 'go', created_at: '2026-07-29T18:00:00Z' },
+            {
+                id: 2, role: 'assistant', created_at: '2026-07-29T18:00:05Z',
+                content: 'Here:\n\n```python\nx = 1\n```',
+            },
+        ],
+    });
+    await page.waitForTimeout(600);
+
+    const undersized = await page.evaluate(() => {
+        const out: string[] = [];
+        for (const el of document.querySelectorAll<HTMLElement>(
+            'button, a[href], input:not([type=hidden]), select, textarea, [role=button], [role=radio]',
+        )) {
+            const pg = el.closest('.page');
+            if (pg && !pg.classList.contains('active')) continue;
+            if (!el.checkVisibility()) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            // The 1x1-clip pattern: a visually-hidden control whose <label>
+            // wrapper IS the pointer target. Measured through the label, if at all.
+            if (r.width <= 2 && r.height <= 2 && el.closest('label')) continue;
+            if (r.width >= 24 && r.height >= 24) continue;
+            const cls = typeof el.className === 'string' && el.className
+                ? `.${el.className.trim().split(/\s+/)[0]}` : '';
+            out.push(`${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}${cls} ` +
+                `${r.width.toFixed(1)}x${r.height.toFixed(1)}`);
+        }
+        return [...new Set(out)];
+    });
+
+    expect(
+        undersized,
+        `controls under the 24px target floor: ${undersized.join(', ')}`,
+    ).toEqual([]);
+});
