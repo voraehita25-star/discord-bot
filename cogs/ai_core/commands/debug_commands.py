@@ -250,14 +250,18 @@ class AIDebug(commands.Cog):
             )
             embed.add_field(name="⏱️ Timing", value=f"```\n{timing_info}```", inline=True)
 
-            # Tokens
-            input_tokens = last_trace.get("input_tokens", "N/A")
-            output_tokens = last_trace.get("output_tokens", "N/A")
-            embed.add_field(
-                name="🔢 Tokens",
-                value=f"```\nInput: {input_tokens}\nOutput: {output_tokens}```",
-                inline=True,
-            )
+            # Tokens. The producer (logic.py) deliberately omits these — usage
+            # is recorded by api_handler into the token tracker instead of
+            # being threaded back through the (text, indicator, calls) return
+            # tuple both backends share. Point at !ai_tokens rather than
+            # rendering a bare "N/A" that reads like a broken field.
+            input_tokens = last_trace.get("input_tokens")
+            output_tokens = last_trace.get("output_tokens")
+            if input_tokens is None and output_tokens is None:
+                token_info = "not traced per-turn\nsee !ai_tokens"
+            else:
+                token_info = f"Input: {input_tokens}\nOutput: {output_tokens}"
+            embed.add_field(name="🔢 Tokens", value=f"```\n{token_info}```", inline=True)
 
             # RAG results
             rag_count = last_trace.get("rag_results", 0)

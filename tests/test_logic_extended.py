@@ -598,6 +598,31 @@ class TestChatManagerMethods:
             assert result is False
 
 
+class TestTraceIntent:
+    """process_chat stores an intent label in chat_data["last_trace"].
+
+    The !ai_trace panel renders a "🎯 Intent" field that had no producer at all,
+    so it read "N/A" on every request. The stored value must be a plain string
+    (the embed interpolates it directly) — not an Enum whose repr would leak
+    "Intent.QUESTION" into the panel.
+    """
+
+    def test_detect_intent_value_is_embed_safe_string(self):
+        from cogs.ai_core.processing.intent_detector import detect_intent
+
+        for text in ("สวัสดีครับ", "ทำไมถึงเป็นแบบนั้น?", "สร้างห้องใหม่ให้หน่อย", "{{Faust}} ยิ้ม"):
+            value = detect_intent(text).intent.value
+            assert isinstance(value, str)
+            assert value and "Intent." not in value
+
+    def test_blank_message_classifies_without_raising(self):
+        # Attachment-only / continue turns skip classification entirely, but the
+        # detector must stay total for any caller that doesn't pre-filter.
+        from cogs.ai_core.processing.intent_detector import detect_intent
+
+        assert isinstance(detect_intent("").intent.value, str)
+
+
 class TestSetupAI:
     """Tests for setup_ai method."""
 

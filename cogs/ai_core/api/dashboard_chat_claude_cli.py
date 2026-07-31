@@ -328,6 +328,65 @@ _PREWARM_TASKS: set[asyncio.Task[None]] = set()
 _PREWARM_SHUTDOWN = False
 
 
+def build_tools_declaration(
+    *,
+    web_enabled: bool = False,
+    webfetch_enabled: bool = False,
+    memory_tools_enabled: bool = False,
+    server_tools_enabled: bool = False,
+) -> str:
+    """The ``# Available tools (this session)`` block, or ``""`` when none apply.
+
+    Personas in this repo were written for the old Gemini backend and say things
+    like "Google Search is automatically enabled". On the Claude CLI backend that
+    is WebSearch, and without an authoritative declaration the model tells users
+    "the host hasn't enabled web search" instead of just calling the tool. This
+    block supersedes those stale claims, so it must be placed AFTER the persona.
+
+    Each flag mirrors ONE decision in :func:`_build_claude_argv`, so the caller
+    must derive them from the same resolved state the argv is built from —
+    advertising a tool the argv withholds produces confident calls that hard-fail
+    every time, which is the opposite of the problem this block exists to solve.
+    ``memory_tools_enabled`` / ``server_tools_enabled`` are split because
+    ``ai_tools_ipc.list_tool_schemas`` gates them on separate env flags
+    (``DASHBOARD_CLI_AI_TOOLS`` defaults on, ``DASHBOARD_CLI_SERVER_ACTIONS``
+    defaults off), so a turn routinely has the memory pair without the server set.
+
+    Shared with the Discord CLI path (``discord_chat_claude_cli``) so the two
+    backends cannot describe the same toolset differently.
+    """
+    tool_lines: list[str] = []
+    if web_enabled:
+        tool_lines.append(
+            "- WebSearch: search the web for current, real-time, or post-training "
+            "information. Use it whenever the answer depends on recent events or "
+            "facts you're unsure of — do NOT claim you lack web access."
+        )
+    # WebFetch is advertised separately: the argv withholds it on attachment
+    # (Read) turns for exfil-safety, so advertising it there would tell the
+    # model to "call directly" a tool that is denied. webfetch_enabled already
+    # implies web_enabled at the call site.
+    if webfetch_enabled:
+        tool_lines.append("- WebFetch: fetch and read the contents of a specific URL.")
+    if memory_tools_enabled:
+        tool_lines.append(
+            "- remember / recall_memory: save and look up long-term facts about the user."
+        )
+    if server_tools_enabled:
+        tool_lines.append(
+            "- Discord server tools (create/list channels & roles, permissions, read "
+            "channels, user info): use them to act on the server when asked."
+        )
+    if not tool_lines:
+        return ""
+    return (
+        "# Available tools (this session)\n"
+        "You have these tools available right now — call them directly; never say a "
+        'tool is "not enabled" or that the host hasn\'t enabled it. Any persona text '
+        'mentioning "Google Search" refers to WebSearch below.\n' + "\n".join(tool_lines)
+    )
+
+
 def _build_system_prompt(
     persona: str,
     *,
@@ -356,34 +415,18 @@ def _build_system_prompt(
         parts.append(f"# Persona\n{persona}")
     parts.append(f"# Timestamp convention\n{_TIMESTAMP_CONVENTION}")
 
-    tool_lines: list[str] = []
-    if web_enabled:
-        tool_lines.append(
-            "- WebSearch: search the web for current, real-time, or post-training "
-            "information. Use it whenever the answer depends on recent events or "
-            "facts you're unsure of — do NOT claim you lack web access."
-        )
-    # WebFetch is advertised separately: the argv withholds it on attachment
-    # (Read) turns for exfil-safety, so advertising it there would tell the
-    # model to "call directly" a tool that is denied. webfetch_enabled already
-    # implies web_enabled at the call site.
-    if webfetch_enabled:
-        tool_lines.append("- WebFetch: fetch and read the contents of a specific URL.")
-    if ai_tools_enabled:
-        tool_lines.append(
-            "- remember / recall_memory: save and look up long-term facts about the user."
-        )
-        tool_lines.append(
-            "- Discord server tools (create/list channels & roles, permissions, read "
-            "channels, user info): use them to act on the server when asked."
-        )
-    if tool_lines:
-        parts.append(
-            "# Available tools (this session)\n"
-            "You have these tools available right now — call them directly; never say a "
-            'tool is "not enabled" or that the host hasn\'t enabled it. Any persona text '
-            'mentioning "Google Search" refers to WebSearch below.\n' + "\n".join(tool_lines)
-        )
+    # ``ai_tools_enabled`` covers BOTH custom-tool groups here: the dashboard
+    # chat path passes no ``ai_tool_names`` to _build_claude_argv, so this flag
+    # is dormant for it today and the coarse split costs nothing. The Discord
+    # path needs the two groups separately and calls the helper directly.
+    tools_block = build_tools_declaration(
+        web_enabled=web_enabled,
+        webfetch_enabled=webfetch_enabled,
+        memory_tools_enabled=ai_tools_enabled,
+        server_tools_enabled=ai_tools_enabled,
+    )
+    if tools_block:
+        parts.append(tools_block)
     return "\n\n".join(parts)
 
 

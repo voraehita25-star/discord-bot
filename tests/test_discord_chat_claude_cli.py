@@ -1841,3 +1841,141 @@ class TestResetEpochGuardsInFlightTurn:
 
         assert text == "hello"
         assert _CHANNEL_SESSIONS[702] == "fresh-session-ghi"
+
+
+class TestDiscordToolsDeclaration:
+    """The Discord CLI path enables WebSearch/WebFetch + the ``mcp__bottools__*``
+    custom tools in argv, so the flattened prompt must DECLARE them.
+
+    Without the declaration the model falls back on its persona text (written
+    for the old Gemini backend, which claims "Google Search is automatically
+    enabled") and tells users it has no web access instead of just searching —
+    the exact failure the dashboard sibling's ``_build_system_prompt`` block
+    already prevents.
+    """
+
+    def test_note_declares_memory_tools_but_not_server_tools(self):
+        # Default deployment: DASHBOARD_CLI_AI_TOOLS on, DASHBOARD_CLI_SERVER_ACTIONS
+        # off -> only the memory pair is in argv, so only it may be advertised.
+        note = cli_mod._discord_tools_note(
+            ["mcp__bottools__remember", "mcp__bottools__recall_memory"]
+        )
+        assert "recall_memory" in note
+        assert "server tools" not in note.lower()
+
+    def test_note_declares_server_tools_when_present(self):
+        note = cli_mod._discord_tools_note(
+            ["mcp__bottools__remember", "mcp__bottools__list_channels"]
+        )
+        assert "recall_memory" in note
+        assert "server tools" in note.lower()
+
+    def test_note_declares_web_tools_when_enabled(self, monkeypatch):
+        # This path passes allow_read_for_images=False, so _build_claude_argv
+        # allow-lists BOTH WebSearch and WebFetch — advertise both.
+        monkeypatch.setattr(cli_mod, "_CLI_WEB_TOOLS_ENABLED", True)
+        note = cli_mod._discord_tools_note([])
+        assert "WebSearch" in note
+        assert "WebFetch" in note
+
+    def test_note_empty_when_nothing_enabled(self, monkeypatch):
+        monkeypatch.setattr(cli_mod, "_CLI_WEB_TOOLS_ENABLED", False)
+        assert cli_mod._discord_tools_note([]) == ""
+        assert cli_mod._discord_tools_note(None) == ""
+
+    def test_flatten_places_tools_note_after_persona(self):
+        prompt = _flatten_contents_to_prompt(
+            [{"role": "user", "parts": ["hi"]}],
+            "You are SomeCharacter. Google Search is automatically enabled.",
+            tools_note="# Available tools (this session)\n- WebSearch: search the web.",
+        )
+        assert "# Available tools (this session)" in prompt
+        # AFTER the persona so it supersedes the stale Gemini-era claim.
+        assert prompt.index("Available tools") > prompt.index("SomeCharacter")
+
+    def test_flatten_omits_section_without_note(self):
+        prompt = _flatten_contents_to_prompt([{"role": "user", "parts": ["hi"]}], "persona")
+        assert "Available tools" not in prompt
+
+    def test_flatten_empty_prompt_stays_empty_with_note(self):
+        # "nothing to send" detection must survive the new section.
+        assert _flatten_contents_to_prompt([], "", tools_note="# Available tools\n- X") == ""
+
+    def test_resumed_turn_still_carries_the_note(self):
+        # Resumed sessions drop the history recap but keep persona + tools, so
+        # the model never loses track of what it can call mid-conversation.
+        prompt = _flatten_contents_to_prompt(
+            [{"role": "user", "parts": ["hi"]}],
+            "persona",
+            include_history=False,
+            tools_note="# Available tools (this session)\n- WebSearch: search the web.",
+        )
+        assert "Available tools" in prompt
+
+    @pytest.mark.asyncio
+    async def test_streaming_turn_sends_the_declaration(self, monkeypatch):
+        """End-to-end: the prompt handed to the subprocess declares the tools."""
+        monkeypatch.setattr(cli_mod, "_CLI_WEB_TOOLS_ENABLED", True)
+        monkeypatch.setattr(cli_mod, "_ai_tool_names", lambda: ["mcp__bottools__remember"])
+        monkeypatch.setattr(cli_mod, "_ai_tools_env", lambda **_kw: {"X": "1"})
+        seen: dict[str, str] = {}
+
+        async def fake_subprocess(_argv, prompt, **kwargs):
+            seen["prompt"] = prompt
+            await kwargs["on_text_delta"]("ok")
+            return "sess-tools-1", None
+
+        send_channel = MagicMock()
+        send_channel.send = AsyncMock(return_value=MagicMock(edit=AsyncMock(), delete=AsyncMock()))
+        send_channel.guild = MagicMock(id=99)
+
+        with (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_run_claude_subprocess", side_effect=fake_subprocess),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="/usr/bin/claude",
+            ),
+        ):
+            text, _, _ = await call_claude_cli_streaming(
+                contents=[{"role": "user", "parts": ["hi"]}],
+                config_params={"system_instruction": "persona"},
+                send_channel=send_channel,
+                channel_id=911,
+            )
+
+        assert text == "ok"
+        assert "# Available tools (this session)" in seen["prompt"]
+        assert "WebSearch" in seen["prompt"]
+        assert "recall_memory" in seen["prompt"]
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_turn_sends_the_declaration(self, monkeypatch):
+        """The non-streaming sibling must not drift from the streaming path."""
+        monkeypatch.setattr(cli_mod, "_CLI_WEB_TOOLS_ENABLED", True)
+        monkeypatch.setattr(cli_mod, "_ai_tool_names", lambda: ["mcp__bottools__remember"])
+        monkeypatch.setattr(cli_mod, "_ai_tools_env", lambda **_kw: {"X": "1"})
+        seen: dict[str, str] = {}
+
+        async def fake_subprocess(_argv, prompt, **kwargs):
+            seen["prompt"] = prompt
+            await kwargs["on_text_delta"]("ok")
+            return "sess-tools-2", None
+
+        with (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_run_claude_subprocess", side_effect=fake_subprocess),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="/usr/bin/claude",
+            ),
+        ):
+            text, _, _ = await call_claude_cli(
+                contents=[{"role": "user", "parts": ["hi"]}],
+                config_params={"system_instruction": "persona"},
+                channel_id=912,
+            )
+
+        assert text == "ok"
+        assert "# Available tools (this session)" in seen["prompt"]
+        assert "recall_memory" in seen["prompt"]

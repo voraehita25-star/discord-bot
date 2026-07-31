@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 try:
@@ -278,8 +279,19 @@ class ConversationSummarizer:
             # so callers can mutate the result without affecting their input.
             return list(history)
 
-        # Create compressed history
-        summary_entry = {"role": "user", "parts": [f"[บทสรุปการสนทนาก่อนหน้า]\n{summary}"]}
+        # Create compressed history. Carry a timestamp for the same reasons
+        # history_manager.smart_trim's summary entry does: a NULL timestamp
+        # bypasses the ai_history column default on a force-replace save, and
+        # the SummaryArchiver's ``WHERE timestamp < ?`` never sees such a row.
+        # Today this result is prompt-only (logic.py never writes it back to
+        # chat_data["history"]), but the entry must be persistence-safe so a
+        # future caller can't reintroduce that trap — and logic.py's history
+        # renderer reads the field to prefix each turn with when it was sent.
+        summary_entry = {
+            "role": "user",
+            "parts": [f"[บทสรุปการสนทนาก่อนหน้า]\n{summary}"],
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
 
         compressed = [summary_entry, *recent_history]
 

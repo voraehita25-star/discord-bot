@@ -685,6 +685,23 @@ class TestSystemPromptFile:
         assert "recall_memory" in out
         assert "server tools" in out.lower()
 
+    def test_tools_declaration_splits_memory_from_server_group(self):
+        # ai_tools_ipc gates the two groups on SEPARATE env flags
+        # (DASHBOARD_CLI_AI_TOOLS on by default, DASHBOARD_CLI_SERVER_ACTIONS
+        # off), so a turn routinely has the memory pair WITHOUT the server set.
+        # Advertising server tools there tells the model it can create channels
+        # when the argv never allow-listed them.
+        memory_only = cli.build_tools_declaration(memory_tools_enabled=True)
+        assert "recall_memory" in memory_only
+        assert "server tools" not in memory_only.lower()
+
+        server_only = cli.build_tools_declaration(server_tools_enabled=True)
+        assert "server tools" in server_only.lower()
+        assert "recall_memory" not in server_only
+
+    def test_tools_declaration_empty_when_nothing_enabled(self):
+        assert cli.build_tools_declaration() == ""
+
     def test_ensure_file_is_content_addressed_and_idempotent(self, monkeypatch, tmp_path):
         monkeypatch.setattr(cli, "_SYSTEM_PROMPT_DIR", tmp_path)
         p1 = cli._ensure_system_prompt_file("same content")

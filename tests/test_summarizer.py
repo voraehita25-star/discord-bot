@@ -6,7 +6,8 @@ Tests summarization logic and history compression.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -256,6 +257,34 @@ class TestCompressHistory:
 
         # Should return original since summarization fails
         assert result == history
+
+    @pytest.mark.asyncio
+    async def test_compressed_summary_entry_carries_a_timestamp(self):
+        """The injected summary entry must be persistence-safe.
+
+        history_manager.smart_trim's sibling entry documents why: a NULL
+        timestamp bypasses the ai_history column default on a force-replace
+        save, and SummaryArchiver's ``WHERE timestamp < ?`` never sees such a
+        row. logic.py's history renderer also reads the field to prefix each
+        turn with when it was sent.
+        """
+        from cogs.ai_core.memory.summarizer import ConversationSummarizer
+
+        summarizer = ConversationSummarizer()
+        summarizer.client = MagicMock()  # non-None so compress_history proceeds
+        summarizer.summarize = AsyncMock(return_value="a summary")
+
+        history = [{"role": "user", "parts": [f"msg{i}"]} for i in range(50)]
+        result = await summarizer.compress_history(history, keep_recent=10)
+
+        assert len(result) == 11  # summary + 10 recent
+        summary_entry = result[0]
+        assert "บทสรุป" in summary_entry["parts"][0]
+        ts = summary_entry.get("timestamp")
+        assert isinstance(ts, str) and ts
+        # Parseable ISO-8601 and timezone-aware, like every other stored entry.
+        parsed = datetime.fromisoformat(ts)
+        assert parsed.tzinfo is not None
 
 
 class TestConstants:

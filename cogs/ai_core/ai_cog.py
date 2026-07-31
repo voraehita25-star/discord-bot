@@ -1326,11 +1326,22 @@ class AI(commands.Cog):
             color=Colors.SUCCESS if enable_streaming else Colors.WARNING,
         )
         if enable_streaming:
-            embed.add_field(
-                name="ℹ️ หมายเหตุ",
-                value="Streaming จะปิด Thinking Mode อัตโนมัติ\nข้อความจะอัพเดตแบบ real-time",
-                inline=False,
-            )
+            # The "streaming suppresses thinking" trade-off is an SDK-path
+            # property: call_claude_api_streaming sends the model's explicit
+            # thinking-off payload so the first chunk isn't delayed. The CLI
+            # backend (the default) has no thinking switch at all — every turn
+            # reasons at CLAUDE_EFFORT regardless — so printing the SDK note
+            # there told operators streaming bought them something it didn't,
+            # the same silent-mismatch that !thinking already guards against.
+            if getattr(self.chat_manager, "cli_mode", False):
+                note = (
+                    "ข้อความจะอัพเดตแบบ real-time\n"
+                    "แบ็กเอนด์ `cli` คิดทุกเทิร์นเสมอที่ระดับ `CLAUDE_EFFORT` "
+                    "การเปิด Streaming ไม่ได้ปิด Thinking Mode"
+                )
+            else:
+                note = "Streaming จะปิด Thinking Mode อัตโนมัติ\nข้อความจะอัพเดตแบบ real-time"
+            embed.add_field(name="ℹ️ หมายเหตุ", value=note, inline=False)
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="ratelimit", aliases=["rl"])  # type: ignore[arg-type]

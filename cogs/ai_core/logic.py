@@ -1379,6 +1379,13 @@ class ChatManager(SessionMixin, ResponseMixin):
                     _trace_turn_start = time.time()
                     _trace_rag_ms = 0.0
                     _trace_rag_results = 0
+                    # The panel renders a "🎯 Intent" field but nothing ever
+                    # produced this key, so it read "N/A" on every request.
+                    # Classified below from the RAW user text (once real text
+                    # exists) — never from ``prompt_with_context``, which is the
+                    # system-header + memory wrapper and would classify the
+                    # scaffolding instead of what the user actually said.
+                    _trace_intent = "n/a"
 
                     # 1. Prepare user avatar using helper method
                     avatar_image = await self._prepare_user_avatar(
@@ -1448,6 +1455,20 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # noise matching the placeholder words and wastes an embedding
                     # round-trip, so skip RAG + entity search unless real text exists.
                     has_user_text = bool(message and message.strip())
+
+                    # Classify intent for the !ai_trace panel. Pure compiled-regex
+                    # work on the user's own text — no I/O, no model call — and
+                    # skipped entirely for attachment-only / continue turns, whose
+                    # synthetic placeholder carries no intent to read. Wrapped so a
+                    # diagnostic field can never abort a real turn; a missing
+                    # optional module leaves the "n/a" default in place.
+                    if has_user_text:
+                        try:
+                            from .processing.intent_detector import detect_intent
+
+                            _trace_intent = detect_intent(message).intent.value
+                        except Exception:
+                            logger.debug("Intent classification skipped", exc_info=True)
 
                     # --- RAG: Retrieve Relevant Memories ---
                     rag_context = ""
@@ -1863,6 +1884,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         "rag_ms": _trace_rag_ms,
                         "rag_results": _trace_rag_results,
                         "cache_hit": False,
+                        "intent": _trace_intent,
                     }
 
                     # Check for cancellation after API call

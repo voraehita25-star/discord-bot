@@ -236,6 +236,41 @@ class TestToggleStreamingCmd:
             await cog.toggle_streaming_cmd.callback(cog, ctx, "on")
         cog.chat_manager.toggle_streaming.assert_called_once_with(7000, True)
 
+    @pytest.mark.asyncio
+    async def test_note_says_thinking_stays_on_for_cli_backend(self):
+        """The "streaming disables Thinking Mode" trade-off is SDK-path-only.
+
+        `claude -p` exposes reasoning depth solely via --effort and has no
+        thinking switch, so on the default `cli` backend every turn reasons at
+        CLAUDE_EFFORT whether streaming is on or not. Printing the SDK note
+        there told operators streaming bought them something it didn't — the
+        same silent mismatch !thinking already refuses outright.
+        """
+        cog = _make_cog()
+        ctx = _make_ctx()
+        cog.chat_manager.cli_mode = True
+        cog.chat_manager.is_streaming_enabled = MagicMock(return_value=False)
+
+        await cog.toggle_streaming_cmd.callback(cog, ctx, "on")
+
+        embed = ctx.send.call_args.kwargs["embed"]
+        note = " ".join(f.value for f in embed.fields)
+        assert "CLAUDE_EFFORT" in note
+        assert "ไม่ได้ปิด Thinking Mode" in note
+
+    @pytest.mark.asyncio
+    async def test_note_keeps_sdk_wording_on_api_backend(self):
+        cog = _make_cog()
+        ctx = _make_ctx()
+        cog.chat_manager.cli_mode = False
+        cog.chat_manager.is_streaming_enabled = MagicMock(return_value=False)
+
+        await cog.toggle_streaming_cmd.callback(cog, ctx, "on")
+
+        embed = ctx.send.call_args.kwargs["embed"]
+        note = " ".join(f.value for f in embed.fields)
+        assert "ปิด Thinking Mode อัตโนมัติ" in note
+
 
 # ============================================================================
 # ratelimit_stats_cmd (lines 1034-1056)

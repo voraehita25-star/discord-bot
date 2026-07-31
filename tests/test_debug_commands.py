@@ -542,6 +542,51 @@ class TestAITraceCommand:
 
         mock_ctx.send.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_ai_trace_tokens_point_at_ai_tokens_when_untraced(self):
+        """A bare "N/A" read like a broken field.
+
+        logic.py deliberately does NOT thread token usage back through the
+        (text, indicator, calls) tuple both backends share — api_handler records
+        it into the token tracker instead — so the panel must say where the real
+        numbers live rather than implying the trace failed.
+        """
+        from cogs.ai_core.commands.debug_commands import AIDebug
+
+        cog = AIDebug(MagicMock(spec=commands.Bot))
+        mock_ctx = MagicMock()
+        mock_ctx.channel.id = 42
+        mock_ctx.send = AsyncMock()
+
+        mock_chat_manager = MagicMock()
+        mock_chat_manager.is_streaming_enabled = MagicMock(return_value=False)
+        mock_chat_manager.chats = {
+            # Exactly what logic.py writes today: no input/output_tokens keys.
+            42: {
+                "history": [],
+                "thinking_enabled": True,
+                "last_trace": {
+                    "total_ms": 10,
+                    "api_ms": 5,
+                    "rag_ms": 1,
+                    "rag_results": 0,
+                    "cache_hit": False,
+                    "intent": "question",
+                },
+            }
+        }
+        cog._get_chat_manager = MagicMock(return_value=mock_chat_manager)
+
+        await cog.ai_trace.callback(cog, mock_ctx)
+
+        embed = mock_ctx.send.call_args.kwargs["embed"]
+        rendered = {f.name: f.value for f in embed.fields}
+        tokens = rendered["🔢 Tokens"]
+        assert "!ai_tokens" in tokens
+        assert "N/A" not in tokens
+        # The intent field must show the produced value, not the N/A default.
+        assert "question" in rendered["🎯 Intent"]
+
 
 class TestAITokensCommand:
     """Tests for ai_tokens_cmd command."""

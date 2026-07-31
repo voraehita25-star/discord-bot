@@ -23,6 +23,10 @@ Capabilities / limitations vs the SDK path:
     - Web tools: WebSearch + WebFetch are enabled (claude's built-ins) so the
       Discord AI can look up current info and read URLs. There's no Read tool
       on this path, so no local-file exfil risk. Toggle via DASHBOARD_CLI_WEB_TOOLS.
+      These — and the ``mcp__bottools__*`` custom tools — are DECLARED to the
+      model in the prompt (see ``_discord_tools_note``); the personas here were
+      written for the Gemini backend and would otherwise have the model deny
+      having web access instead of calling the tool.
     - No ``temperature`` / ``max_tokens`` overrides (CLI doesn't expose them)
     - No API failover (subscription auth has no proxy concept)
     - Images attached to Discord messages are dropped with a "[image]"
@@ -57,6 +61,7 @@ from .dashboard_chat_claude_cli import (
     _run_claude_subprocess,
     _StaleSessionError,
     _unlink_session_file_by_id,
+    build_tools_declaration,
     is_cli_backend_ready,
 )
 from .dashboard_common import strip_claude_internal_tags, strip_leading_timestamp
@@ -300,10 +305,46 @@ def reset_channel_session(channel_id: int) -> None:
     _CHANNEL_RESET_EPOCH[channel_id] = _CHANNEL_RESET_EPOCH.get(channel_id, 0) + 1
 
 
+# MCP tool names (unprefixed) served by ``ai_tools_ipc`` that belong to the
+# MEMORY group; everything else ``_ai_tool_names()`` returns is a Discord
+# server-action tool. Kept here rather than re-imported from ai_tools_ipc so this
+# module doesn't pull the aiohttp-dependent IPC module at import time.
+_MEMORY_TOOL_BASENAMES = frozenset({"remember", "recall_memory"})
+
+
+def _discord_tools_note(ai_tool_names: list[str] | None) -> str:
+    """The ``# Available tools`` block for THIS turn's resolved Discord toolset.
+
+    The Discord CLI path enables real tools — WebSearch/WebFetch (``enable_web``)
+    and the ``mcp__bottools__*`` custom tools — but the flattened prompt used to
+    describe none of them, so the model fell back on its persona text (written
+    for the old Gemini backend) and told users it had no web access instead of
+    just searching. The dashboard sibling solved this with the same block; share
+    it so the two backends can't describe the same toolset differently.
+
+    Derived from the SAME inputs ``_build_claude_argv`` is called with below, so
+    the declaration cannot advertise a tool the argv withholds:
+      * web: ``_CLI_WEB_TOOLS_ENABLED``. WebFetch is listed too because this path
+        passes ``allow_read_for_images=False``, and the argv only withholds
+        WebFetch on Read-enabled turns (exfil-safety) — there are none here.
+      * custom tools: split by ``_MEMORY_TOOL_BASENAMES`` so a deployment with
+        ``DASHBOARD_CLI_SERVER_ACTIONS`` off (the default) isn't told it can
+        create channels.
+    """
+    basenames = {name.rsplit("__", 1)[-1] for name in (ai_tool_names or [])}
+    return build_tools_declaration(
+        web_enabled=_CLI_WEB_TOOLS_ENABLED,
+        webfetch_enabled=_CLI_WEB_TOOLS_ENABLED,
+        memory_tools_enabled=bool(basenames & _MEMORY_TOOL_BASENAMES),
+        server_tools_enabled=bool(basenames - _MEMORY_TOOL_BASENAMES),
+    )
+
+
 def _flatten_contents_to_prompt(
     contents: list[dict[str, Any]],
     system_instruction: str,
     include_history: bool = True,
+    tools_note: str = "",
 ) -> str:
     """Build the single prompt string fed to ``claude -p`` via stdin.
 
@@ -322,6 +363,12 @@ def _flatten_contents_to_prompt(
     window within tens of turns). The ``# System`` persona and
     ``# Formatting rules`` stay in every turn — same persona-every-turn
     contract as the dashboard handler's ``is_resumed_session`` path.
+
+    ``tools_note`` is the ``# Available tools (this session)`` block from
+    :func:`_discord_tools_note`. It goes AFTER the persona so it supersedes
+    stale persona claims (the Gemini-era "Google Search is automatically
+    enabled"), and — like the persona — is re-sent on resumed turns so the
+    model never loses track of what it can call mid-conversation.
     """
     parts: list[str] = []
 
@@ -338,6 +385,13 @@ def _flatten_contents_to_prompt(
         parts.append("")
         parts.append("# System")
         parts.append(system_instruction.strip())
+        parts.append("")
+
+    # AFTER the persona so it overrides stale persona claims about tooling
+    # (see _discord_tools_note). Emitted even on the no-system-instruction
+    # path — the tools are enabled in argv either way.
+    if tools_note:
+        parts.append(tools_note)
         parts.append("")
 
     # Defensive prompt instruction so the model doesn't echo the
@@ -789,6 +843,9 @@ async def call_claude_cli_streaming(
             if ai_tools
             else None
         )
+        # Declare the resolved toolset in the prompt — the argv below enables
+        # web + custom tools that the persona (Gemini-era) doesn't know about.
+        tools_note = _discord_tools_note(ai_tools)
 
         # Run with retry-once on stale session — exactly mirrors the
         # dashboard handler's behaviour. The stale-session case is when
@@ -799,7 +856,10 @@ async def call_claude_cli_streaming(
             # a fresh session — including the attempt-2 stale retry, which
             # clears session_id — gets the full flattened history.
             prompt = _flatten_contents_to_prompt(
-                contents, system_instruction, include_history=session_id is None
+                contents,
+                system_instruction,
+                include_history=session_id is None,
+                tools_note=tools_note,
             )
             if (
                 session_id is None
@@ -1112,13 +1172,19 @@ async def call_claude_cli(
             if ai_tools
             else None
         )
+        # Same toolset declaration as the streaming sibling — the argv below
+        # enables the identical web + custom tools.
+        tools_note = _discord_tools_note(ai_tools)
 
         for attempt in (1, 2):
             # Same delta-on-resume rule as the streaming sibling: resumed
             # sessions skip the history recap; fresh sessions (incl. the
             # attempt-2 stale retry) re-send the full flattened history.
             prompt = _flatten_contents_to_prompt(
-                contents, system_instruction, include_history=session_id is None
+                contents,
+                system_instruction,
+                include_history=session_id is None,
+                tools_note=tools_note,
             )
             if (
                 session_id is None
