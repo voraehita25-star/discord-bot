@@ -279,6 +279,44 @@ function tightenBlockSpacing(html: string): string {
     return out.split('\x05').join(PARA_BREAK);
 }
 
+/** A run of consecutive blockquote lines (`&gt;` — post-escapeHtml). */
+const QUOTE_RUN_RE = /((?:^|\n)(?:&gt;.*(?:\n|$))+)/g;
+/** One `>` level, with the single optional space markdown allows after it. */
+const QUOTE_MARKER_RE = /^&gt;[ \t]?/;
+
+/**
+ * Render a run of quote lines, nesting on the number of `>` markers.
+ *
+ * The pass this replaces wrapped each line in its own <blockquote> and then
+ * glued neighbours together, which flattened depth: `> > inner` kept one
+ * marker as text, so a quoted quote rendered as a literal "> inner" line
+ * inside the outer quote instead of an inner one.
+ *
+ * Lines at the same depth join with <br>, which is what the old merge step
+ * produced — a bare `>` continuation line still becomes a blank line inside
+ * the quote rather than leaking a stray ">".
+ */
+function buildQuoteHtml(lines: string[]): string {
+    let out = '';
+    let depth = 0;
+    let atFresh = false;
+    for (const line of lines) {
+        let rest = line;
+        let want = 0;
+        for (let m = QUOTE_MARKER_RE.exec(rest); m; m = QUOTE_MARKER_RE.exec(rest)) {
+            rest = rest.slice(m[0].length);
+            want++;
+        }
+        while (depth < want) { out += '<blockquote>'; depth++; atFresh = true; }
+        while (depth > want) { out += '</blockquote>'; depth--; atFresh = false; }
+        if (!atFresh) out += '<br>';
+        out += rest;
+        atFresh = false;
+    }
+    while (depth > 0) { out += '</blockquote>'; depth--; }
+    return out;
+}
+
 /** One parsed markdown list line. */
 interface ListItem {
     /** Indent width in columns (a tab counts as 4). Sets the nesting depth. */
@@ -288,6 +326,29 @@ interface ListItem {
     number: number;
     /** Item text, already carrying the inline passes' HTML. */
     text: string;
+    /** `[ ]` / `[x]` task marker, if the item opened with one. */
+    task?: 'todo' | 'done';
+}
+
+/** A GitHub task-list marker at the head of an item: `- [ ] x`, `- [x] x`. */
+const TASK_MARKER_RE = /^\[([ xX])\][ \t]+(.*)$/;
+
+/**
+ * The checkbox for a task item.
+ *
+ * Not an <input type="checkbox">: DOMPurify does not allow-list <input> (and
+ * the transcript is a record, not a form — a checkbox you cannot click is worse
+ * than a drawn one). The box is painted from CSS off `.task-box`, the same
+ * technique `.code-copy-btn` uses, because sanitized message HTML cannot carry
+ * inline <svg>/<use> either.
+ *
+ * The state is ALSO carried as text, because the box is decorative to a screen
+ * reader and "done" is the whole point of the line. `aria-hidden` and `class`
+ * are the only attributes used — both proven to survive this sanitiser config.
+ */
+function taskMarkerHtml(state: 'todo' | 'done'): string {
+    return `<span class="task-box" aria-hidden="true"></span>` +
+        `<span class="task-state">${state === 'done' ? 'Done' : 'To do'}: </span>`;
 }
 
 /**
@@ -359,7 +420,10 @@ function buildListHtml(items: ListItem[]): string {
                 out += open(it);
             }
         }
-        out += `<li>${it.text}`;
+        out += it.task
+            ? `<li class="task-item${it.task === 'done' ? ' task-done' : ''}">` +
+              `${taskMarkerHtml(it.task)}${it.text}`
+            : `<li>${it.text}`;
     }
     out += '</li>';
     while (stack.length) {
@@ -554,6 +618,25 @@ function formatMessageUncached(content: string): string {
     // with the * starting the NEXT line and italicized the whole list before
     // the list extraction below ever saw it (Gemini emits * bullets).
     html = html.replace(/\*(?!\s)([^*\n]+?)(?<!\s)\*/g, '<em>$1</em>');
+    // Underscore emphasis. Held back for a long time because the obvious regex
+    // eats snake_case — `my_var_name` becoming `my<em>var</em>name` is far worse
+    // than showing a literal underscore. CommonMark already solves this: `_` may
+    // not open or close emphasis INTRA-WORD, so requiring a non-word character
+    // (or a string edge) on the outside of both delimiters is both the spec rule
+    // and the fix. `my_var_name`, `some_file.py` and every \x00…\x04 placeholder
+    // token this pipeline uses are all left alone by that guard.
+    //
+    // A bare `__init__` in prose DOES become bold — that is what CommonMark,
+    // GitHub and Discord all do with it, and the far more common way to write it
+    // (inside backticks) is already an opaque \x04 placeholder by this point.
+    html = html.replace(
+        /(^|[^A-Za-z0-9_])__(?!\s)([^_\n]+?)(?<!\s)__(?![A-Za-z0-9_])/g,
+        '$1<strong>$2</strong>',
+    );
+    html = html.replace(
+        /(^|[^A-Za-z0-9_])_(?!\s)([^_\n]+?)(?<!\s)_(?![A-Za-z0-9_])/g,
+        '$1<em>$2</em>',
+    );
 
     // Markdown links [text](url) + bare https:// autolinks. Run here, while the
     // fenced/inline code (\x01/\x04) and LaTeX (\x00) blocks are still opaque
@@ -565,27 +648,56 @@ function formatMessageUncached(content: string): string {
     // `"`/`<`/`>` in the URL is already an entity and can't break the attribute.
     html = applyLinks(html);
 
+    // Setext heading — a line of text UNDERLINED by ===. Runs before the ATX
+    // passes and before the <hr> pass, either of which would otherwise claim
+    // the underline; "Title\n=====" used to put the ===== on screen as text.
+    //
+    // ONLY the === form. CommonMark also reads "Sub\n-----" as an h2, but in
+    // this app `---` is already a horizontal rule with a test pinning it, and a
+    // divider is much the likelier intent for a line of dashes than a heading
+    // underline no model actually emits. `===` has no such competing meaning —
+    // today it renders as literal junk, so there is nothing to weigh against.
+    //
+    // The text line is fenced off from every other block: a line that already
+    // opens one (an ATX #, a quote, a table row, a list item, or any tag an
+    // earlier pass emitted) is not setext text. The underline must directly
+    // follow the text, so a "paragraph, blank line, ===" sequence is untouched.
+    html = html.replace(
+        /^(?![ \t]*$)(?![#<|]|&gt;|[-*+][ \t]|\d{1,9}[.)][ \t])([^\n]+)\n=+[ \t]*$/gm,
+        '<h1 class="md-heading">$1</h1>',
+    );
+
     // Headings (# to ######) — must be at start of line. Use [ \t]+ (not \s+)
     // between the marker and the text: \s matches a newline, so a bare "##" line
     // would let \s+ span the line break and promote the FOLLOWING line into a
     // heading (CommonMark treats a lone "#" line as an empty heading, not a
     // promotion). Requiring horizontal whitespace keeps the marker on its line.
-    html = html.replace(/^#{6}[ \t]+(.+)$/gm, '<h6 class="md-heading">$1</h6>');
-    html = html.replace(/^#{5}[ \t]+(.+)$/gm, '<h5 class="md-heading">$1</h5>');
-    html = html.replace(/^#{4}[ \t]+(.+)$/gm, '<h4 class="md-heading">$1</h4>');
-    html = html.replace(/^#{3}[ \t]+(.+)$/gm, '<h3 class="md-heading">$1</h3>');
-    html = html.replace(/^#{2}[ \t]+(.+)$/gm, '<h2 class="md-heading">$1</h2>');
-    html = html.replace(/^#{1}[ \t]+(.+)$/gm, '<h1 class="md-heading">$1</h1>');
+    //
+    // The trailing `(?:[ \t]+#+)?` is CommonMark's optional CLOSING sequence:
+    // "## Heading ##" is a heading whose text is "Heading", and the hashes used
+    // to survive into the page. It requires whitespace before the run and only
+    // whitespace after it, so "## C#" keeps its sharp and "## Tags #tag" keeps
+    // its tag — in both, what follows the # is not the end of the line.
+    const ATX_TAIL = '[ \\t]+(.+?)(?:[ \\t]+#+)?[ \\t]*$';
+    for (const level of [6, 5, 4, 3, 2, 1]) {
+        html = html.replace(
+            new RegExp(`^#{${level}}${ATX_TAIL}`, 'gm'),
+            `<h${level} class="md-heading">$1</h${level}>`,
+        );
+    }
     // Horizontal rule (--- or ___ or *** on its own line).
     html = html.replace(/^(?:---+|___+|\*\*\*+)\s*$/gm, '<hr class="md-hr">');
     // Blockquotes (> at start of line — already &gt; after escapeHtml). A bare
     // `>` with no text is a quote CONTINUATION line (markdown's paragraph
     // separator inside a quote) and must ALSO match — otherwise it leaks as a
     // literal ">" character that visually splits the quote in two.
-    html = html.replace(/^&gt;[ \t]?(.*)$/gm, '<blockquote>$1</blockquote>');
-    // Merge consecutive blockquote lines into ONE connected block (blank
-    // continuation lines become line breaks inside the same quote).
-    html = html.replace(/<\/blockquote>\n?<blockquote>/g, '<br>');
+    // Consecutive lines become ONE connected block (blank continuation lines
+    // are line breaks inside the same quote), and `>` depth nests — see
+    // buildQuoteHtml.
+    html = html.replace(QUOTE_RUN_RE, (match) => {
+        const lines = match.split('\n').filter((l) => QUOTE_MARKER_RE.test(l));
+        return lines.length === 0 ? match : `\n${buildQuoteHtml(lines)}\n`;
+    });
 
     // Markdown tables — extract into placeholders before \n → <br>.
     const tableBlocks: string[] = [];
@@ -672,6 +784,9 @@ function formatMessageUncached(content: string): string {
             const m = LIST_LINE_RE.exec(line);
             if (!m) continue; // the empty segment left by the run's leading \n
             const [, indent, bullet, number, text] = m;
+            // `- [ ] thing` is a task item; the marker belongs to the ITEM, not
+            // to the text, so it is lifted out here and drawn by the renderer.
+            const task = TASK_MARKER_RE.exec(text.trim());
             items.push({
                 // A tab indents to the next 4-column stop in every markdown
                 // implementation worth matching; without this a tab-indented
@@ -679,7 +794,8 @@ function formatMessageUncached(content: string): string {
                 indent: indent.replace(/\t/g, '    ').length,
                 ordered: bullet === undefined,
                 number: bullet === undefined ? parseInt(number, 10) : 1,
-                text: text.trim(),
+                text: (task ? task[2] : text).trim(),
+                ...(task ? { task: task[1] === ' ' ? 'todo' as const : 'done' as const } : {}),
             });
         }
         if (items.length === 0) return match;

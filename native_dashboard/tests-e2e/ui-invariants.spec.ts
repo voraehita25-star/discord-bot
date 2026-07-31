@@ -1653,6 +1653,90 @@ test('a block equation keeps its display mode through sanitisation', async ({ pa
     expect(math!.hasLimits, 'expected munderover limits in display mode').toBe(true);
 });
 
+test('a task list draws its checkboxes and still says which are done', async ({ page }) => {
+    await boot(page);
+    await openListConversation(page, '- [ ] not yet\n- [x] finished');
+    await freezeMotion(page);
+
+    for (const theme of ['dark', 'light'] as const) {
+        await page.evaluate((th) => document.documentElement.setAttribute('data-theme', th), theme);
+        await page.waitForTimeout(120);
+
+        const t = await page.evaluate(() => {
+            const srgb = (v: number): number => {
+                v /= 255;
+                return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+            };
+            const parse = (c: string): number[] => (c.match(/[\d.]+/g) ?? ['0', '0', '0']).map(Number);
+            const lum = (c: number[]): number =>
+                0.2126 * srgb(c[0]) + 0.7152 * srgb(c[1]) + 0.0722 * srgb(c[2]);
+            const over = (fg: number[], bg: number[]): number[] => {
+                const a = fg[3] ?? 1;
+                return [0, 1, 2].map((i) => fg[i] * a + bg[i] * (1 - a));
+            };
+            const ratio = (a: number, b: number): number =>
+                (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+            const opaqueBehind = (el: Element): number[] => {
+                let cur: Element | null = el.parentElement;
+                while (cur) {
+                    const c = parse(getComputedStyle(cur).backgroundColor);
+                    if ((c[3] ?? 1) > 0.95) return c;
+                    cur = cur.parentElement;
+                }
+                return [0, 0, 0, 1];
+            };
+
+            const items = Array.from(
+                document.querySelectorAll<HTMLElement>('#chat-messages .task-item'),
+            );
+            const box = (i: number): HTMLElement | null =>
+                items[i]?.querySelector<HTMLElement>('.task-box') ?? null;
+            const contrast = (el: HTMLElement | null): number => {
+                if (!el) return 0;
+                const cs = getComputedStyle(el);
+                const bg = opaqueBehind(el);
+                const border = parse(cs.borderTopColor);
+                // The checked state masks its border away and reads as a plate.
+                const ink = (border[3] ?? 1) > 0.05 ? border : parse(cs.backgroundColor);
+                return ratio(lum(over(ink, bg)), lum(bg));
+            };
+            const state = items[0]?.querySelector<HTMLElement>('.task-state') ?? null;
+            return {
+                count: items.length,
+                markers: items.map((li) => getComputedStyle(li).listStyleType),
+                todoW: box(0)?.getBoundingClientRect().width ?? 0,
+                doneW: box(1)?.getBoundingClientRect().width ?? 0,
+                todoBg: box(0) ? getComputedStyle(box(0)!).backgroundColor : '',
+                doneBg: box(1) ? getComputedStyle(box(1)!).backgroundColor : '',
+                todoContrast: contrast(box(0)),
+                doneContrast: contrast(box(1)),
+                stateDisplay: state ? getComputedStyle(state).display : '',
+                stateHidden: state ? state.getBoundingClientRect().width <= 2 : false,
+                stateText: (state?.textContent ?? '').trim(),
+            };
+        });
+
+        expect(t.count, `${theme}: the task items did not render`).toBe(2);
+        expect(t.markers, `${theme}: a task item still draws a bullet beside its box`)
+            .toEqual(['none', 'none']);
+        expect(t.todoW, `${theme}: the unchecked box has no size — the CSS never landed`)
+            .toBeGreaterThan(6);
+        expect(t.doneW, `${theme}: the checked box has no size`).toBeGreaterThan(6);
+        expect(t.doneBg, `${theme}: checked and unchecked boxes paint identically`)
+            .not.toBe(t.todoBg);
+        // WCAG 1.4.11 — the box carries state, so it is a UI component, not decoration.
+        expect(t.todoContrast, `${theme}: unchecked box is ${t.todoContrast.toFixed(2)}:1 < 3`)
+            .toBeGreaterThanOrEqual(3);
+        expect(t.doneContrast, `${theme}: checked box is ${t.doneContrast.toFixed(2)}:1 < 3`)
+            .toBeGreaterThanOrEqual(3);
+        // Visually hidden, NOT display:none — it is the only thing that tells a
+        // screen reader which items are done.
+        expect(t.stateDisplay, `${theme}: the state text left the a11y tree`).not.toBe('none');
+        expect(t.stateHidden, `${theme}: the state text is not visually hidden`).toBe(true);
+        expect(t.stateText).toMatch(/to do/i);
+    }
+});
+
 // ---------------------------------------------------------------------------
 // Pointer targets under the 24px floor (WCAG 2.5.8), in the populated states
 // that are the only place they exist. `.tag-remove` measured 12x14 — a hit box

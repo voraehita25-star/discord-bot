@@ -105,11 +105,9 @@
     --accent-green: #4ce9ab;
     --accent-red: #ff5d78;
     --accent-orange: #ffb85c;
-    --accent-violet: #c7b1ff;
 
     --glow-pink: rgba(255, 161, 194, 0.42);
     --glow-purple: rgba(199, 177, 255, 0.36);
-    --glow-amber: rgba(255, 184, 92, 0.38);
 
     /* sakura EMPHASIS — a deeper, hotter pink than the primary accent, used
        for blooms/halos only (never load-bearing text contrast). */
@@ -139,12 +137,6 @@
     --shadow-lg: 0 24px 60px rgba(7, 2, 14, 0.65);
     --shadow-glow: 0 14px 44px rgba(255, 127, 171, 0.16);
     --focus-ring: 0 0 0 3px rgba(255, 161, 194, 0.45);
-    /* legacy 3D-shadow aliases — kept so surviving styles.css refs resolve. */
-    --shadow-sm-3d: var(--shadow-sm);
-    --shadow-md-3d: var(--shadow-md);
-    --shadow-lg-3d: var(--shadow-lg);
-    --shadow-xl-3d: var(--shadow-lg);
-    --shadow-inset-3d: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 
     /* petal-soft geometry (v3 was 4/7/10 tactical-sharp) */
     --radius-sm: 6px;
@@ -184,12 +176,10 @@
     --cyan-200: rgba(255, 161, 194, .16);
     --cyan-300: rgba(255, 161, 194, .24);
     --cyan-400: rgba(255, 161, 194, .34);
-    --cyan-500: rgba(255, 161, 194, .45);
 
     /* glass blur + layering + native form scheme */
     --blur: 12px;
-    --z-base: 0; --z-sticky: 50; --z-nav: 100;
-    --z-overlay: 900; --z-modal: 1000; --z-toast: 1100;
+    --z-sticky: 50; --z-modal: 1000; --z-toast: 1100;
     color-scheme: dark;
 
     /* chart tokens (read at draw-time by app.ts drawChart — SHARED CONTRACT #1) */
@@ -205,7 +195,6 @@
     --sev-warn:  var(--accent-orange);
     --sev-info:  var(--accent-green);
     --sev-debug: var(--accent-cyan);
-    --sev-rail: 2px;
 
     /* density multiplier — consumed by the paddings we touch */
     --density: 1;
@@ -253,11 +242,9 @@ html[data-theme="light"],
     --accent-green: #0b6b42;
     --accent-red: #b3223c;
     --accent-orange: #8f5310;
-    --accent-violet: #79436f;
 
     --glow-pink: rgba(163, 37, 93, 0.18);
     --glow-purple: rgba(121, 67, 111, 0.16);
-    --glow-amber: rgba(143, 83, 16, 0.16);
 
     /* sakura (dawn) — deeper rose so emphasis stays legible on paper. */
     --accent-sakura: #ad2960;
@@ -282,12 +269,6 @@ html[data-theme="light"],
     --shadow-lg: 0 22px 50px rgba(75, 30, 55, 0.15);
     --shadow-glow: 0 12px 32px rgba(163, 37, 93, 0.14);
     --focus-ring: 0 0 0 3px rgba(163, 37, 93, 0.38);
-    /* legacy 3D-shadow aliases (light) — see :root note above */
-    --shadow-sm-3d: var(--shadow-sm);
-    --shadow-md-3d: var(--shadow-md);
-    --shadow-lg-3d: var(--shadow-lg);
-    --shadow-xl-3d: var(--shadow-lg);
-    --shadow-inset-3d: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 
     /* primary-accent tint ramp (dawn) — rose ink on paper */
     --cyan-50:  rgba(163, 37, 93, .05);
@@ -295,7 +276,6 @@ html[data-theme="light"],
     --cyan-200: rgba(163, 37, 93, .18);
     --cyan-300: rgba(163, 37, 93, .28);
     --cyan-400: rgba(163, 37, 93, .40);
-    --cyan-500: rgba(163, 37, 93, .48);
 
     color-scheme: light;
 
@@ -4494,4 +4474,59 @@ html[data-theme="light"] .sidebar .theme-toggle:hover {
     justify-content: center;
     min-width: 24px;
     min-height: 24px;
+}
+
+/* ---------------------------------------------------------------------------
+   Task lists — `- [ ] thing` / `- [x] thing`.
+   The formatter lifts the marker off the item text and emits a .task-box for
+   it (see taskMarkerHtml). It cannot be an <input type="checkbox">: <input> is
+   not allow-listed by the message sanitiser, and a checkbox nobody can click
+   would be worse than a drawn one — this is a transcript, not a form.
+   Painted with a CSS mask for the tick, the same way .code-copy-btn draws its
+   icon, because sanitized message HTML cannot carry inline <svg>/<use> either.
+   --------------------------------------------------------------------------- */
+.message-content .task-item,
+.thinking-content .task-item {
+    list-style: none;
+    /* Pull the box back into the space the bullet vacated so a task list keeps
+       the same left edge as the plain list above it. */
+    margin-left: -1.25em;
+}
+.message-content .task-box,
+.thinking-content .task-box {
+    display: inline-block;
+    width: 0.95em;
+    height: 0.95em;
+    margin-right: 0.5em;
+    vertical-align: -0.13em;
+    border: 1.5px solid var(--text-tertiary);
+    border-radius: 3px;
+    background: transparent;
+}
+.message-content .task-done > .task-box,
+.thinking-content .task-done > .task-box {
+    border-color: var(--accent-cyan);
+    background-color: var(--accent-cyan);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center / 108% no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center / 108% no-repeat;
+    /* The mask cuts the tick OUT of the plate, so the border would be masked
+       away with it — the filled plate alone reads as the checked state. */
+    border-color: transparent;
+}
+.message-content .task-done,
+.thinking-content .task-done { color: var(--text-secondary); }
+
+/* The state is carried as text too: the box is decorative to a screen reader,
+   and done-vs-todo is the entire point of the line. Same visually-hidden
+   recipe used elsewhere in this sheet. */
+.message-content .task-state,
+.thinking-content .task-state {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
 }

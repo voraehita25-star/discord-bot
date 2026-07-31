@@ -4693,15 +4693,15 @@ html[data-theme="light"] .toast::before {
     z-index: 1;
 }
 
-/* -----------------------------------------------------------------------
- * Sakura parallax — container shifts slightly with mouse movement.
- * CSS variables set by setupSakuraParallax() in shared.ts.
+/* The cursor-parallax block that sat here is gone. setupSakuraParallax() was
+ * removed from shared.ts (see the note there), so its --parallax-x/y were never
+ * set again and the transform could only ever resolve to translate3d(0,0,0) —
+ * while still doing the one thing the removal was for: a non-none transform,
+ * and the will-change beside it, made the container a stacking context that
+ * trapped the near petal layer behind .app. orbital.css had to spend a rule
+ * (`#sakura-container { transform: none; … }`) undoing this one. That rule
+ * stays as the explicit guard; this half is just deleted.
  * ---------------------------------------------------------------------*/
-#sakura-container {
-    transform: translate3d(var(--parallax-x, 0), var(--parallax-y, 0), 0);
-    transition: transform 0.5s var(--ease-smooth);
-    will-change: transform;
-}
 
 /* -----------------------------------------------------------------------
  * Chart canvas entrance — fade + slide up on first paint. JS adds
@@ -4729,7 +4729,6 @@ html[data-theme="light"] .toast::before {
 /* Preserve prefers-reduced-motion for NEW animations too */
 @media (prefers-reduced-motion: reduce) {
     .is-loading          { animation: none !important; }
-    #sakura-container    { transition: none !important; }
     .chart-card canvas   { opacity: 1; transform: none; transition: none; }
 }
 
