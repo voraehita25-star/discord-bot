@@ -5,6 +5,8 @@ Tests for utils.monitoring.logger module.
 import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class TestEmojiMap:
     """Tests for EMOJI_MAP constant."""
@@ -484,3 +486,53 @@ class TestRedactSensitive:
 
         plain = "the monkey ate a banana today"
         assert _redact_sensitive(plain) == plain
+
+    @pytest.mark.parametrize(
+        "line,secret",
+        [
+            ('config {"password": "S3cr3tP@ssw0rd!"}', "S3cr3tP@ssw0rd!"),
+            ("password=hunter2", "hunter2"),
+            ("PASSWORD='Tr0ub4dor&3'", "Tr0ub4dor&3"),
+            ('{"passwd": "sh0rt!"}', "sh0rt!"),
+            ('{"client_secret": "a!b@c#d$"}', "a!b@c#d$"),
+            ("db_password=p@ss w0rd", "p@ss"),
+            ("?password=letmein&user=bob", "letmein"),
+        ],
+    )
+    def test_redact_short_or_punctuated_credential_value(self, line, secret):
+        """A human-chosen password is too SHORT and too PUNCTUATED for the
+        machine-credential shape the keyword fallback requires (32+ chars drawn
+        from [A-Za-z0-9+/=_-]), so ``{"password": "S3cr3tP@ssw0rd!"}`` used to
+        reach the log verbatim even though ``password`` is a listed keyword."""
+        from utils.monitoring.logger import _redact_sensitive
+
+        out = _redact_sensitive(line)
+        assert secret not in out, f"credential leaked: {out!r}"
+        assert "[REDACTED]" in out
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "password check failed for user 42",
+            "the password: check the docs for the reset flow",
+            "secret santa assignments generated",
+            "rotating the password is recommended every 90 days",
+            "no password configured; falling back to anonymous auth",
+        ],
+    )
+    def test_redact_leaves_credential_prose_readable(self, line):
+        """The value-must-be-assigned rule exists so prose survives: a redactor
+        that eats "password check failed" blinds the operator to the error it
+        was meant to help diagnose."""
+        from utils.monitoring.logger import _redact_sensitive
+
+        assert _redact_sensitive(line) == line
+
+    def test_redact_short_credential_keeps_keyword_visible(self):
+        """Only the value is consumed — the keyword must survive so a reader can
+        tell WHICH class of secret was scrubbed (same contract as finding #22)."""
+        from utils.monitoring.logger import _redact_sensitive
+
+        out = _redact_sensitive('{"password": "hunter2"}')
+        assert "password" in out
+        assert "hunter2" not in out

@@ -313,6 +313,42 @@ _WEBHOOK_TOKEN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Credential keywords whose value is SHORT and/or punctuated — a human-chosen
+# password, typically. The keyword fallback inside _SECRET_PATTERNS_CI only
+# fires on a 32-128 char value drawn from ``[A-Za-z0-9+/=_-]``, i.e. the shape
+# of a MACHINE-generated credential; ``{"password": "S3cr3tP@ssw0rd!"}`` clears
+# neither the length floor nor the charset (``@``/``!``) and so survived a log
+# line verbatim, even though ``password`` is listed as a keyword there.
+#
+# Widening that value class in place is not an option: it would redact ordinary
+# prose, turning "password check failed" into "password[REDACTED] failed" and
+# blinding the operator to the actual error. This pattern instead demands an
+# unambiguous ASSIGNMENT — the value must be QUOTED or introduced by ``=``.
+# Prose never spells it either way; a config dump or kv log line always does.
+#
+# Deliberate limit: an unquoted ``password: hunter2`` is NOT matched, because
+# ``:`` followed by a bare word is exactly the shape of prose ("password: check
+# the docs"). Quoted and ``=`` forms cover the ways a credential actually
+# reaches a log line.
+#
+# Like the keyword fallback above, the lookbehind is zero-width so the keyword
+# stays visible and only the value is consumed.
+_SHORT_CREDENTIAL_PATTERN = re.compile(
+    r"(?:"
+    r"(?<![A-Za-z0-9]password)(?<=password)|"
+    r"(?<![A-Za-z0-9]passwd)(?<=passwd)|"
+    r"(?<![A-Za-z0-9]secret)(?<=secret)"
+    r")"
+    r"(?:"
+    # "password": "…"  /  'password': '…'  (JSON / dict repr)
+    r"['\"]?\s*[:=]\s*\"[^\"\r\n]{1,256}\""
+    r"|['\"]?\s*[:=]\s*'[^'\r\n]{1,256}'"
+    # password=…  (kv / query-string / env-style, unquoted)
+    r"|['\"]?\s*=\s*[^\s,;&)}\]]{1,256}"
+    r")",
+    re.IGNORECASE,
+)
+
 # URL userinfo credentials (``scheme://user:password@host``) — DB / proxy /
 # connection strings logged at WARNING/ERROR otherwise leak the password.
 # Preserve the ``://user:`` prefix and the ``@`` so the host stays readable;
@@ -336,12 +372,15 @@ def _redact_sensitive(value: str) -> str:
 
     Also redacts webhook URL path tokens and URL-embedded passwords
     (``user:pass@host``) — neither carries a keyword/prefix the pattern sets
-    above key on, so they would otherwise leak verbatim.
+    above key on, so they would otherwise leak verbatim — and assigned
+    ``password``/``secret`` values too short or too punctuated for the
+    machine-credential shape the keyword fallback requires.
     """
     if not isinstance(value, str):
         return value
     redacted = _SECRET_PATTERNS_CI.sub("[REDACTED]", value)
     redacted = _SECRET_PATTERNS_CS.sub("[REDACTED]", redacted)
+    redacted = _SHORT_CREDENTIAL_PATTERN.sub("[REDACTED]", redacted)
     redacted = _WEBHOOK_TOKEN_PATTERN.sub(r"\1[REDACTED]", redacted)
     redacted = _URL_USERINFO_PATTERN.sub(r"\1[REDACTED]\2", redacted)
     return redacted

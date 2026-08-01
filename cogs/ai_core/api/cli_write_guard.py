@@ -15,7 +15,10 @@ so a prompt-injected upload cannot drive a write to ``.env``, ``~/.claude``,
 ``~/.ssh``, the repo, the home root, or the bot's own workdir. The repo tree,
 ``~/.ssh``, and ``~/.claude`` are additionally denylisted INSIDE any allowed
 root (see ``_denied_subtrees``), so the exclusion holds even when the repo is
-cloned under a write root such as ``~/Documents``.
+cloned under a write root such as ``~/Documents``. Targets are additionally
+rejected when spelled to name a different file than they appear to — an NTFS
+data stream or a trailing dot/space — which ``resolve()`` alone does not
+canonicalise for a not-yet-existing path (see ``_deceptive_windows_spelling``).
 
 Contract (Claude Code hooks):
   - stdin  : JSON ``{"tool_name": ..., "tool_input": {...}, ...}``
@@ -37,7 +40,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import NoReturn
 
 # Tools whose target path must be inside an allowed root. NotebookEdit is also
@@ -74,6 +77,45 @@ def _allowed_roots() -> list[Path]:
 def _is_within(target: Path, root: Path) -> bool:
     """True if ``target`` is ``root`` itself or strictly beneath it."""
     return target == root or root in target.parents
+
+
+def _deceptive_windows_spelling(target_raw: str) -> str | None:
+    """Reason to reject a target that names a different file than it appears to.
+
+    ``resolve()`` canonicalises a decorated spelling only when the target ALREADY
+    EXISTS — it asks the filesystem. For a path it cannot stat it falls back to a
+    purely lexical normalisation that PRESERVES the decoration, and that is the
+    common case here: a ``Write`` usually creates a new file. The denylist below
+    then compares the still-decorated string, misses, and the allow check passes
+    it. Two NTFS/Win32 spellings exploit that:
+
+      * ``file::$DATA`` addresses the file's MAIN data stream and ``file:extra``
+        an alternate one; opening EITHER creates ``file`` itself when absent.
+        So ``~/.claude.json::$DATA`` slipped past the exact-match file ban and
+        created the real config — an ``mcpServers`` entry there is the RCE
+        vector this module exists to block. Directory bans (the repo, ``~/.ssh``,
+        ``~/.claude``) survived only because the suffix lands on the FINAL
+        component, leaving the parent chain intact; the file ban had no such luck.
+      * Windows silently strips trailing dots and spaces, so ``file.`` and
+        ``file `` both write to ``file``.
+
+    A legitimate ``Write``/``Edit`` never names a data stream, and Windows cannot
+    store a name ending in a dot or space, so reject these outright instead of
+    trying to normalise them — one less spelling to have to canonicalise
+    correctly. POSIX has neither semantic and ``:`` is a legal filename
+    character there, so the check is scoped to Windows.
+    """
+    if os.name != "nt":
+        return None
+    # PureWindowsPath keeps the drive's colon in .drive, so a ':' surviving in
+    # .name is always a stream separator (or a drive-relative spelling, equally
+    # unwelcome as an edit target).
+    name = PureWindowsPath(target_raw).name
+    if ":" in name:
+        return f"target {target_raw!r} names an NTFS data stream"
+    if name and name[-1] in ". ":
+        return f"target {target_raw!r} ends in a dot/space that Windows strips"
+    return None
 
 
 def _powershell_profile_dirs(home: Path) -> list[Path]:
@@ -164,6 +206,12 @@ def main() -> None:
     target_raw = next((tool_input[k] for k in _PATH_KEYS if tool_input.get(k)), None)
     if not target_raw or not isinstance(target_raw, str):
         _deny(f"{tool} call with no resolvable target path; denying (fail-closed)")
+
+    # Reject decorated spellings BEFORE resolve(), which cannot be relied on to
+    # strip them for a target that does not exist yet.
+    trick = _deceptive_windows_spelling(target_raw)
+    if trick:
+        _deny(f"{trick}; denying (fail-closed)")
 
     try:
         # resolve() canonicalises: collapses ``..`` and follows symlinks, so a

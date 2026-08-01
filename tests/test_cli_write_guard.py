@@ -274,6 +274,70 @@ class TestWriteGuardDeniedSubtrees:
         assert res.returncode == DENY
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="NTFS stream / trailing-dot semantics")
+class TestWriteGuardDeceptiveSpellings:
+    """A target may name a different file than it appears to.
+
+    ``Path.resolve()`` strips an NTFS stream suffix or a trailing dot/space only
+    when it can stat the target. For a file that does not exist yet — the normal
+    case for ``Write`` — it falls back to a lexical normalisation that keeps the
+    decoration, so the denylist compare misses and the write is allowed. Opening
+    ``x::$DATA`` then creates plain ``x`` with the content in its MAIN stream.
+    """
+
+    def test_denies_dot_claude_json_via_main_stream_suffix(self):
+        # ~/.claude.json::$DATA writes the REAL config (mcpServers → RCE).
+        home = Path.home()
+        res = run_guard(write_payload(f"{home / '.claude.json'}::$DATA"), [home])
+        assert res.returncode == DENY
+
+    def test_denies_dot_claude_json_via_alternate_stream(self):
+        home = Path.home()
+        res = run_guard(write_payload(f"{home / '.claude.json'}:evil"), [home])
+        assert res.returncode == DENY
+
+    @pytest.mark.parametrize("denied_dir", [".claude", ".ssh", ".discord_bot"])
+    def test_denies_protected_directory_via_stream_suffix(self, denied_dir):
+        home = Path.home()
+        res = run_guard(write_payload(f"{home / denied_dir}::$DATA"), [home])
+        assert res.returncode == DENY
+
+    @pytest.mark.parametrize("trail", [".", " "])
+    def test_denies_trailing_dot_or_space(self, trail):
+        # Windows strips both, so the write lands on ~/.claude.json itself.
+        home = Path.home()
+        res = run_guard(write_payload(f"{home / '.claude.json'}{trail}"), [home])
+        assert res.returncode == DENY
+
+    def test_denies_stream_suffix_on_an_otherwise_in_scope_target(self, tmp_path):
+        # Not about the denylist: an ADS is never a legitimate edit target, so
+        # the rejection applies inside an allowed root too.
+        root = tmp_path / "out"
+        root.mkdir()
+        res = run_guard(write_payload(f"{root / 'note.txt'}::$DATA"), [root])
+        assert res.returncode == DENY
+
+    def test_still_allows_an_ordinary_name_containing_dots(self, tmp_path):
+        # The check must not over-reject: dots are fine anywhere but the end.
+        root = tmp_path / "out"
+        root.mkdir()
+        res = run_guard(write_payload(root / "notes.2026.final.txt"), [root])
+        assert res.returncode == ALLOW
+
+    def test_long_path_prefixed_target_is_denied_not_stream_rejected(self, tmp_path):
+        # A \\?\ spelling keeps the drive colon out of the final component, so
+        # the stream check correctly ignores it. It is still denied, one step
+        # later and for an unrelated reason: resolve() preserves the prefix, so
+        # the target's drive reads as '\\?\C:' and matches no configured root.
+        # Locked in because the fail-closed direction is the safe one — a guard
+        # that started ALLOWING device-path spellings would be the regression.
+        root = (tmp_path / "out").resolve()
+        root.mkdir()
+        res = run_guard(write_payload(f"\\\\?\\{root / 'note.txt'}"), [root])
+        assert res.returncode == DENY
+        assert "outside the allowed output directories" in res.stderr
+
+
 class TestWriteGuardUnits:
     def test_is_within_self_and_child(self, tmp_path):
         from pathlib import Path
