@@ -636,6 +636,20 @@ class DashboardWebSocketServer:
 
     async def stop(self) -> None:
         """Stop the WebSocket server."""
+        # Detach the failover listener BEFORE the _running guard. __init__ —
+        # not start() — is what registers it, so a start() that raised before
+        # setting _running (port already bound, TLS cert missing, ...) leaves a
+        # bound method on api_failover pinning this dead instance forever, and
+        # every later endpoint change still tries to push to its closed
+        # sockets. One more leaked instance per retry. The listener detach is
+        # instance-scoped and idempotent, so running it unconditionally is safe.
+        if API_FAILOVER_AVAILABLE and self._failover_listener_registered:
+            try:
+                api_failover.remove_listener(self._on_endpoint_changed)
+            except Exception:
+                logger.debug("Failed to remove failover listener", exc_info=True)
+            self._failover_listener_registered = False
+
         if not self._running:
             return
 
@@ -663,16 +677,8 @@ class DashboardWebSocketServer:
         with contextlib.suppress(Exception):
             _shutdown_cli_prewarm()
 
-        # Detach the failover listener so a server restart doesn't leave a
-        # bound-method ref to the previous server instance — without this
-        # the old self stays reachable forever and any future endpoint
-        # change still tries to push to a dead WS.
-        if API_FAILOVER_AVAILABLE and self._failover_listener_registered:
-            try:
-                api_failover.remove_listener(self._on_endpoint_changed)
-            except Exception:
-                logger.debug("Failed to remove failover listener", exc_info=True)
-            self._failover_listener_registered = False
+        # (The failover listener is detached at the top of this method, above
+        # the _running guard — see the comment there.)
 
         # Close all client connections (tolerate individual failures, with a
         # timeout so an unresponsive client can't stall shutdown).
@@ -1920,6 +1926,16 @@ class DashboardWebSocketServer:
             await ws.send_json({"type": "error", "message": f"Invalid endpoint: {target}"})
             return
 
+        # A switch that actually CHANGES the endpoint dispatches
+        # _notify_listeners, and our _on_endpoint_changed listener (registered
+        # in __init__ when the failover client is live) broadcasts
+        # ``api_endpoint_switched`` to every connected client — this one
+        # included. Sending the direct ack unconditionally therefore delivered
+        # the frame twice to the requester. Note switch_endpoint also returns
+        # True for a no-op "switch" to the already-active endpoint, which
+        # dispatches nothing — that case still needs the direct ack, so gate on
+        # whether a real change occurred rather than dropping the ack outright.
+        was_active = api_failover.active_endpoint == ep_type
         success = await api_failover.switch_endpoint(ep_type, reason="dashboard manual switch")
         if success:
             # Recreate Claude client with new endpoint. ``get_client`` raises
@@ -1937,13 +1953,15 @@ class DashboardWebSocketServer:
                     }
                 )
                 return
-            await ws.send_json(
-                {
-                    "type": "api_endpoint_switched",
-                    "endpoint": api_failover.active_endpoint.value,
-                    **api_failover.get_status(),
-                }
-            )
+            broadcast_covered_it = self._failover_listener_registered and not was_active
+            if not broadcast_covered_it:
+                await ws.send_json(
+                    {
+                        "type": "api_endpoint_switched",
+                        "endpoint": api_failover.active_endpoint.value,
+                        **api_failover.get_status(),
+                    }
+                )
         else:
             await ws.send_json(
                 {"type": "error", "message": f"Cannot switch to {target}: not configured"}

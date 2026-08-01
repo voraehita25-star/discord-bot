@@ -146,6 +146,10 @@ class MusicControlView(discord.ui.View):
         gs.queue.clear()
         gs.loop = False
         gs.current_track = None
+        # Cancel an already-popped track that _play_next_once is still
+        # downloading — mirrors the text stop command. Without this the button
+        # reports "stopped" and the bot starts playing seconds later.
+        gs.play_generation += 1
         # Persist the cleared queue/loop state (mirrors text stop) so a
         # non-graceful restart doesn't resurrect the stopped queue/loop.
         self.cog._schedule_queue_save(self.guild_id)

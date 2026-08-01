@@ -795,3 +795,125 @@ class TestConcurrentSendSafety:
         # Genuinely-dead client (ConnectionError) → evicted + closed.
         assert dead not in server.clients, "ConnectionError client should be evicted"
         assert dead.close_called, "ConnectionError client should be closed"
+
+
+# ===================================================================
+# Endpoint switch acknowledgement
+# ===================================================================
+class TestSwitchEndpointAck:
+    """A manual switch must notify the requester exactly once.
+
+    ``switch_endpoint`` dispatches ``_notify_listeners`` when the endpoint
+    actually changes, and our ``_on_endpoint_changed`` listener broadcasts
+    ``api_endpoint_switched`` to every connected client — the requester
+    included. Sending the direct ack unconditionally delivered it twice.
+    """
+
+    @staticmethod
+    def _stub(active_before: str, *, switched: bool = True):
+        import cogs.ai_core.api.ws_dashboard as ws_module
+
+        stub = MagicMock()
+        stub.switch_endpoint = AsyncMock(return_value=switched)
+        stub.get_client.return_value = MagicMock()
+        stub.get_status.return_value = {}
+        before = MagicMock()
+        before.value = active_before
+        stub.active_endpoint = before
+
+        def _ep(value):
+            ep = MagicMock()
+            ep.value = value
+            # Equality with active_endpoint drives the was_active check.
+            ep.__eq__ = lambda self, other: getattr(other, "value", None) == value
+            return ep
+
+        return ws_module, stub, _ep
+
+    @pytest.mark.asyncio
+    async def test_real_switch_with_listener_sends_no_direct_ack(self, server, ws):
+        ws_module, stub, _ep = self._stub("direct")
+        server._failover_listener_registered = True
+        with (
+            patch.object(ws_module, "API_FAILOVER_AVAILABLE", True),
+            patch.object(ws_module, "api_failover", stub, create=True),
+            patch.object(ws_module, "EndpointType", _ep, create=True),
+        ):
+            await server.handle_switch_api_endpoint(ws, {"endpoint": "proxy"})
+
+        # The broadcast already covered this client.
+        assert ws.find("api_endpoint_switched") == []
+        assert ws.find("error") == []
+
+    @pytest.mark.asyncio
+    async def test_real_switch_without_listener_still_acks(self, server, ws):
+        """CLI backend never registers the listener, so nothing broadcasts —
+        the direct ack is the requester's only notification."""
+        ws_module, stub, _ep = self._stub("direct")
+        server._failover_listener_registered = False
+        with (
+            patch.object(ws_module, "API_FAILOVER_AVAILABLE", True),
+            patch.object(ws_module, "api_failover", stub, create=True),
+            patch.object(ws_module, "EndpointType", _ep, create=True),
+        ):
+            await server.handle_switch_api_endpoint(ws, {"endpoint": "proxy"})
+
+        assert len(ws.find("api_endpoint_switched")) == 1
+
+    @pytest.mark.asyncio
+    async def test_noop_switch_to_active_endpoint_still_acks(self, server, ws):
+        """switch_endpoint returns True for a switch to the already-active
+        endpoint but dispatches no listeners — dropping the ack outright would
+        leave that request silent."""
+        ws_module, stub, _ep = self._stub("proxy")
+        server._failover_listener_registered = True
+        with (
+            patch.object(ws_module, "API_FAILOVER_AVAILABLE", True),
+            patch.object(ws_module, "api_failover", stub, create=True),
+            patch.object(ws_module, "EndpointType", _ep, create=True),
+        ):
+            await server.handle_switch_api_endpoint(ws, {"endpoint": "proxy"})
+
+        assert len(ws.find("api_endpoint_switched")) == 1
+
+
+# ===================================================================
+# Shutdown teardown
+# ===================================================================
+class TestStopDetachesFailoverListener:
+    @pytest.mark.asyncio
+    async def test_stop_detaches_listener_even_when_start_never_ran(self, server):
+        """__init__ — not start() — registers the failover listener, so a
+        start() that raised before setting _running left a bound method on
+        api_failover pinning the dead server forever, and every later endpoint
+        change still tried to push to its closed sockets."""
+        import cogs.ai_core.api.ws_dashboard as ws_module
+
+        stub = MagicMock()
+        server._failover_listener_registered = True
+        server._running = False  # start() failed / never ran
+
+        with (
+            patch.object(ws_module, "API_FAILOVER_AVAILABLE", True),
+            patch.object(ws_module, "api_failover", stub, create=True),
+        ):
+            await server.stop()
+
+        stub.remove_listener.assert_called_once_with(server._on_endpoint_changed)
+        assert server._failover_listener_registered is False
+
+    @pytest.mark.asyncio
+    async def test_stop_is_idempotent_for_the_listener(self, server):
+        import cogs.ai_core.api.ws_dashboard as ws_module
+
+        stub = MagicMock()
+        server._failover_listener_registered = False
+        server._running = False
+
+        with (
+            patch.object(ws_module, "API_FAILOVER_AVAILABLE", True),
+            patch.object(ws_module, "api_failover", stub, create=True),
+        ):
+            await server.stop()
+
+        stub.remove_listener.assert_not_called()

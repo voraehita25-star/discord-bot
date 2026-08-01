@@ -145,6 +145,82 @@ class TestEditMessageInHistory:
 # ============================================================================
 
 
+class TestCliSessionInvalidation:
+    """A mirrored delete/edit must also drop the channel's ``--resume`` session.
+
+    The CLI backend is the default and a resumed turn sends only the new
+    message (``include_history=session_id is None``), so the corrected history
+    is never transmitted on a live session — the model keeps answering from the
+    pre-edit text for the rest of the conversation. Every other durable history
+    mutation already resets it, including the dashboard's own history editor
+    (``dashboard_handlers._live_session_sync``); the Discord-side mirroring was
+    the one path that did not.
+    """
+
+    @staticmethod
+    def _patch_reset():
+        return patch(
+            "cogs.ai_core.api.discord_chat_claude_cli.reset_channel_session",
+            MagicMock(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_resets_channel_session(self):
+        cm = _bare_manager({})
+        with (
+            patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=1)),
+            self._patch_reset() as mock_reset,
+        ):
+            assert await cm.remove_message_from_history(77, 10) is True
+        mock_reset.assert_called_once_with(77)
+
+    @pytest.mark.asyncio
+    async def test_edit_resets_channel_session(self):
+        cm = _bare_manager({})
+        with (
+            patch("cogs.ai_core.logic.edit_message_by_id", AsyncMock(return_value=1)),
+            self._patch_reset() as mock_reset,
+        ):
+            assert await cm.edit_message_in_history(77, 10, "new text") is True
+        mock_reset.assert_called_once_with(77)
+
+    @pytest.mark.asyncio
+    async def test_delete_miss_leaves_the_session_alone(self):
+        """Gated on a real hit — an unrelated delete must not nuke a live
+        session and force a full-history resend for nothing."""
+        cm = _bare_manager({})
+        with (
+            patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=0)),
+            self._patch_reset() as mock_reset,
+        ):
+            assert await cm.remove_message_from_history(77, 10) is False
+        mock_reset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_edit_miss_leaves_the_session_alone(self):
+        cm = _bare_manager({})
+        with (
+            patch("cogs.ai_core.logic.edit_message_by_id", AsyncMock(return_value=0)),
+            self._patch_reset() as mock_reset,
+        ):
+            assert await cm.edit_message_in_history(77, 10, "new text") is False
+        mock_reset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reset_failure_does_not_fail_the_mirror(self):
+        """The DB mutation has already committed — a best-effort session reset
+        that raises must not turn a successful delete into an exception."""
+        cm = _bare_manager({})
+        with (
+            patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=1)),
+            patch(
+                "cogs.ai_core.api.discord_chat_claude_cli.reset_channel_session",
+                MagicMock(side_effect=RuntimeError("boom")),
+            ),
+        ):
+            assert await cm.remove_message_from_history(77, 10) is True
+
+
 def _make_cog():
     from cogs.ai_core.ai_cog import AI
 

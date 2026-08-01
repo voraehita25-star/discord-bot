@@ -1760,6 +1760,41 @@ class TestLoopReplayAfterCallback:
         cog._safe_run_coroutine.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_loop_after_callback_disconnected_still_frees_file_when_loop_off(self):
+        """Loop turned off + voice client gone must still release the file.
+
+        The queue branch's after_playing already deletes on this path; the loop
+        branch returned bare, leaving the download on disk AND still named by
+        current_track — which makes _periodic_temp_cleanup skip it as in-use,
+        so it survived the 1-hour sweep too.
+        """
+        cog = make_cog()
+        gid = 954
+        ctx, vc = self._loop_ctx(cog, gid)
+        cog._safe_run_coroutine = closing_create_task_mock()
+        cog.safe_delete = AsyncMock()
+
+        player = MagicMock()
+        player.title = "L"
+        with (
+            patch("asyncio.to_thread", new=AsyncMock(return_value=True)),
+            patch("cogs.music.cog.get_ffmpeg_options", return_value={}),
+            patch("cogs.music.cog.get_ffmpeg_executable", return_value="ffmpeg"),
+            patch("cogs.music.cog.discord.FFmpegPCMAudio", return_value=MagicMock()),
+            patch("cogs.music.cog.YTDLSource", return_value=player),
+        ):
+            await cog._play_next_once(ctx)
+        after = vc.play.call_args.kwargs["after"]
+
+        cog._gs(gid).fixing = False
+        cog._gs(gid).loop = False  # user toggled loop off mid-track
+        ctx.guild.voice_client = None  # ...and the VC dropped
+        after(None)
+
+        # The unlink was scheduled; play_next was NOT (still disconnected).
+        assert cog._safe_run_coroutine.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_loop_after_callback_already_playing_returns(self):
         cog = make_cog()
         gid = 953

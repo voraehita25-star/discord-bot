@@ -409,6 +409,139 @@ class TestPlayNextOnceDispatch:
         cog.bot.change_presence.assert_awaited()
 
 
+class TestStopDuringDownload:
+    """`!stop` must beat a track that is already downloading.
+
+    _play_next_once pops the track BEFORE the multi-second yt-dlp download, so
+    inside that window none of stop's levers reach it: queue.clear() no longer
+    holds it, current_track is re-populated after the download returns, and
+    voice_client.stop() has nothing loaded to stop. The play_generation counter
+    is what closes the window.
+    """
+
+    @staticmethod
+    def _from_url_that_stops(cog, ctx, player):
+        """from_url stand-in that presses stop while the 'download' runs."""
+
+        async def _download(*_a, **_kw):
+            await cog.stop.callback(cog, ctx)
+            return player
+
+        return AsyncMock(side_effect=_download)
+
+    @pytest.mark.asyncio
+    async def test_stop_during_download_does_not_start_playback(self):
+        cog = make_cog()
+        vc = make_voice_client(playing=False, paused=False)
+        ctx = make_ctx(voice_client=vc)
+        cog._gs(ctx.guild.id).queue = collections.deque(
+            [{"url": "http://yt/watch", "title": "A Song", "type": "url"}]
+        )
+        cog._schedule_queue_save = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
+        player = make_player()
+
+        with patch(
+            "cogs.music.cog.YTDLSource.from_url",
+            self._from_url_that_stops(cog, ctx, player),
+        ):
+            result = await cog._play_next_once(ctx)
+
+        vc.play.assert_not_called()
+        assert result is False
+        # No now-playing state left behind for nowplaying / the temp janitor.
+        assert cog._gs(ctx.guild.id).current_track is None
+
+    @pytest.mark.asyncio
+    async def test_stop_during_download_releases_the_downloaded_file(self):
+        cog = make_cog()
+        vc = make_voice_client(playing=False, paused=False)
+        ctx = make_ctx(voice_client=vc)
+        cog._gs(ctx.guild.id).queue = collections.deque(
+            [{"url": "http://yt/watch", "title": "A Song", "type": "url"}]
+        )
+        cog._schedule_queue_save = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
+        player = make_player()
+
+        with patch(
+            "cogs.music.cog.YTDLSource.from_url",
+            self._from_url_that_stops(cog, ctx, player),
+        ):
+            await cog._play_next_once(ctx)
+
+        # FFmpeg killed before the unlink — Windows refuses to delete an open file.
+        player.cleanup.assert_called()
+        assert cog._safe_run_coroutine.called
+
+    @pytest.mark.asyncio
+    async def test_stop_button_also_cancels_an_in_flight_download(self):
+        """views.stop_button shares the levers, so it needs the same bump."""
+        from cogs.music.views import MusicControlView
+
+        cog = make_cog()
+        vc = make_voice_client(playing=False, paused=False)
+        ctx = make_ctx(voice_client=vc)
+        cog._gs(ctx.guild.id).queue = collections.deque(
+            [{"url": "http://yt/watch", "title": "A Song", "type": "url"}]
+        )
+        cog._schedule_queue_save = MagicMock()
+        cog._safe_run_coroutine = closing_safe_run_mock()
+        player = make_player()
+
+        view = MusicControlView(cog, ctx.guild.id)
+        interaction = MagicMock()
+        interaction.guild = ctx.guild
+        interaction.response.send_message = AsyncMock()
+        interaction.message = MagicMock()
+        interaction.message.edit = AsyncMock()
+
+        async def _download(*_a, **_kw):
+            await view.stop_button.callback(interaction)
+            return player
+
+        with patch("cogs.music.cog.YTDLSource.from_url", AsyncMock(side_effect=_download)):
+            await cog._play_next_once(ctx)
+
+        vc.play.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_undisturbed_download_still_plays(self):
+        """The guard must not fire when nobody pressed stop."""
+        cog = make_cog()
+        vc = make_voice_client(playing=False, paused=False)
+        ctx = make_ctx(voice_client=vc)
+        cog._gs(ctx.guild.id).queue = collections.deque(
+            [{"url": "http://yt/watch", "title": "A Song", "type": "url"}]
+        )
+        cog._schedule_queue_save = MagicMock()
+        player = make_player()
+
+        with patch("cogs.music.cog.YTDLSource.from_url", AsyncMock(return_value=player)):
+            await cog._play_next_once(ctx)
+
+        vc.play.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stop_before_the_track_is_popped_is_unaffected(self):
+        """A stop that lands before play_next runs leaves an empty queue —
+        the generation bump must not break that ordinary path."""
+        cog = make_cog()
+        vc = make_voice_client(playing=False, paused=False)
+        ctx = make_ctx(voice_client=vc)
+        cog._gs(ctx.guild.id).queue = collections.deque(
+            [{"url": "http://yt/watch", "title": "A Song", "type": "url"}]
+        )
+        cog._schedule_queue_save = MagicMock()
+
+        await cog.stop.callback(cog, ctx)
+        result = await cog._play_next_once(ctx)
+
+        vc.play.assert_not_called()
+        assert result is False
+        assert cog._gs(ctx.guild.id).current_track is None
+
+
 class TestAfterPlayingCallback:
     """Drive the after_playing inner callback defined during dispatch (1075-1101)."""
 

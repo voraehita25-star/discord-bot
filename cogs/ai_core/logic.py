@@ -868,6 +868,34 @@ class ChatManager(SessionMixin, ResponseMixin):
 
         return PATTERN_AI_TAG_COMMENT.sub(replace_comment_with_tag, text)
 
+    def _drop_cli_session_after_history_mutation(self, channel_id: int) -> None:
+        """Invalidate the channel's Claude-CLI ``--resume`` session after an edit.
+
+        The CLI backend is the DEFAULT, and a resumed turn sends only the new
+        message — ``discord_chat_claude_cli`` passes
+        ``include_history=session_id is None``, so on a live session the locally
+        corrected history is never transmitted at all. Correcting our own copy
+        therefore changes nothing the model sees: the server-side session still
+        holds the pre-edit text and keeps answering from it for the rest of the
+        conversation. Dropping the session forces the next turn to start fresh
+        and resend the full, corrected history.
+
+        Every other durable history mutation already does this — ``reset_ai``,
+        channel delete, memory link/move, and the dashboard's own history editor
+        (``dashboard_handlers._live_session_sync``, which spells out the same
+        hazard). Discord-side delete/edit mirroring was the one path that did not.
+
+        Best-effort by design: the DB mutation has already committed, so a
+        failure here must never propagate to the caller. Gated on an actual hit
+        by both callers so an unrelated message delete cannot drop a live session.
+        """
+        try:
+            from .api.discord_chat_claude_cli import reset_channel_session
+
+            reset_channel_session(channel_id)
+        except Exception:
+            logger.exception("Failed to reset Discord CLI session for channel %s", channel_id)
+
     async def remove_message_from_history(self, channel_id: int, message_id: int) -> bool:
         """Drop a message from the channel's memory by its Discord ``message_id``.
 
@@ -880,6 +908,11 @@ class ChatManager(SessionMixin, ResponseMixin):
         in-memory rebuild is a synchronous list comprehension (no ``await`` in
         the middle), so it is atomic against ``process_chat`` on the single
         event loop and never corrupts a history being rendered.
+
+        On a hit the channel's Claude-CLI ``--resume`` session is dropped too —
+        see :meth:`_drop_cli_session_after_history_mutation`, without which the
+        "stops feeding future prompts" guarantee above is false on the default
+        backend.
 
         Returns True if anything was removed from memory or storage.
         """
@@ -900,7 +933,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                 session.pop("_compress_cache", None)
 
         deleted_rows = await delete_message_by_id(channel_id, message_id)
-        return removed_in_memory or deleted_rows > 0
+        hit = removed_in_memory or deleted_rows > 0
+        if hit:
+            self._drop_cli_session_after_history_mutation(channel_id)
+        return hit
 
     async def edit_message_in_history(
         self, channel_id: int, message_id: int, new_content: str
@@ -928,7 +964,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                 session.pop("_compress_cache", None)
 
         updated_rows = await edit_message_by_id(channel_id, message_id, new_content)
-        return updated_in_memory or updated_rows > 0
+        hit = updated_in_memory or updated_rows > 0
+        if hit:
+            self._drop_cli_session_after_history_mutation(channel_id)
+        return hit
 
     def patch_history_content(
         self, channel_id: int, *, row: dict[str, Any], new_content: str, occurrence: int = 0

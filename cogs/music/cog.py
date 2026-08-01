@@ -73,6 +73,16 @@ class MusicGuildState:
     # True once load_queue() has been attempted for this guild — the
     # persisted queue is restored lazily on first activity after a restart.
     queue_loaded: bool = False
+    # Bumped by every command that means "stop playing" (!stop, the ⏹ button).
+    # _play_next_once pops a track off the queue BEFORE the multi-second
+    # yt-dlp download, so by the time it calls voice_client.play() none of
+    # stop's usual levers can reach that track: queue.clear() no longer
+    # contains it, current_track is re-populated after the download, and
+    # voice_client.stop() is a no-op because nothing is loaded yet. stop also
+    # never takes play_lock, so it runs freely inside that window. Comparing
+    # this counter across the download is what lets the player notice it was
+    # cancelled and throw the track away instead of starting it.
+    play_generation: int = 0
 
 
 class Music(commands.Cog):
@@ -1169,6 +1179,16 @@ class Music(commands.Cog):
                             # False even though a fresh VC is fully playable.
                             live_vc = ctx.guild.voice_client if ctx.guild else None
                             if not live_vc or not live_vc.is_connected():
+                                # Still drop the file when loop was turned off
+                                # mid-track, exactly as the queue branch's
+                                # after_playing does. Returning bare left it on
+                                # disk AND still named by current_track, which
+                                # makes _periodic_temp_cleanup skip it as
+                                # in-use — so it survived the 1-hour sweep and
+                                # sat there until some later track replaced
+                                # current_track.
+                                if not self._gs(guild_id).loop:
+                                    self._safe_run_coroutine(self.safe_delete(filename))
                                 return
 
                             if not self._gs(guild_id).loop:
@@ -1302,6 +1322,10 @@ class Music(commands.Cog):
                                 return _retry_next
                             play_url = search_info["webpage_url"]
 
+                        # Snapshot the cancellation counter across the download
+                        # below — see MusicGuildState.play_generation.
+                        play_generation = self._gs(guild_id).play_generation
+
                         # Use Download Mode (stream=False)
                         player = await YTDLSource.from_url(
                             play_url, loop=asyncio.get_running_loop(), stream=False
@@ -1366,6 +1390,43 @@ class Music(commands.Cog):
                                 return
 
                             self._safe_run_coroutine(self.play_next(ctx))
+
+                        # The user may have pressed stop while the download
+                        # above was in flight. Nothing else catches that: the
+                        # track left the queue before the await, so the
+                        # queue.clear() stop performs cannot reach it, and
+                        # voice_client.stop() found nothing loaded to stop.
+                        # Without this the bot cheerfully starts a track the
+                        # user already cancelled, with no way to tell why.
+                        # (!leave is absorbed by accident — play() on a
+                        # disconnected client raises ClientException, caught
+                        # below — but stop leaves the client connected.)
+                        if self._gs(guild_id).play_generation != play_generation:
+                            logger.info(
+                                "Playback cancelled during download for guild %s — "
+                                "discarding track",
+                                guild_id,
+                            )
+                            # current_track was re-populated at the top of this
+                            # block; clear it so nowplaying and the temp janitor
+                            # (which skips files named by current_track) don't
+                            # treat the discarded file as live.
+                            self._gs(guild_id).current_track = None
+                            # cleanup() BEFORE safe_delete, like the error
+                            # branches below: FFmpeg still holds the file open
+                            # and Windows refuses to unlink an open file. The
+                            # finally block calls cleanup() again since
+                            # player_handed_off stays False — harmless, and
+                            # exactly what those branches already do.
+                            try:
+                                player.cleanup()
+                            except Exception as cleanup_err:
+                                logger.debug(
+                                    "Player cleanup failed (non-critical): %s", cleanup_err
+                                )
+                            if player_filename and not self._gs(guild_id).loop:
+                                self._safe_run_coroutine(self.safe_delete(player_filename))
+                            return False
 
                         try:
                             voice_client.play(player, after=after_playing)
@@ -2314,6 +2375,10 @@ class Music(commands.Cog):
         gs.queue.clear()  # Clear in place so concurrent play_next sees empty
         gs.loop = False  # Disable loop
         gs.current_track = None
+        # Cancel a track that _play_next_once already popped and is currently
+        # downloading — none of the three lines above can reach it, and
+        # voice_client.stop() below has nothing loaded to stop.
+        gs.play_generation += 1
         self._schedule_queue_save(ctx.guild.id)
 
         # Cancel any pending auto-disconnect timer; otherwise a stop while
