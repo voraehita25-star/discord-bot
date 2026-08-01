@@ -1292,45 +1292,44 @@ fn main() {
                     })
         })
         .map(|dsn| {
-            sentry::init((
-                dsn,
-                sentry::ClientOptions {
-                    release: sentry::release_name!(),
-                    // Never ship absolute paths, the machine hostname, or
-                    // oversized free text to the third-party ingest. Frontend
-                    // error forwards routinely embed the install dir, the user's
-                    // profile path, and large chat/server-error bodies, and the
-                    // SDK auto-populates the hostname into `server_name`.
-                    //
-                    // Coverage: we scrub `event.message` and every
-                    // `event.exception.values[].value` in place, and null
-                    // `event.server_name`. We do NOT walk stacktrace frame
-                    // `abs_path`/`filename` — those are not scrubbed here.
-                    //
-                    // Scope note: the text scrubber only redacts absolute *paths*
-                    // and truncates — it is deliberately NARROWER than the Python
-                    // bot's before_send (utils/monitoring/sentry_integration.py),
-                    // which also strips API keys/tokens/PII. The Rust dashboard
-                    // never handles those secrets, so path redaction + truncation
-                    // is the relevant control here; do not mistake it for a full
-                    // secret scrubber.
-                    before_send: Some(std::sync::Arc::new(|mut event| {
-                        if let Some(msg) = event.message.take() {
-                            event.message = Some(scrub_sentry_text(&msg));
-                        }
-                        for exc in event.exception.values.iter_mut() {
-                            if let Some(val) = exc.value.take() {
-                                exc.value = Some(scrub_sentry_text(&val));
-                            }
-                        }
-                        // Drop the auto-populated machine hostname so it never
-                        // leaves the machine (fail-closed; not free text we scrub).
-                        event.server_name = None;
-                        Some(event)
-                    })),
-                    ..Default::default()
-                },
-            ))
+            // Built field-by-field rather than with a struct expression:
+            // ClientOptions is #[non_exhaustive], which forbids struct-literal
+            // construction from another crate outright — `..Default::default()`
+            // does NOT grant an exception (E0639).
+            let mut options = sentry::ClientOptions::default();
+            options.release = sentry::release_name!();
+            // Never ship absolute paths, the machine hostname, or oversized free
+            // text to the third-party ingest. Frontend error forwards routinely
+            // embed the install dir, the user's profile path, and large
+            // chat/server-error bodies, and the SDK auto-populates the hostname
+            // into `server_name`.
+            //
+            // Coverage: we scrub `event.message` and every
+            // `event.exception.values[].value` in place, and null
+            // `event.server_name`. We do NOT walk stacktrace frame
+            // `abs_path`/`filename` — those are not scrubbed here.
+            //
+            // Scope note: the text scrubber only redacts absolute *paths* and
+            // truncates — it is deliberately NARROWER than the Python bot's
+            // before_send (utils/monitoring/sentry_integration.py), which also
+            // strips API keys/tokens/PII. The Rust dashboard never handles those
+            // secrets, so path redaction + truncation is the relevant control
+            // here; do not mistake it for a full secret scrubber.
+            options.before_send = Some(std::sync::Arc::new(|mut event| {
+                if let Some(msg) = event.message.take() {
+                    event.message = Some(scrub_sentry_text(&msg));
+                }
+                for exc in event.exception.values.iter_mut() {
+                    if let Some(val) = exc.value.take() {
+                        exc.value = Some(scrub_sentry_text(&val));
+                    }
+                }
+                // Drop the auto-populated machine hostname so it never
+                // leaves the machine (fail-closed; not free text we scrub).
+                event.server_name = None;
+                Some(event)
+            }));
+            sentry::init((dsn, options))
         });
 
     let bot_manager = BotManager::new(base_path.clone());

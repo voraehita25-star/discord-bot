@@ -324,7 +324,7 @@ jobs:
       working-directory: rust_extensions
       run: cargo clippy --all -- -D warnings
 
-    - name: Run Cargo audit (extensions)
+    - name: Run Cargo audit (extensions + dashboard)
       # Pin cargo-audit. Without ``--version``, every CI run installs
       # whatever the registry serves now — a compromised crates.io publish
       # would propagate immediately. Use ``--locked`` so the pinned
@@ -332,9 +332,17 @@ jobs:
       # 0.22.1+ is required to parse CVSS 4.0 advisories — the RustSec DB
       # now contains them and 0.21.2 fails every run with
       # "unsupported CVSS version: 4.0" (verified in CI logs).
+      #
+      # BOTH lockfiles are audited. Auditing only rust_extensions left the
+      # dashboard — the binary users actually run — with no advisory gate at
+      # all, and it had accumulated 7 (4x rustls-webpki via an old sentry, 2x
+      # quick-xml, 1x quinn-proto) before anyone looked. cargo audit reads
+      # Cargo.lock, which pins every platform's dependencies, so this one
+      # ubuntu run covers the Windows release build's tree too.
       run: |
         cargo install cargo-audit --version 0.22.2 --locked
-        cd rust_extensions && cargo audit
+        cargo audit --file rust_extensions/Cargo.lock
+        cargo audit --file native_dashboard/Cargo.lock
 
   # ============================================================
   # Native Dashboard Tests (Rust + TypeScript)
