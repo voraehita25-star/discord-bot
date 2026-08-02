@@ -742,3 +742,103 @@ class TestModuleImports:
         assert PATTERN_CHARACTER_TAG is not None
         assert PATTERN_CHANNEL_ID is not None
         assert PATTERN_DISCORD_EMOJI is not None
+
+
+class TestProcessChatRagScoping:
+    """Regression: ``process_chat`` must scope RAG retrieval to the channel.
+
+    ``remember`` writes are channel-tagged (``tool_executor`` passes
+    ``channel_id=origin_channel.id`` into ``add_memory``), but this read used
+    to omit the filter — and ``channel_id=None`` propagates all the way to
+    ``get_all_rag_memories``, which then drops its ``WHERE channel_id = ?``
+    clause. A fact stored in one guild's channel therefore surfaced in another
+    guild's prompt. These tests drive the REAL ``process_chat`` far enough to
+    observe the retrieval call.
+    """
+
+    @staticmethod
+    def _make_manager(channel_id):
+        """A ChatManager wired with the minimum needed to reach the RAG call."""
+        import contextlib
+
+        from cogs.ai_core.logic import ChatManager
+
+        with patch.object(ChatManager, "setup_ai"):
+            mgr = ChatManager(MagicMock())
+
+        mgr.client = MagicMock()  # pass the "AI initialised" gate
+        mgr.cli_mode = False
+        mgr.get_chat_session = AsyncMock(return_value={"history": []})
+        mgr._prepare_user_avatar = AsyncMock(return_value=None)
+        mgr._process_attachments = AsyncMock(return_value=([], [], []))
+        mgr._load_character_image = MagicMock(return_value=None)
+        mgr._build_api_config = MagicMock(return_value={})
+        mgr._call_gemini_api = AsyncMock(return_value=("reply", "", []))
+        mgr.is_streaming_enabled = MagicMock(return_value=False)
+        mgr._process_response_text = MagicMock(return_value="reply")
+        mgr._maybe_track_feedback = AsyncMock()
+
+        channel = MagicMock()
+        channel.id = channel_id
+        channel.guild = MagicMock()
+        channel.guild.id = 555
+        channel.send = AsyncMock()
+        channel.typing = MagicMock(
+            return_value=MagicMock(
+                __aenter__=AsyncMock(return_value=None), __aexit__=AsyncMock(return_value=None)
+            )
+        )
+
+        user = MagicMock()
+        user.id = 42
+        user.display_name = "Tester"
+
+        return mgr, channel, user, contextlib
+
+    async def _run(self, channel_id, monkeypatch):
+        """Drive process_chat once; return the captured search_memory kwargs."""
+        from cogs.ai_core import logic as logic_mod
+
+        mgr, channel, user, _ = self._make_manager(channel_id)
+
+        captured = {}
+
+        async def fake_search(query, limit=3, channel_id=None):
+            captured["query"] = query
+            captured["limit"] = limit
+            captured["channel_id"] = channel_id
+            return []
+
+        monkeypatch.setattr(logic_mod.rag_system, "search_memory", fake_search)
+        monkeypatch.setattr(logic_mod, "save_history", AsyncMock(return_value=True))
+        monkeypatch.setattr(logic_mod, "update_message_id", AsyncMock())
+        monkeypatch.setattr(logic_mod.entity_memory, "get_all_entities", AsyncMock(return_value=[]))
+        # ``enabled`` is a read-only property on the consolidator, so patch it
+        # on the TYPE — the instance has no setter.
+        monkeypatch.setattr(
+            type(logic_mod.memory_consolidator), "enabled", property(lambda _self: False)
+        )
+
+        await mgr.process_chat(channel, user, "do you remember my address?")
+        return captured
+
+    async def test_retrieval_is_scoped_to_the_channel(self, monkeypatch):
+        captured = await self._run(9001, monkeypatch)
+
+        assert captured, "process_chat never reached the RAG retrieval call"
+        assert captured["channel_id"] == 9001, (
+            "RAG retrieval ran unscoped — memories from every channel/guild "
+            "would be pulled into this channel's prompt"
+        )
+
+    async def test_a_different_channel_asks_for_its_own_scope(self, monkeypatch):
+        captured = await self._run(9002, monkeypatch)
+
+        assert captured["channel_id"] == 9002
+
+    async def test_the_user_text_is_the_query_not_the_wrapper(self, monkeypatch):
+        """The query must be the user's own text, not the system-header wrapper."""
+        captured = await self._run(9003, monkeypatch)
+
+        assert captured["query"] == "do you remember my address?"
+        assert "---END SYSTEM CONTEXT---" not in captured["query"]

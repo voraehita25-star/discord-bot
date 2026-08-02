@@ -1514,10 +1514,18 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     if has_user_text:
                         try:
-                            # Search global memories + channel specific
+                            # Scope retrieval to THIS channel. ``remember`` writes
+                            # are already channel-tagged (tool_executor passes
+                            # ``channel_id=origin_channel.id`` to add_memory), but
+                            # this read omitted the filter, and ``channel_id=None``
+                            # means "search every channel" all the way down to
+                            # ``get_all_rag_memories`` — so a fact stored in one
+                            # guild's channel surfaced in another guild's prompt.
+                            # Passing it makes read scope match write scope; the
+                            # rows are untouched, only retrieval narrows.
                             _rag_start = time.time()
                             memories = await rag_system.search_memory(
-                                display_message, limit=RAG_TOP_K
+                                display_message, limit=RAG_TOP_K, channel_id=channel_id
                             )
                             self.record_timing("rag_search", time.time() - _rag_start)
                             _trace_rag_ms = (time.time() - _rag_start) * 1000
