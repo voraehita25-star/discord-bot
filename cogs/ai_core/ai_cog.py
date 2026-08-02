@@ -715,10 +715,17 @@ class AI(commands.Cog):
         fires even for messages the gateway never cached. Matches the user turn
         that carried this id and, when the bot's own reply id was recorded, the
         reply too.
+
+        ``cached_message`` is passed on when the gateway had it: MESSAGE_DELETE
+        itself carries no content, and the deleted TEXT is what lets a turn that
+        went out as several messages lose only the deleted line instead of the
+        whole turn (see ``remove_message_from_history``).
         """
         try:
+            cached = getattr(payload, "cached_message", None)
+            deleted_content = getattr(cached, "content", None) if cached is not None else None
             removed = await self.chat_manager.remove_message_from_history(
-                payload.channel_id, payload.message_id
+                payload.channel_id, payload.message_id, deleted_content
             )
             if removed:
                 logger.info(
@@ -732,9 +739,20 @@ class AI(commands.Cog):
     @commands.Cog.listener()
     async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent) -> None:
         """Mirror a Discord *bulk* deletion (purge/moderation) into AI memory."""
+        # Same reason as the single-delete listener: the cached text is what
+        # keeps a partially-deleted multi-message turn intact.
+        # NB: not ``msg`` as the loop name — the module imports a localization
+        # helper by that name and a comprehension binding would shadow it.
+        cached_by_id = {
+            cached_msg.id: cached_msg.content
+            for cached_msg in (getattr(payload, "cached_messages", None) or [])
+            if getattr(cached_msg, "id", None) is not None
+        }
         for message_id in payload.message_ids:
             try:
-                await self.chat_manager.remove_message_from_history(payload.channel_id, message_id)
+                await self.chat_manager.remove_message_from_history(
+                    payload.channel_id, message_id, cached_by_id.get(message_id)
+                )
             except Exception:
                 logger.exception("Failed to sync bulk Discord delete for message %s", message_id)
 

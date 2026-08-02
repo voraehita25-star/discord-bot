@@ -13,7 +13,6 @@ import discord
 from discord.ext import commands
 
 from ..commands.server_commands import (
-    COMMAND_HANDLERS,
     cmd_add_role,
     cmd_create_category,
     cmd_create_role,
@@ -749,80 +748,6 @@ async def execute_tool_call(
         return f"Error executing {fname}: {type(e).__name__}"
 
 
-async def execute_server_command(bot, origin_channel, user, cmd_type, cmd_args):  # pylint: disable=unused-argument
-    """Execute server management commands using the dispatcher.
-
-    Args:
-        bot: The Discord bot instance (unused)
-        origin_channel: The channel where the command was issued
-        user: The user who triggered the command
-        cmd_type: The type of command to execute
-        cmd_args: Arguments for the command
-    """
-    # In DMs `user` is a discord.User without `guild_permissions`, so a bare
-    # attribute access used to crash with AttributeError before the DM guard
-    # below kicked in. Reject DM invocations explicitly first.
-    if not hasattr(user, "guild_permissions"):
-        await origin_channel.send(
-            "❌ คำสั่งนี้ใช้ได้เฉพาะใน server เท่านั้น",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        return
-    if not user.guild_permissions.administrator:
-        logger.warning("⚠️ User %s tried Admin Command %s without perm.", user, cmd_type)
-        # display_name is user-controlled (a nickname can embed <@id> text);
-        # the bot default allows user pings, so disable mentions explicitly.
-        await origin_channel.send(
-            f"⛔ คำสั่งนี้สำหรับ Admin เท่านั้น ({user.display_name})",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        return
-
-    try:
-        # Check if channel has guild (should always be true for server commands)
-        if not hasattr(origin_channel, "guild") or not origin_channel.guild:
-            logger.warning("Server command called in non-guild channel")
-            await origin_channel.send(
-                "❌ คำสั่งนี้ใช้ได้เฉพาะใน server เท่านั้น",
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-            return
-
-        guild = origin_channel.guild
-
-        # Validate cmd_args
-        if not cmd_args:
-            cmd_args = ""
-
-        args = [arg.strip() for arg in cmd_args.split("|") if arg.strip()]
-        name = args[0] if args else ""
-
-        # Validation
-        if name and len(name) > 100:
-            await origin_channel.send(
-                "❌ ชื่อยาวเกินไป (สูงสุด 100 ตัวอักษร)",
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-            return
-
-        # Dispatch. Pass the requesting user so each handler can enforce a
-        # per-action permission check (e.g. delete_channel requires the
-        # user to have manage_channels, not just the bot's admin grant).
-        #
-        # COMMAND_HANDLERS is keyed entirely in UPPER_SNAKE ('CREATE_TEXT',
-        # 'DELETE_CHANNEL', ...). Normalize the lookup so a caller passing a
-        # lowercase cmd_type ('create_text') dispatches instead of silently
-        # falling through to the unknown-command branch.
-        handler = COMMAND_HANDLERS.get(str(cmd_type).upper()) if cmd_type else None
-        if handler:
-            await handler(guild, origin_channel, name, args, user)
-        else:
-            logger.warning("Unknown command type: %s", cmd_type)
-
-    except (discord.DiscordException, ValueError) as err:
-        logger.error("Failed to execute server command %s: %s", cmd_type, err)
-
-
 async def send_as_webhook(bot, channel, name, message):
     """Send a message using a webhook to mimic Tupperbox with correct avatar.
 
@@ -1125,7 +1050,6 @@ async def send_as_webhook(bot, channel, name, message):
 
 
 __all__ = [
-    "execute_server_command",
     "execute_tool_call",
     "send_as_webhook",
 ]

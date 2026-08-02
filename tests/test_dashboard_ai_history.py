@@ -2988,6 +2988,7 @@ async def test_restore_with_null_optional_fields(fresh_db):
         "role": "model",
         "content": "ghost",
         "message_id": None,
+        "sent_message_ids": None,
         "timestamp": None,
         "user_id": None,
     }
@@ -2995,6 +2996,101 @@ async def test_restore_with_null_optional_fields(fresh_db):
 
     got = await fresh_db.get_ai_history_message(59, anchor_id + 50)
     assert got == row
+
+
+@pytest.mark.asyncio
+async def test_sent_message_ids_round_trip_through_the_column(fresh_db):
+    """A turn that went out as several Discord messages must still name each of
+    them after a restart — otherwise only the last line stays editable."""
+    sent = [{"name": "narration", "id": 10}, {"name": "ซออา", "id": 11}]
+    await fresh_db.save_ai_message(70, "model", "rp turn")
+    assert await fresh_db.update_message_id(70, 11, sent) is True
+
+    (row,) = await fresh_db.get_ai_history(70)
+    assert row["message_id"] == 11
+    assert row["sent_message_ids"] == sent
+
+
+@pytest.mark.asyncio
+async def test_update_message_id_without_a_list_keeps_the_stored_one(fresh_db):
+    """Passing None means 'nothing new to record', not 'clear it' — the plain
+    single-message send path calls it that way on every turn."""
+    sent = [{"name": "a", "id": 1}, {"name": "b", "id": 2}]
+    await fresh_db.save_ai_message(71, "model", "turn")
+    await fresh_db.update_message_id(71, 2, sent)
+
+    await fresh_db.update_message_id(71, 3)
+
+    (row,) = await fresh_db.get_ai_history(71)
+    assert row["message_id"] == 3
+    assert row["sent_message_ids"] == sent
+
+
+@pytest.mark.asyncio
+async def test_malformed_sent_message_ids_cell_does_not_break_loading(fresh_db):
+    """One bad cell (older build, hand-edit) must not take the whole channel's
+    history down with it."""
+    row_id = await fresh_db.save_ai_message(72, "model", "turn")
+    async with fresh_db.get_write_connection() as conn:
+        await conn.execute(
+            "UPDATE ai_history SET sent_message_ids = ? WHERE id = ?",
+            ("{not json", row_id),
+        )
+        await conn.commit()
+
+    (row,) = await fresh_db.get_ai_history(72)
+    assert row["sent_message_ids"] is None
+    assert row["content"] == "turn"
+
+
+@pytest.mark.asyncio
+async def test_force_replace_persists_sent_message_ids(fresh_db, monkeypatch):
+    """The force=True path builds its INSERT rows by hand, so it needs the
+    column threaded through independently of the batch-insert path."""
+    from cogs.ai_core import storage
+
+    monkeypatch.setattr(storage, "db", fresh_db)
+    monkeypatch.setattr(storage, "DATABASE_AVAILABLE", True)
+
+    sent = [{"name": "ซออา", "id": 21}, {"name": "แชวอน", "id": 22}]
+    chat_data = {
+        "history": [
+            {
+                "role": "model",
+                "parts": ["rp turn"],
+                "message_id": 22,
+                "sent_message_ids": sent,
+                "timestamp": "2026-08-02T00:00:00+00:00",
+            }
+        ]
+    }
+    assert await storage._replace_history_db(73, chat_data, 100) is True
+
+    (row,) = await fresh_db.get_ai_history(73)
+    assert row["sent_message_ids"] == sent
+
+
+@pytest.mark.asyncio
+async def test_restore_preserves_sent_message_ids(fresh_db):
+    """Undo must not be lossy: a multi-message turn restored without its id
+    list would leave every character line but the last unaddressable."""
+    anchor_id = await fresh_db.save_ai_message(61, "user", "anchor")
+    sent = [{"name": "ซออา", "id": 11}, {"name": "แชวอน", "id": 12}]
+    row = {
+        "id": anchor_id + 50,
+        "local_id": None,
+        "role": "model",
+        "content": "rp turn",
+        "message_id": 12,
+        "sent_message_ids": sent,
+        "timestamp": None,
+        "user_id": None,
+    }
+    assert await fresh_db.restore_ai_history_row(61, dict(row)) == "restored"
+
+    got = await fresh_db.get_ai_history_message(61, anchor_id + 50)
+    assert got is not None
+    assert got["sent_message_ids"] == sent
 
 
 @pytest.mark.asyncio

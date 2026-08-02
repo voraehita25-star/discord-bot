@@ -1504,29 +1504,7 @@ async def send_long_message(channel, header, lines):
         )
 
 
-# Command Handler Mapping
-COMMAND_HANDLERS = {
-    "CREATE_TEXT": cmd_create_text,
-    "CREATE_VOICE": cmd_create_voice,
-    "CREATE_CATEGORY": cmd_create_category,
-    "DELETE_CHANNEL": cmd_delete_channel,
-    "CREATE_ROLE": cmd_create_role,
-    "DELETE_ROLE": cmd_delete_role,
-    "ADD_ROLE": cmd_add_role,
-    "REMOVE_ROLE": cmd_remove_role,
-    "SET_CHANNEL_PERM": cmd_set_channel_perm,
-    "SET_ROLE_PERM": cmd_set_role_perm,
-    "LIST_CHANNELS": cmd_list_channels,
-    "LIST_ROLES": cmd_list_roles,
-    "LIST_MEMBERS": cmd_list_members,
-    "GET_USER_INFO": cmd_get_user_info,
-    "EDIT_MESSAGE": cmd_edit_message,
-    "READ_CHANNEL": cmd_read_channel,
-}
-
-
 __all__ = [
-    "COMMAND_HANDLERS",
     "cmd_add_role",
     "cmd_create_category",
     "cmd_create_role",

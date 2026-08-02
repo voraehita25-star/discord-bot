@@ -198,9 +198,9 @@ def _format_message_id_prefix(item: dict[str, Any]) -> str:
     for one ``message_id``. So prefer the recorded per-message ids and fall back
     to the row's single id.
 
-    Returns "" when nothing was recorded (older rows, or a DB-backed restart —
-    ``sent_message_ids`` does not survive that). ``read_channel`` reports ids
-    straight from Discord and covers those cases.
+    Returns "" when nothing was recorded — rows written before the ids were
+    tracked, or a turn whose send failed. ``read_channel`` reports ids straight
+    from Discord and covers those.
     """
     sent = item.get("sent_message_ids")
     if isinstance(sent, list) and sent:
@@ -219,16 +219,63 @@ def _format_message_id_prefix(item: dict[str, Any]) -> str:
     return ""
 
 
-# Server command pattern
-PATTERN_SERVER_COMMAND = re.compile(
-    r"\[\[(CREATE_TEXT|CREATE_VOICE|CREATE_CATEGORY|DELETE_CHANNEL|"
-    r"CREATE_ROLE|DELETE_ROLE|ADD_ROLE|REMOVE_ROLE|SET_CHANNEL_PERM|"
-    r"SET_ROLE_PERM|LIST_CHANNELS|LIST_ROLES|READ_CHANNEL|"
-    r"LIST_MEMBERS|GET_USER_INFO|EDIT_MESSAGE)(?::\s*(.*?))?\]\]"
-)
-
 # Character tag pattern {{Name}}
 PATTERN_CHARACTER_TAG = re.compile(r"\{\{(.+?)\}\}")
+
+# A {{Name}} marker left dangling at the end of a prefix — i.e. immediately
+# before the text being removed. Used to take the speaker label out with the
+# line it labelled.
+PATTERN_TRAILING_CHARACTER_TAG = re.compile(r"\{\{[^{}]+\}\}\s*$")
+
+
+def _sent_message_entries(item: Any) -> list[dict[str, Any]]:
+    """The recorded ``[{"name", "id"}]`` entries of a history row, or []."""
+    sent = item.get("sent_message_ids") if isinstance(item, dict) else None
+    if not isinstance(sent, list):
+        return []
+    return [e for e in sent if isinstance(e, dict) and e.get("id") is not None]
+
+
+def _row_covers_message(item: Any, message_id: int) -> bool:
+    """Whether a history row accounts for a given Discord message.
+
+    A row covers its ``message_id``, and — for a turn that went out as several
+    messages — every id in ``sent_message_ids``. Checking only the former is
+    what left intermediate RP character messages invisible to the Discord
+    delete/edit mirroring.
+    """
+    if not isinstance(item, dict):
+        return False
+    if item.get("message_id") == message_id:
+        return True
+    return any(entry.get("id") == message_id for entry in _sent_message_entries(item))
+
+
+def _remove_message_fragment(text: str, fragment: str) -> str:
+    """Cut one sent message's text out of the turn that stored it.
+
+    A multi-character RP turn is a single history row holding every
+    ``{{Name}}`` block, so deleting ONE of its Discord messages must remove
+    just that block — dropping the row would forget lines still on screen. The
+    speaker marker goes with the line it labelled, otherwise the turn keeps a
+    dangling ``{{Name}}`` introducing nothing.
+    """
+    idx = text.find(fragment)
+    if idx == -1:
+        return text
+    start = idx
+    prefix = text[:idx]
+    marker = PATTERN_TRAILING_CHARACTER_TAG.search(prefix)
+    if marker:
+        start = marker.start()
+    # Blocks are joined by a newline, so cutting one out of the middle would
+    # leave the separator from BOTH sides. Take the leading one with it.
+    if start > 0 and text[start - 1] == "\n":
+        start -= 1
+    remainder = text[:start] + text[idx + len(fragment) :]
+    # Safety net for text that was separated by blank lines to begin with.
+    return re.sub(r"\n{3,}", "\n\n", remainder).strip()
+
 
 # Pattern to detect AI comments about character tags that should be actual tags
 # Matches: (ตรงนี้ควรใช้เป็น {{Name}}...) or similar patterns
@@ -938,44 +985,93 @@ class ChatManager(SessionMixin, ResponseMixin):
         except Exception:
             logger.exception("Failed to reset Discord CLI session for channel %s", channel_id)
 
-    async def remove_message_from_history(self, channel_id: int, message_id: int) -> bool:
+    async def remove_message_from_history(
+        self, channel_id: int, message_id: int, deleted_content: str | None = None
+    ) -> bool:
         """Drop a message from the channel's memory by its Discord ``message_id``.
 
         Called when a message is deleted in Discord so the bot's memory mirrors
         what's actually visible — a deleted message stops feeding future prompts
-        ("like reading live"). Matches the user turn that stored this id, and
-        also the bot's own reply if its id was recorded via ``update_message_id``.
+        ("like reading live"). Matches the user turn that stored this id, the
+        bot's own reply if its id was recorded via ``update_message_id``, and
+        every message of a turn that went out as several (``sent_message_ids``).
 
-        Both the in-memory session and the persisted DB row are updated. The
-        in-memory rebuild is a synchronous list comprehension (no ``await`` in
-        the middle), so it is atomic against ``process_chat`` on the single
-        event loop and never corrupts a history being rendered.
+        A row is only DROPPED when the deleted message was the last one it still
+        accounts for. When the row covers messages that are still on screen — a
+        multi-character RP turn, a chunked long reply — it is kept and patched
+        instead: the dead id leaves ``sent_message_ids`` (so the prompt stops
+        offering an id that now 404s) and, when Discord gave us the deleted text
+        via the raw event's cached message, that fragment is cut out too. With
+        no cached text the line's wording stays in memory; MESSAGE_DELETE
+        carries no content, and guessing which fragment to cut would risk
+        destroying a line that is still visible.
+
+        Both the in-memory session and the persisted rows are updated. The
+        in-memory rebuild takes no ``await`` in the middle, so it is atomic
+        against ``process_chat`` on the single event loop and never corrupts a
+        history being rendered.
 
         On a hit the channel's Claude-CLI ``--resume`` session is dropped too —
         see :meth:`_drop_cli_session_after_history_mutation`, without which the
         "stops feeding future prompts" guarantee above is false on the default
         backend.
 
-        Returns True if anything was removed from memory or storage.
+        Returns True if anything was removed or patched in memory or storage.
         """
         removed_in_memory = False
+        patched_in_memory = False
         session = self.chats.get(channel_id)
         if session is not None:
             history = session.get("history") or []
-            kept = [item for item in history if item.get("message_id") != message_id]
-            if len(kept) != len(history):
+            kept: list[Any] = []
+            for item in history:
+                if not _row_covers_message(item, message_id):
+                    kept.append(item)
+                    continue
+                survivors = [e for e in _sent_message_entries(item) if e.get("id") != message_id]
+                if not survivors:
+                    # Nothing of this row is left in Discord — forget it whole.
+                    removed_in_memory = True
+                    continue
+                item["sent_message_ids"] = survivors
+                if item.get("message_id") == message_id:
+                    # The row's headline id was the deleted one; re-point it at
+                    # the last surviving message so edit/delete mirroring and
+                    # the DB's single-id column keep working for this turn.
+                    item["message_id"] = survivors[-1].get("id")
+                if deleted_content:
+                    item["parts"] = [
+                        _remove_message_fragment(part, deleted_content)
+                        if isinstance(part, str)
+                        else (
+                            {
+                                **part,
+                                "text": _remove_message_fragment(part["text"], deleted_content),
+                            }
+                            if isinstance(part, dict) and isinstance(part.get("text"), str)
+                            else part
+                        )
+                        for part in item.get("parts", [])
+                    ]
+                patched_in_memory = True
+                kept.append(item)
+            if removed_in_memory or patched_in_memory:
                 session["history"] = kept
-                removed_in_memory = True
                 # Drop the length-keyed auto-compress cache (process_chat): a
                 # delete followed by a later insert that nets to the same length
                 # would otherwise leave the cache serving a stale compression that
                 # still contains this deleted message — defeating the
                 # delete-mirroring guarantee above. Mirrors edit_message_in_history
-                # / remove_history_content.
+                # / remove_history_content. A patch keeps the length identical,
+                # so it needs this just as much as a removal.
                 session.pop("_compress_cache", None)
 
         deleted_rows = await delete_message_by_id(channel_id, message_id)
-        hit = removed_in_memory or deleted_rows > 0
+        if patched_in_memory and session is not None:
+            # A patched row can't be addressed by the deleted id (that is the
+            # whole point — the id is gone), so commit the in-memory view.
+            await save_history(self.bot, channel_id, session, force=True)
+        hit = removed_in_memory or patched_in_memory or deleted_rows > 0
         if hit:
             self._drop_cli_session_after_history_mutation(channel_id)
         return hit
@@ -2357,15 +2453,11 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                         # Stamp the tail model item. ``message_id`` keeps its old
                         # meaning — the FINAL webhook message — because the Discord
-                        # delete/edit mirroring and the DB's one-id-per-row column
-                        # are both built on it. ``sent_message_ids`` carries the rest
-                        # so the individual character messages are addressable too.
-                        #
-                        # Note ``sent_message_ids`` is in-memory + JSON-backend only:
-                        # ai_history has a single ``message_id`` column and no room
-                        # for the list. After a restart on the DB backend the model
-                        # falls back to ``read_channel``, which reports every id
-                        # straight from Discord.
+                        # delete/edit mirroring is built on it. ``sent_message_ids``
+                        # carries the rest so the individual character messages are
+                        # addressable too, and rides along on the same back-fill
+                        # UPDATE (both ids only exist once the reply has been sent,
+                        # which is after the row was inserted).
                         if sent_ids and chat_data.get("history"):
                             history_list = chat_data["history"]
                             if history_list and len(history_list) > 0:
@@ -2381,7 +2473,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                                     last_item["sent_message_ids"] = sent_ids
                                     if last_msg_id:
                                         last_item["message_id"] = last_msg_id
-                                        await update_message_id(context_channel.id, last_msg_id)
+                                        await update_message_id(
+                                            context_channel.id, last_msg_id, sent_ids
+                                        )
 
                         return  # Skip normal sending
 
@@ -2411,13 +2505,16 @@ class ChatManager(SessionMixin, ResponseMixin):
                             last_item = history_list[-1]
                             if isinstance(last_item, dict) and last_item.get("role") == "model":
                                 last_item["message_id"] = sent_message.id
-                                if len(plain_sent_ids) > 1:
-                                    # Single-chunk replies are fully described by
-                                    # ``message_id`` — only record the list when it
-                                    # actually adds something.
-                                    last_item["sent_message_ids"] = plain_sent_ids
+                                # Single-chunk replies are fully described by
+                                # ``message_id`` — only record the list when it
+                                # actually adds something.
+                                extra_ids = plain_sent_ids if len(plain_sent_ids) > 1 else None
+                                if extra_ids:
+                                    last_item["sent_message_ids"] = extra_ids
                                 # Save again to persist ID
-                                await update_message_id(context_channel.id, sent_message.id)
+                                await update_message_id(
+                                    context_channel.id, sent_message.id, extra_ids
+                                )
 
                     # Feedback collection (opt-in via FEEDBACK_COLLECTION_ENABLED;
                     # a no-op otherwise). Only the normal send path is wired here —

@@ -231,50 +231,9 @@ This is normal text
         assert "Alice" in matches
         assert "Bob" in matches
 
-    def test_server_command_extraction(self) -> None:
-        """Test server command extraction from response."""
-        import re
-
-        PATTERN_SERVER_COMMAND = re.compile(
-            r"\[\[(CREATE_TEXT|DELETE_CHANNEL|CREATE_ROLE)(?::\s*(.*?))?\]\]"
-        )
-
-        # Test basic command
-        text = "[[CREATE_TEXT: general-chat]]"
-        match = PATTERN_SERVER_COMMAND.search(text)
-
-        assert match is not None
-        assert match.group(1) == "CREATE_TEXT"
-        assert match.group(2).strip() == "general-chat"
-
-        # Test command without args
-        text2 = "[[DELETE_CHANNEL]]"
-        match2 = PATTERN_SERVER_COMMAND.search(text2)
-
-        assert match2 is not None
-        assert match2.group(1) == "DELETE_CHANNEL"
-
 
 class TestToolExecution:
     """Test AI tool execution."""
-
-    def test_command_handler_mapping(self) -> None:
-        """Test command handler dictionary structure."""
-        COMMAND_HANDLERS = {
-            "CREATE_TEXT": "cmd_create_text",
-            "CREATE_VOICE": "cmd_create_voice",
-            "CREATE_CATEGORY": "cmd_create_category",
-            "DELETE_CHANNEL": "cmd_delete_channel",
-            "CREATE_ROLE": "cmd_create_role",
-            "DELETE_ROLE": "cmd_delete_role",
-        }
-
-        assert "CREATE_TEXT" in COMMAND_HANDLERS
-        assert "DELETE_CHANNEL" in COMMAND_HANDLERS
-
-        # Test handler naming convention
-        for _cmd, handler in COMMAND_HANDLERS.items():
-            assert handler.startswith("cmd_")
 
     def test_tool_definition_format(self) -> None:
         """Test tool definition format for Gemini."""

@@ -76,12 +76,18 @@ try:
     import aiosqlite
 
     from utils.database import db
+    from utils.database.database import encode_sent_message_ids
 
     DATABASE_AVAILABLE = True
 except ImportError:
     DATABASE_AVAILABLE = False
     aiosqlite = None  # type: ignore[assignment]
     db = None  # type: ignore[assignment]
+
+    def encode_sent_message_ids(value: Any) -> str | None:  # type: ignore[misc]
+        """No-op stand-in for the JSON fallback, which stores lists natively."""
+        return None
+
     logger.warning("Database module not available, falling back to JSON storage")
 
 # Legacy paths for fallback
@@ -512,6 +518,7 @@ async def _replace_history_db(
                 role,
                 content,
                 item.get("message_id"),
+                encode_sent_message_ids(item.get("sent_message_ids")),
                 # A missing timestamp must not insert NULL — NULL bypasses the
                 # column's CURRENT_TIMESTAMP default and sorts inconsistently
                 # under ORDER BY timestamp (same rule as save_ai_messages_batch
@@ -529,19 +536,22 @@ async def _replace_history_db(
             await conn.execute("DELETE FROM ai_history WHERE channel_id = ?", (channel_id,))
             if rows:
                 insert_rows = []
-                for i, (ch, uid, role, content, mid, ts) in enumerate(rows, start=1):
-                    insert_rows.append((ch, uid, role, content, mid, ts, i))
+                for i, (ch, uid, role, content, mid, sent_ids, ts) in enumerate(rows, start=1):
+                    insert_rows.append((ch, uid, role, content, mid, sent_ids, ts, i))
                 # Upsert on (channel_id, message_id) to match the other ai_history
                 # write paths. The DELETE above clears the channel, so a collision
                 # can only come from two in-memory rows sharing the same non-NULL
                 # message_id; without ON CONFLICT that would raise IntegrityError and
-                # roll back the whole replace (losing the save). Last write wins.
+                # roll back the whole replace (losing the save). Last write wins —
+                # for sent_message_ids too, which belongs to the winning content.
                 await conn.executemany(
                     """INSERT INTO ai_history
-                       (channel_id, user_id, role, content, message_id, timestamp, local_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       (channel_id, user_id, role, content, message_id,
+                        sent_message_ids, timestamp, local_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(channel_id, message_id) WHERE message_id IS NOT NULL
-                       DO UPDATE SET content = excluded.content""",
+                       DO UPDATE SET content = excluded.content,
+                                     sent_message_ids = excluded.sent_message_ids""",
                     insert_rows,
                 )
             await conn.commit()
@@ -837,6 +847,11 @@ async def _save_history_db(
                         "role": role,
                         "content": content,
                         "message_id": message_id,
+                        # Normally absent at insert time (the ids only exist once
+                        # the reply has been sent, and update_message_id
+                        # back-fills them) — but a re-presented item, e.g. from
+                        # the pending-queue flush, already carries them.
+                        "sent_message_ids": item.get("sent_message_ids"),
                         "timestamp": timestamp,
                     }
                 )
@@ -1043,8 +1058,11 @@ async def load_history(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
                         "parts": [item.get("content", "")],
                     }
                     # Carry forward bookkeeping fields if present so the round
-                    # trip is lossless.
-                    for k in ("timestamp", "message_id", "user_id"):
+                    # trip is lossless. ``sent_message_ids`` arrives already
+                    # decoded from its JSON cell (get_ai_history does that), and
+                    # is what keeps a multi-message turn's individual lines
+                    # addressable across a restart.
+                    for k in ("timestamp", "message_id", "user_id", "sent_message_ids"):
                         if item.get(k) is not None:
                             converted[k] = item[k]
                     history.append(converted)
@@ -1139,9 +1157,9 @@ async def _load_history_json(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
             # file still held the real ids (the DB loader deliberately keeps
             # it "so the round trip is lossless" — keep this path in lockstep).
             # ``sent_message_ids`` (the per-character / per-chunk Discord ids of
-            # a reply that went out as several messages) only round-trips on
-            # this JSON path — ai_history has a single ``message_id`` column,
-            # so the DB loader above cannot restore it.
+            # a reply that went out as several messages) is stored natively here
+            # — the JSON backend keeps the list as-is, where the DB path encodes
+            # it into a TEXT column.
             for k in ("timestamp", "message_id", "user_id", "sent_message_ids"):
                 if k in item:
                     history_item[k] = item[k]
@@ -1308,15 +1326,22 @@ async def delete_history(channel_id: int) -> bool:
     return success
 
 
-async def update_message_id(channel_id: int, message_id: int) -> None:
+async def update_message_id(
+    channel_id: int, message_id: int, sent_message_ids: list[Any] | None = None
+) -> None:
     """Update message ID for the last model response.
 
     Invalidates _history_cache so the next load picks up the new message_id;
     without this, readers within the 15-min TTL window would see message_id=None
     even after this update returned, breaking edit/resend round-trips.
+
+    ``sent_message_ids`` carries the per-message ids of a turn that went out as
+    several Discord messages (RP character blocks, or a chunked long reply).
+    They are recorded at the same moment as ``message_id`` — after the send, so
+    after the row was already inserted.
     """
     if DATABASE_AVAILABLE:
-        await db.update_message_id(channel_id, message_id)
+        await db.update_message_id(channel_id, message_id, sent_message_ids)
         invalidate_cache(channel_id)
 
 

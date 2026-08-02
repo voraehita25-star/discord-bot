@@ -61,6 +61,60 @@ DASHBOARD_DEFAULT_AI_PROVIDER = _normalize_dashboard_ai_provider(
     os.getenv("DEFAULT_AI_PROVIDER", DEFAULT_DASHBOARD_AI_PROVIDER)
 )
 
+
+def encode_sent_message_ids(value: Any) -> str | None:
+    """Serialize an ``ai_history.sent_message_ids`` list for storage.
+
+    Returns None for anything unusable so the column stays NULL rather than
+    holding a string that decodes back to garbage. Storing this at all is what
+    lets an RP turn's individual character messages stay addressable after a
+    restart — see the column's migration note in ``init_schema``.
+
+    An already-encoded string is accepted and passed through (after a parse
+    check) so a caller holding a raw cell — a restore payload that skipped the
+    decode — round-trips instead of silently losing the ids.
+    """
+    if isinstance(value, str):
+        return value if decode_sent_message_ids(value) is not None else None
+    if not isinstance(value, list) or not value:
+        return None
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        logger.warning("Dropping unserializable sent_message_ids: %r", value)
+        return None
+
+
+def ai_history_row_to_dict(row: Any) -> dict[str, Any]:
+    """Normalize one ``ai_history`` result row into the shape callers expect.
+
+    Every reader must agree here — the dashboard's delete/restore undo compares
+    a row from ``get_ai_history_message`` against one from ``get_ai_history``,
+    and its insertion anchors come from ``get_ai_history_neighbor_rows``. A
+    reader that skipped the decode (or the column) would make those comparisons
+    fail on a difference that isn't real.
+    """
+    item = dict(row)
+    item["sent_message_ids"] = decode_sent_message_ids(item.get("sent_message_ids"))
+    return item
+
+
+def decode_sent_message_ids(value: Any) -> list[Any] | None:
+    """Parse a stored ``sent_message_ids`` cell back into a list.
+
+    Fails soft to None: a row written by an older/other build (or hand-edited)
+    must not break loading the whole channel's history.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        logger.warning("Ignoring malformed sent_message_ids cell: %.80r", value)
+        return None
+    return decoded if isinstance(decoded, list) and decoded else None
+
+
 # Data directories are created lazily by ``_ensure_db_dirs()`` (called from
 # ``Database.init_schema`` and the first export call) rather than at import
 # time. Previously the unconditional ``DB_DIR.mkdir`` here ran for every
@@ -458,21 +512,31 @@ class Database:
                     role TEXT NOT NULL CHECK(role IN ('user', 'model')),
                     content TEXT NOT NULL,
                     message_id INTEGER,
+                    sent_message_ids TEXT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     summarized_at DATETIME
                 )
             """)
 
-            # Migration: add user_id column if missing (existing databases)
+            # Migrations for existing databases. ``sent_message_ids`` holds the
+            # JSON ``[{"name": ..., "id": ...}]`` list of EVERY Discord message a
+            # single row went out as — a multi-character RP turn sends one
+            # webhook message per {{Name}} block, and a >2000-char reply is
+            # chunked, while both stay ONE history row. ``message_id`` can only
+            # name the last of them, which is not enough to correct an earlier
+            # line with the edit_message tool.
             try:
                 cursor = await conn.execute("PRAGMA table_info(ai_history)")
                 columns = {row[1] for row in await cursor.fetchall()}
                 if "user_id" not in columns:
                     await conn.execute("ALTER TABLE ai_history ADD COLUMN user_id INTEGER")
                     logger.info("🔄 Migrated ai_history: added user_id column")
+                if "sent_message_ids" not in columns:
+                    await conn.execute("ALTER TABLE ai_history ADD COLUMN sent_message_ids TEXT")
+                    logger.info("🔄 Migrated ai_history: added sent_message_ids column")
             except Exception as e:
-                logger.warning("Migration check for user_id failed: %s", e)
+                logger.warning("Migration check for ai_history columns failed: %s", e)
 
             # Indexes
             await conn.execute("""
@@ -1714,6 +1778,7 @@ class Database:
                             msg.get("role"),
                             msg.get("content"),
                             msg.get("message_id"),
+                            encode_sent_message_ids(msg.get("sent_message_ids")),
                             # A missing timestamp must not insert NULL: NULL bypasses
                             # the column's CURRENT_TIMESTAMP default and sorts
                             # inconsistently under ORDER BY timestamp. Match the
@@ -1724,12 +1789,18 @@ class Database:
                     )
                     next_local_id += 1
 
+                # On conflict, refresh sent_message_ids alongside content: the
+                # id list belongs to the text it was sent as, so keeping a stale
+                # list next to replacement content would hand the model ids that
+                # point at the wrong lines.
                 await conn.executemany(
                     """INSERT INTO ai_history
-                       (channel_id, user_id, role, content, message_id, timestamp, local_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       (channel_id, user_id, role, content, message_id,
+                        sent_message_ids, timestamp, local_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(channel_id, message_id) WHERE message_id IS NOT NULL
-                       DO UPDATE SET content = excluded.content""",
+                       DO UPDATE SET content = excluded.content,
+                                     sent_message_ids = excluded.sent_message_ids""",
                     rows_to_insert,
                 )
                 inserted += len(rows_to_insert)
@@ -1755,9 +1826,11 @@ class Database:
             # existing consumers key into the dicts and ignore extra keys.
             if limit is not None:
                 cursor = await conn.execute(
-                    """SELECT id, local_id, role, content, message_id, timestamp, user_id
+                    """SELECT id, local_id, role, content, message_id, sent_message_ids,
+                              timestamp, user_id
                        FROM (
-                           SELECT id, local_id, role, content, message_id, timestamp, user_id
+                           SELECT id, local_id, role, content, message_id, sent_message_ids,
+                                  timestamp, user_id
                            FROM ai_history WHERE channel_id = ?
                            ORDER BY id DESC LIMIT ?
                        ) sub ORDER BY id ASC""",
@@ -1765,14 +1838,17 @@ class Database:
                 )
             else:
                 cursor = await conn.execute(
-                    """SELECT id, local_id, role, content, message_id, timestamp, user_id
+                    """SELECT id, local_id, role, content, message_id, sent_message_ids,
+                              timestamp, user_id
                        FROM ai_history WHERE channel_id = ?
                        ORDER BY id ASC""",
                     (channel_id,),
                 )
 
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            # Hand back the decoded list, not the raw JSON cell — every consumer
+            # of this dict treats the value as history-item data.
+            return [ai_history_row_to_dict(row) for row in rows]
 
     async def get_ai_history_count(self, channel_id: int) -> int:
         """Get count of messages in AI history."""
@@ -1821,15 +1897,33 @@ class Database:
                 logger.info("🗑️ Pruned %d old messages from channel %d", deleted, channel_id)
             return deleted
 
-    async def update_message_id(self, channel_id: int, message_id: int) -> bool:
-        """Update the message_id for the last model response."""
+    async def update_message_id(
+        self, channel_id: int, message_id: int, sent_message_ids: Any = None
+    ) -> bool:
+        """Update the message_id for the last model response.
+
+        ``sent_message_ids`` is back-filled here for the same reason as
+        ``message_id``: the row is INSERTed before the reply is sent, so neither
+        id exists at insert time. Passing None leaves the stored list alone (the
+        caller had nothing new to record), which keeps this a strict superset of
+        the old single-id behaviour.
+        """
+        encoded = encode_sent_message_ids(sent_message_ids)
         async with self.get_write_connection() as conn:
-            cursor = await conn.execute(
-                """UPDATE ai_history SET message_id = ?
-                   WHERE id = (SELECT MAX(id) FROM ai_history
-                               WHERE channel_id = ? AND role = 'model')""",
-                (message_id, channel_id),
-            )
+            if encoded is None:
+                cursor = await conn.execute(
+                    """UPDATE ai_history SET message_id = ?
+                       WHERE id = (SELECT MAX(id) FROM ai_history
+                                   WHERE channel_id = ? AND role = 'model')""",
+                    (message_id, channel_id),
+                )
+            else:
+                cursor = await conn.execute(
+                    """UPDATE ai_history SET message_id = ?, sent_message_ids = ?
+                       WHERE id = (SELECT MAX(id) FROM ai_history
+                                   WHERE channel_id = ? AND role = 'model')""",
+                    (message_id, encoded, channel_id),
+                )
             return bool(cursor.rowcount > 0)
 
     async def delete_ai_message_by_message_id(
@@ -1896,12 +1990,13 @@ class Database:
         """
         async with self.get_connection() as conn:
             cursor = await conn.execute(
-                """SELECT id, local_id, role, content, message_id, timestamp, user_id
+                """SELECT id, local_id, role, content, message_id, sent_message_ids,
+                          timestamp, user_id
                    FROM ai_history WHERE id = ? AND channel_id = ?""",
                 (row_id, channel_id),
             )
             row = await cursor.fetchone()
-            return dict(row) if row else None
+            return ai_history_row_to_dict(row) if row else None
 
     async def update_ai_history_content(self, channel_id: int, row_id: int, content: str) -> bool:
         """Update the stored content of an AI history row by primary-key ``id``.
@@ -2025,8 +2120,8 @@ class Database:
                 await conn.execute(
                     """INSERT INTO ai_history
                        (id, local_id, channel_id, user_id, role, content, message_id,
-                        timestamp, summarized_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        sent_message_ids, timestamp, summarized_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         row_id,
                         local_id,
@@ -2035,6 +2130,10 @@ class Database:
                         row["role"],
                         row["content"],
                         row.get("message_id"),
+                        # Restored verbatim like every other column: dropping the
+                        # ids here would make undo a lossy operation, leaving the
+                        # turn's individual character messages unaddressable.
+                        encode_sent_message_ids(row.get("sent_message_ids")),
                         row.get("timestamp"),
                         summarized_at,
                     ),
@@ -2108,22 +2207,24 @@ class Database:
         """
         async with self.get_connection() as conn:
             cursor = await conn.execute(
-                """SELECT id, local_id, role, content, message_id, timestamp, user_id
+                """SELECT id, local_id, role, content, message_id, sent_message_ids,
+                          timestamp, user_id
                    FROM ai_history WHERE channel_id = ? AND id < ?
                    ORDER BY id DESC LIMIT 1""",
                 (channel_id, row_id),
             )
             prev_row = await cursor.fetchone()
             cursor = await conn.execute(
-                """SELECT id, local_id, role, content, message_id, timestamp, user_id
+                """SELECT id, local_id, role, content, message_id, sent_message_ids,
+                          timestamp, user_id
                    FROM ai_history WHERE channel_id = ? AND id > ?
                    ORDER BY id ASC LIMIT 1""",
                 (channel_id, row_id),
             )
             next_row = await cursor.fetchone()
             return (
-                dict(prev_row) if prev_row else None,
-                dict(next_row) if next_row else None,
+                ai_history_row_to_dict(prev_row) if prev_row else None,
+                ai_history_row_to_dict(next_row) if next_row else None,
             )
 
     async def count_identical_history_rows_before(

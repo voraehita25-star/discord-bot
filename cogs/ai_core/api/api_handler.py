@@ -98,6 +98,51 @@ def _claude_retry_delay_seconds(attempt: int, *, minimum_delay: float = 1.0) -> 
     return float(max(delay, minimum_delay))
 
 
+# Appended to the system prompt on the SDK Discord path. ``logic.py`` prefixes
+# every historical turn with system metadata — an ISO timestamp on all of them,
+# plus the ``(msg …)`` Discord message ids on the bot's own — and the model
+# reproduces observed patterns unless told not to. The CLI path carries the
+# equivalent under its "# Formatting rules" heading; without this the SDK path
+# was the silent downgrade (it also had no output-side strip at all).
+INJECTED_PREFIX_NOTE = """
+
+FORMATTING RULES (system-injected metadata — never reproduce these in a reply):
+- Messages may carry a leading timestamp like [2026-05-20T13:18:47+07:00]. It
+  tells you when the turn was sent; it is not part of anyone's intent.
+- Your own past turns may also carry '(msg 1401234567890123456)', or
+  '(msgs narration=140…, Character=140…)' when the turn went out as several
+  Discord messages. Those ids are what the edit_message tool takes, so you can
+  correct an earlier message rather than only apologising for it. For anything
+  older than the visible history, read_channel reports the id of every message
+  it returns."""
+
+
+def with_prefix_note(system_prompt: str) -> str:
+    """Append :data:`INJECTED_PREFIX_NOTE` to a system prompt about to go out.
+
+    Empty in, empty out: an empty instruction means "no persona", and shipping
+    a lone rules block would turn that into a prompt.
+    """
+    return (system_prompt + INJECTED_PREFIX_NOTE) if system_prompt else system_prompt
+
+
+def clean_model_text(text: str) -> str:
+    """Strip system-injected prefixes the model echoed back into its reply.
+
+    Defence-in-depth companion to :data:`INJECTED_PREFIX_NOTE`: the prompt asks
+    the model not to reproduce them, this catches it when it does anyway. The
+    CLI path has had this since the timestamp prefix was introduced; the SDK
+    path had no output cleaning at all, so a mimicked prefix was posted to
+    Discord verbatim. Order matches how the prefixes are assembled — timestamp
+    first, then the message-id annotation.
+    """
+    if not text:
+        return text
+    from .dashboard_common import strip_leading_message_ids, strip_leading_timestamp
+
+    return strip_leading_message_ids(strip_leading_timestamp(text))
+
+
 def build_api_config(
     chat_data: dict[str, Any],
     guild_id: int | None = None,
@@ -119,6 +164,9 @@ def build_api_config(
     thinking_enabled = chat_data.get("thinking_enabled", True)
 
     config_params: dict[str, Any] = {
+        # Passed through verbatim — the formatting-rules note is appended where
+        # the wire request is assembled (``with_prefix_note``), mirroring the
+        # CLI path where it lives in the prompt builder, not the config.
         "system_instruction": system_instruction,
         "max_tokens": CLAUDE_MAX_TOKENS,
     }
@@ -380,7 +428,7 @@ async def call_claude_api_streaming(
 
         # Convert contents to Claude format
         messages = convert_to_claude_messages(contents)
-        system_prompt = config_params.get("system_instruction", "")
+        system_prompt = with_prefix_note(config_params.get("system_instruction", ""))
         max_tokens = config_params.get("max_tokens", CLAUDE_MAX_TOKENS)
 
         # Streaming forwards EFFORT (xhigh by default) for reasoning depth, but
@@ -594,7 +642,7 @@ async def call_claude_api_streaming(
                     )
                 except Exception:
                     logger.debug("streaming token usage record skipped", exc_info=True)
-                return model_text, search_indicator, function_calls
+                return clean_model_text(model_text), search_indicator, function_calls
 
         except TimeoutError as e:
             if len(current_model_text) > 100:
@@ -627,7 +675,7 @@ async def call_claude_api_streaming(
                 # final message and there is no accumulated usage object to read.
                 # Partial-timeout turns are intentionally left unaccounted rather
                 # than fabricating an estimate.
-                return partial_with_marker, search_indicator, function_calls
+                return clean_model_text(partial_with_marker), search_indicator, function_calls
 
             if CIRCUIT_BREAKER_AVAILABLE and gemini_circuit:
                 gemini_circuit.record_failure()
@@ -782,7 +830,7 @@ async def call_claude_api(
 
             # Convert contents to Claude format
             messages = convert_to_claude_messages(contents)
-            system_prompt = config_params.get("system_instruction", "")
+            system_prompt = with_prefix_note(config_params.get("system_instruction", ""))
             max_tokens = config_params.get("max_tokens", CLAUDE_MAX_TOKENS)
 
             # Build Claude API kwargs
@@ -1015,4 +1063,4 @@ async def call_claude_api(
     if PERF_TRACKER_AVAILABLE and perf_tracker:
         perf_tracker.record("claude_api", _api_start_time)
 
-    return model_text, search_indicator, function_calls
+    return clean_model_text(model_text), search_indicator, function_calls

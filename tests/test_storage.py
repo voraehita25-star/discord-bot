@@ -390,7 +390,23 @@ class TestUpdateMessageId:
             mock_db.update_message_id = AsyncMock()
 
             await storage.update_message_id(12345, 67890)
-            mock_db.update_message_id.assert_called_once_with(12345, 67890)
+            mock_db.update_message_id.assert_called_once_with(12345, 67890, None)
+
+    @pytest.mark.asyncio
+    async def test_update_message_id_carries_sent_message_ids(self):
+        """A turn sent as several Discord messages back-fills the whole list on
+        the same UPDATE — neither id exists when the row is first inserted."""
+        from cogs.ai_core import storage
+
+        sent = [{"name": "ซออา", "id": 11}, {"name": "แชวอน", "id": 12}]
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
+            mock_db.update_message_id = AsyncMock()
+
+            await storage.update_message_id(12345, 12, sent)
+            mock_db.update_message_id.assert_called_once_with(12345, 12, sent)
 
 
 class TestCopyHistory:

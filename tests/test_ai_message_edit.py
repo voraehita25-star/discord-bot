@@ -387,6 +387,50 @@ class TestResumedSessionIdRecap:
         assert "ids for edit_message" not in prompt
 
 
+class TestSdkBackendParity:
+    """CLAUDE_BACKEND=api must not be a silent downgrade: the SDK path gets the
+    same prompt note and the same output cleaning as the cli path."""
+
+    def test_system_prompt_explains_the_injected_prefixes(self):
+        from cogs.ai_core.api.api_handler import with_prefix_note
+
+        system = with_prefix_note("persona")
+        assert system.startswith("persona")
+        assert "edit_message" in system
+        assert "read_channel" in system
+        assert "(msg " in system
+
+    def test_empty_system_prompt_stays_empty(self):
+        """An empty instruction means 'no persona' — appending a lone rules
+        block would turn that into a prompt."""
+        from cogs.ai_core.api.api_handler import with_prefix_note
+
+        assert with_prefix_note("") == ""
+
+    def test_build_api_config_still_passes_the_instruction_through(self):
+        """The note is added at the wire, not in the config — the config
+        builder's pass-through contract is what its own tests assert."""
+        from cogs.ai_core.api.api_handler import build_api_config
+
+        config = build_api_config({"system_instruction": "persona", "thinking_enabled": False})
+        assert config["system_instruction"] == "persona"
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("[2026-05-20T13:18:47+07:00] hi", "hi"),
+            ("(msgs a=1, b=2) hi", "hi"),
+            ("[2026-05-20T13:18:47+07:00] (msg 1) hi", "hi"),
+            ("hi", "hi"),
+            ("", ""),
+        ],
+    )
+    def test_output_cleaning(self, raw, expected):
+        from cogs.ai_core.api.api_handler import clean_model_text
+
+        assert clean_model_text(raw) == expected
+
+
 class TestReadChannelReportsIds:
     @pytest.mark.asyncio
     async def test_each_line_carries_its_message_id(self):
@@ -577,6 +621,157 @@ class TestReplaceMessageTextInHistory:
     async def test_session_not_loaded(self):
         cm = _bare_manager({})
         assert await cm.replace_message_text_in_history(7, 55, "old", "new") is False
+
+
+class TestDeleteMirroringAcrossMultiMessageTurns:
+    """A turn that went out as several Discord messages must lose only the
+    deleted one — dropping the whole row would forget lines still on screen,
+    and doing nothing (the old behaviour) leaves the model quoting a message
+    that no longer exists."""
+
+    @staticmethod
+    def _rp_session():
+        return {
+            7: {
+                "history": [
+                    {
+                        "role": "model",
+                        "parts": ["{{ซออา}} บทหนึ่ง\n{{แชวอน}} บทสอง"],
+                        "message_id": 12,
+                        "sent_message_ids": [
+                            {"name": "ซออา", "id": 11},
+                            {"name": "แชวอน", "id": 12},
+                        ],
+                    }
+                ]
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_row_survives_when_other_messages_remain(self):
+        cm = _bare_manager(self._rp_session())
+        with (
+            patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=0)),
+            patch("cogs.ai_core.logic.save_history", AsyncMock(return_value=True)) as mock_save,
+        ):
+            result = await cm.remove_message_from_history(7, 11, "บทหนึ่ง")
+
+        assert result is True
+        (row,) = cm.chats[7]["history"]
+        assert "บทหนึ่ง" not in row["parts"][0]
+        assert "{{ซออา}}" not in row["parts"][0]  # the label went with its line
+        assert "{{แชวอน}} บทสอง" in row["parts"][0]
+        assert row["sent_message_ids"] == [{"name": "แชวอน", "id": 12}]
+        assert mock_save.await_args.kwargs["force"] is True
+
+    @pytest.mark.asyncio
+    async def test_dead_id_leaves_the_list_even_without_cached_text(self):
+        """MESSAGE_DELETE carries no content. With nothing cached we still stop
+        advertising an id that now 404s, rather than guessing which line to cut."""
+        cm = _bare_manager(self._rp_session())
+        with (
+            patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=0)),
+            patch("cogs.ai_core.logic.save_history", AsyncMock(return_value=True)),
+        ):
+            assert await cm.remove_message_from_history(7, 11) is True
+
+        (row,) = cm.chats[7]["history"]
+        assert row["sent_message_ids"] == [{"name": "แชวอน", "id": 12}]
+        assert "บทหนึ่ง" in row["parts"][0]  # untouched — we could not identify it
+
+    @pytest.mark.asyncio
+    async def test_headline_id_repoints_at_a_surviving_message(self):
+        """message_id is what the DB column and the mirroring paths key on; if
+        the deleted message owned it, it has to move or the row goes dark."""
+        cm = _bare_manager(self._rp_session())
+        with (
+            patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=0)),
+            patch("cogs.ai_core.logic.save_history", AsyncMock(return_value=True)),
+        ):
+            await cm.remove_message_from_history(7, 12, "บทสอง")
+
+        (row,) = cm.chats[7]["history"]
+        assert row["message_id"] == 11
+
+    @pytest.mark.asyncio
+    async def test_last_remaining_message_drops_the_row(self):
+        cm = _bare_manager(
+            {
+                7: {
+                    "history": [
+                        {
+                            "role": "model",
+                            "parts": ["only line"],
+                            "message_id": 11,
+                            "sent_message_ids": [{"name": "ซออา", "id": 11}],
+                        }
+                    ]
+                }
+            }
+        )
+        with patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=1)):
+            assert await cm.remove_message_from_history(7, 11) is True
+
+        assert cm.chats[7]["history"] == []
+
+    @pytest.mark.asyncio
+    async def test_plain_row_still_drops_whole(self):
+        """Unchanged behaviour for the ordinary one-message-per-row case."""
+        cm = _bare_manager(
+            {
+                7: {
+                    "history": [
+                        {"role": "user", "parts": ["hi"], "message_id": 10},
+                        {"role": "model", "parts": ["hello"], "message_id": 11},
+                    ]
+                }
+            }
+        )
+        with patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=1)):
+            assert await cm.remove_message_from_history(7, 10) is True
+
+        assert [i["message_id"] for i in cm.chats[7]["history"]] == [11]
+
+    @pytest.mark.asyncio
+    async def test_patch_drops_the_compress_cache(self):
+        cm = _bare_manager(self._rp_session())
+        cm.chats[7]["_compress_cache"] = {"src_len": 1, "history": []}
+        with (
+            patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=0)),
+            patch("cogs.ai_core.logic.save_history", AsyncMock(return_value=True)),
+        ):
+            await cm.remove_message_from_history(7, 11, "บทหนึ่ง")
+
+        assert "_compress_cache" not in cm.chats[7]
+
+    @pytest.mark.asyncio
+    async def test_unrelated_delete_touches_nothing(self):
+        cm = _bare_manager(self._rp_session())
+        with (
+            patch("cogs.ai_core.logic.delete_message_by_id", AsyncMock(return_value=0)),
+            patch("cogs.ai_core.logic.save_history", AsyncMock()) as mock_save,
+        ):
+            assert await cm.remove_message_from_history(7, 999, "nope") is False
+
+        assert len(cm.chats[7]["history"]) == 1
+        mock_save.assert_not_awaited()
+
+
+class TestRemoveMessageFragment:
+    @pytest.mark.parametrize(
+        ("text", "fragment", "expected"),
+        [
+            ("{{A}} one\n{{B}} two", "one", "{{B}} two"),
+            ("{{A}} one\n{{B}} two", "two", "{{A}} one"),
+            ("narration\n{{A}} one\n{{B}} two", "one", "narration\n{{B}} two"),
+            ("plain reply", "plain reply", ""),
+            ("{{A}} one", "absent", "{{A}} one"),
+        ],
+    )
+    def test_cuts_the_line_and_its_label(self, text, fragment, expected):
+        from cogs.ai_core.logic import _remove_message_fragment
+
+        assert _remove_message_fragment(text, fragment) == expected
 
 
 class TestCmdEditMessageMirrorsIntoHistory:

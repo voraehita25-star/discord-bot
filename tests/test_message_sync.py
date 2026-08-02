@@ -245,10 +245,28 @@ class TestRawListeners:
         payload = MagicMock()
         payload.channel_id = 50
         payload.message_id = 10
+        payload.cached_message = None
 
         await cog.on_raw_message_delete(payload)
 
-        cog.chat_manager.remove_message_from_history.assert_awaited_once_with(50, 10)
+        cog.chat_manager.remove_message_from_history.assert_awaited_once_with(50, 10, None)
+
+    @pytest.mark.asyncio
+    async def test_on_raw_message_delete_passes_cached_text(self):
+        """MESSAGE_DELETE carries no content, so the cached copy is the only
+        way to know WHICH line of a multi-message turn went away."""
+        cog = _make_cog()
+        cog.chat_manager.remove_message_from_history = AsyncMock(return_value=True)
+        payload = MagicMock()
+        payload.channel_id = 50
+        payload.message_id = 10
+        payload.cached_message = MagicMock(content="the deleted line")
+
+        await cog.on_raw_message_delete(payload)
+
+        cog.chat_manager.remove_message_from_history.assert_awaited_once_with(
+            50, 10, "the deleted line"
+        )
 
     @pytest.mark.asyncio
     async def test_on_raw_message_delete_swallows_errors(self):
@@ -268,10 +286,28 @@ class TestRawListeners:
         payload = MagicMock()
         payload.channel_id = 50
         payload.message_ids = {10, 20, 30}
+        payload.cached_messages = []
 
         await cog.on_raw_bulk_message_delete(payload)
 
         assert cog.chat_manager.remove_message_from_history.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_on_raw_bulk_message_delete_matches_cached_text_per_id(self):
+        cog = _make_cog()
+        cog.chat_manager.remove_message_from_history = AsyncMock(return_value=True)
+        payload = MagicMock()
+        payload.channel_id = 50
+        payload.message_ids = [10, 20]
+        payload.cached_messages = [MagicMock(id=20, content="second")]
+
+        await cog.on_raw_bulk_message_delete(payload)
+
+        calls = {
+            c.args[1]: c.args[2]
+            for c in cog.chat_manager.remove_message_from_history.await_args_list
+        }
+        assert calls == {10: None, 20: "second"}
 
     @pytest.mark.asyncio
     async def test_on_raw_message_edit_delegates_with_content(self):

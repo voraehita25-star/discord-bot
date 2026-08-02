@@ -326,27 +326,6 @@ class TestRegexPatterns:
 
         assert result == "Hello world"
 
-    def test_pattern_server_command_create_text(self):
-        """Test PATTERN_SERVER_COMMAND for CREATE_TEXT."""
-        from cogs.ai_core.logic import PATTERN_SERVER_COMMAND
-
-        text = "[[CREATE_TEXT: my-channel]]"
-        match = PATTERN_SERVER_COMMAND.search(text)
-
-        assert match is not None
-        assert match.group(1) == "CREATE_TEXT"
-        assert match.group(2) == "my-channel"
-
-    def test_pattern_server_command_list_channels(self):
-        """Test PATTERN_SERVER_COMMAND for LIST_CHANNELS."""
-        from cogs.ai_core.logic import PATTERN_SERVER_COMMAND
-
-        text = "[[LIST_CHANNELS]]"
-        match = PATTERN_SERVER_COMMAND.search(text)
-
-        assert match is not None
-        assert match.group(1) == "LIST_CHANNELS"
-
     def test_pattern_character_tag(self):
         """Test PATTERN_CHARACTER_TAG pattern."""
         from cogs.ai_core.logic import PATTERN_CHARACTER_TAG
@@ -731,14 +710,12 @@ class TestModuleImports:
             PATTERN_DISCORD_EMOJI,
             PATTERN_ID,
             PATTERN_QUOTE,
-            PATTERN_SERVER_COMMAND,
             PATTERN_SPACED,
         )
 
         assert PATTERN_QUOTE is not None
         assert PATTERN_SPACED is not None
         assert PATTERN_ID is not None
-        assert PATTERN_SERVER_COMMAND is not None
         assert PATTERN_CHARACTER_TAG is not None
         assert PATTERN_CHANNEL_ID is not None
         assert PATTERN_DISCORD_EMOJI is not None

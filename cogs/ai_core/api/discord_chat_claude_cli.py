@@ -361,9 +361,8 @@ def _recent_message_id_lines(history: list[dict[str, Any]]) -> list[str]:
     """Id-only recap of the most recent assistant turns, oldest first.
 
     Each line pairs the annotation with just enough text to tell the turns
-    apart. Turns with no annotation (older rows, or any row restored from the
-    DB — ``sent_message_ids`` has no column there) are skipped: naming a turn
-    without giving its id would only invite a guess.
+    apart. Turns with no annotation (rows written before the ids were tracked)
+    are skipped: naming a turn without giving its id would only invite a guess.
     """
     lines: list[str] = []
     for item in reversed(history):

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 # Re-export server commands
 from ..commands.server_commands import (
-    COMMAND_HANDLERS,
     cmd_add_role,
     cmd_create_category,
     cmd_create_role,
@@ -60,7 +59,6 @@ from .tool_definitions import get_tool_definitions
 
 # Re-export tool executor functions
 from .tool_executor import (
-    execute_server_command,
     execute_tool_call,
     send_as_webhook,
 )
@@ -72,8 +70,6 @@ _invalidate_webhook_cache = invalidate_webhook_cache
 
 
 __all__ = [
-    # Server commands
-    "COMMAND_HANDLERS",
     # Webhook cache
     "WEBHOOK_CACHE_TTL",
     # Legacy aliases
@@ -97,7 +93,6 @@ __all__ = [
     "cmd_set_channel_perm",
     "cmd_set_role_perm",
     # Tool executor
-    "execute_server_command",
     "execute_tool_call",
     "find_member",
     "get_cached_webhook",

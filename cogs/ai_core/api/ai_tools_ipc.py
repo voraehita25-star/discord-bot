@@ -9,10 +9,10 @@ real bot state:
 
   - memory tools (``remember`` / ``recall_memory``) go straight to the live
     ``long_term_memory`` manager (so writes hit the same index reads use), and
-  - server tools (create channel/role, read channel, …) are dispatched through
-    the existing :func:`cogs.ai_core.tools.execute_tool_call`, which already
-    enforces the requesting member's Discord permissions and reuses the
-    battle-tested ``COMMAND_HANDLERS``.
+  - server tools (create channel/role, read channel, edit message, …) are
+    dispatched through the existing :func:`cogs.ai_core.tools.execute_tool_call`,
+    which enforces the requesting member's Discord permissions and calls the
+    ``cmd_*`` handlers in ``commands/server_commands.py``.
 
 Security model:
   - Binds 127.0.0.1 on an OS-assigned port; the URL is handed to the child via

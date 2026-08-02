@@ -99,84 +99,6 @@ class TestExecuteToolCall:
         assert "Failed to save memory" in result
 
 
-class TestExecuteServerCommand:
-    """Tests for execute_server_command function."""
-
-    @pytest.mark.asyncio
-    async def test_permission_denied_non_admin(self):
-        """Test execute_server_command denies non-admin users."""
-        from cogs.ai_core.tools.tool_executor import execute_server_command
-
-        bot = MagicMock()
-        channel = MagicMock()
-        channel.send = AsyncMock()
-
-        user = MagicMock()
-        user.guild_permissions.administrator = False
-        user.display_name = "TestUser"
-
-        await execute_server_command(bot, channel, user, "create_text", "test")
-
-        channel.send.assert_called()
-        call_args = channel.send.call_args[0][0]
-        assert "Admin" in call_args
-
-    @pytest.mark.asyncio
-    async def test_non_guild_channel(self):
-        """Test execute_server_command handles non-guild channels."""
-        from cogs.ai_core.tools.tool_executor import execute_server_command
-
-        bot = MagicMock()
-        channel = MagicMock()
-        channel.send = AsyncMock()
-        channel.guild = None  # No guild
-
-        user = MagicMock()
-        user.guild_permissions.administrator = True
-
-        await execute_server_command(bot, channel, user, "create_text", "test")
-
-        channel.send.assert_called()
-        call_args = channel.send.call_args[0][0]
-        assert "server" in call_args.lower()
-
-    @pytest.mark.asyncio
-    async def test_name_too_long(self):
-        """Test execute_server_command rejects long names."""
-        from cogs.ai_core.tools.tool_executor import execute_server_command
-
-        bot = MagicMock()
-        channel = MagicMock()
-        channel.send = AsyncMock()
-        channel.guild = MagicMock()
-
-        user = MagicMock()
-        user.guild_permissions.administrator = True
-
-        long_name = "A" * 150  # Exceeds 100 char limit
-        await execute_server_command(bot, channel, user, "create_text", long_name)
-
-        channel.send.assert_called()
-        call_args = channel.send.call_args[0][0]
-        assert "ยาวเกินไป" in call_args
-
-    @pytest.mark.asyncio
-    async def test_unknown_command_type(self):
-        """Test execute_server_command handles unknown command types."""
-        from cogs.ai_core.tools.tool_executor import execute_server_command
-
-        bot = MagicMock()
-        channel = MagicMock()
-        channel.send = AsyncMock()
-        channel.guild = MagicMock()
-
-        user = MagicMock()
-        user.guild_permissions.administrator = True
-
-        # Unknown command type should just log warning, not crash
-        await execute_server_command(bot, channel, user, "unknown_command_xyz", "test")
-
-
 class TestSendAsWebhook:
     """Tests for send_as_webhook function."""
 
@@ -468,19 +390,16 @@ class TestModuleExports:
         """Test __all__ exports are defined."""
         from cogs.ai_core.tools.tool_executor import __all__
 
-        assert "execute_server_command" in __all__
         assert "execute_tool_call" in __all__
         assert "send_as_webhook" in __all__
 
     def test_functions_callable(self):
         """Test exported functions are callable."""
         from cogs.ai_core.tools.tool_executor import (
-            execute_server_command,
             execute_tool_call,
             send_as_webhook,
         )
 
-        assert callable(execute_server_command)
         assert callable(execute_tool_call)
         assert callable(send_as_webhook)
 
