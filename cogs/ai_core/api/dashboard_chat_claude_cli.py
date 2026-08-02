@@ -3313,10 +3313,41 @@ async def handle_chat_message_claude_cli(
                     except Exception:
                         logger.exception("build_user_context failed during stale-session retry")
                         fresh_user_context = user_context
+                    # Reload history for the SAME reason, which matters more here
+                    # than the profile does. ``history`` was read near the top of
+                    # this function — BEFORE we blocked on the per-conversation
+                    # lock — so a turn that completed while we waited saved its
+                    # assistant row after our snapshot was taken (that save
+                    # happens once the lock is released, below the finally).
+                    # Normally harmless because a resumed prompt omits the
+                    # history block entirely; but this retry flips
+                    # ``is_resumed_session`` to False precisely because Claude
+                    # no longer holds the context server-side, which makes the
+                    # block the ONLY carrier of prior turns. Sending the stale
+                    # snapshot there silently drops the most recent exchange from
+                    # the rebuilt conversation. Best-effort: keep the existing
+                    # snapshot if the reload fails.
+                    fresh_history = history
+                    if DB_AVAILABLE and conversation_id:
+                        try:
+                            _rdb = get_db()
+                            _msgs = await _rdb.get_dashboard_messages(conversation_id)
+                            # Drop the trailing user row — that's this turn's own
+                            # message, which goes in as `# Current user message`.
+                            _hist = (
+                                _msgs[:-1] if _msgs and _msgs[-1].get("role") == "user" else _msgs
+                            )
+                            if _hist:
+                                fresh_history = _hist
+                        except Exception:
+                            logger.exception(
+                                "History reload failed during stale-session retry; "
+                                "using the pre-lock snapshot"
+                            )
                     fresh_prompt = _build_full_prompt(
                         persona=persona,
                         user_context=fresh_user_context,
-                        history=history,
+                        history=fresh_history,
                         history_limit=max_history_messages,
                         current_message=content,
                         image_paths=image_paths,
@@ -3763,18 +3794,23 @@ async def handle_ai_edit_message_claude_cli(
         f"Current Time: {current_time_str} (ICT)\n\n"
         "# Task\n"
         "Edit the following message according to the user's instruction.\n\n"
-        # Defang ONLY the client instruction (_build_full_prompt /
-        # _build_history_block style): it is client-controlled and can carry a
-        # spoofed "Assistant:" / "# Context" line that would fake a turn or
-        # section boundary in this prompt. It is never fed to the patcher.
+        # NEITHER segment is defanged. This comment used to say the client
+        # instruction was, in "_build_full_prompt / _build_history_block style"
+        # — but that defang was later removed on purpose across the whole
+        # dashboard flattened prompt, and the module-level note above
+        # _prompt_max_chars_from_env names "edit instruction" explicitly as one
+        # of the segments it covers. Single-user dashboard: the only author of
+        # this instruction is the operator. The Discord flattener, where other
+        # users' text is untrusted, keeps its defang.
         #
-        # [Original Message] MUST stay raw: the model copies exact substrings of
-        # it into SEARCH blocks, and _apply_search_replace patches the SAME raw
-        # original_content below. Defanging it here would rewrite role/header
-        # lines to a sentinel the model echoes into SEARCH — text that does not
-        # exist in the raw original — so the patch silently fails to match. This
-        # matches the SDK backend (dashboard_chat_claude.py), which uses the raw
-        # original in both the prompt and the patcher.
+        # [Original Message] must stay raw for an independent reason that still
+        # holds: the model copies exact substrings of it into SEARCH blocks, and
+        # _apply_search_replace patches the SAME raw original_content below.
+        # Rewriting role/header lines here would make the model echo a sentinel
+        # into SEARCH — text that does not exist in the raw original — so the
+        # patch would silently fail to match. This matches the SDK backend
+        # (dashboard_chat_claude.py), which uses the raw original in both the
+        # prompt and the patcher.
         f"[User's Edit Instruction]\n{instruction}\n\n"
         f"[Original Message]\n{original_content}\n\n"
         "RESPONSE FORMAT:\n"

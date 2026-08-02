@@ -781,3 +781,156 @@ class TestConversationTempDirContainment:
         target = cli_mod._conversation_temp_dir(img_root, "good", create=False)
         assert target is not None
         assert target.parent.resolve() == img_root.resolve()
+
+
+class TestStaleRetryReloadsHistory:
+    """The stale-session retry must re-read history, not reuse the pre-lock snapshot.
+
+    ``history`` is loaded near the top of the handler — BEFORE it blocks on the
+    per-conversation lock — while a concurrent turn's assistant row is written
+    AFTER that turn releases the lock. Normally harmless, because a resumed
+    prompt omits the history block entirely. The retry, though, flips
+    ``is_resumed_session`` to False precisely because Claude no longer holds
+    the context server-side, which makes the block the ONLY carrier of prior
+    turns; sending the stale snapshot silently drops the most recent exchange.
+    The handler already refetches ``user_context`` on this same path for the
+    same reason — history was the one input it didn't refresh.
+    """
+
+    @pytest.mark.asyncio
+    async def test_retry_prompt_carries_rows_added_after_the_initial_load(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        cli_mod._CONVERSATION_SESSIONS["c1"] = "stale-sess"
+
+        # Both reads end with THIS turn's own user row (the handler saves it
+        # before loading history, then drops the trailing user row) — so the
+        # snapshot is a real, non-empty history, not an empty list.
+        # Read 1 = the pre-lock snapshot. Read 2 = after a concurrent turn
+        # landed its assistant row while we were blocked on the lock.
+        reads = [
+            [
+                {"role": "user", "content": "OLD-TURN"},
+                {"role": "assistant", "content": "OLD-REPLY"},
+                {"role": "user", "content": "hi"},
+            ],
+            [
+                {"role": "user", "content": "OLD-TURN"},
+                {"role": "assistant", "content": "OLD-REPLY"},
+                {"role": "assistant", "content": "LANDED-WHILE-WE-WAITED"},
+                {"role": "user", "content": "hi"},
+            ],
+        ]
+
+        db = _mock_db()
+
+        async def _get_messages(_conv_id):
+            return reads[min(db.get_dashboard_messages.await_count - 1, len(reads) - 1)]
+
+        db.get_dashboard_messages = AsyncMock(side_effect=_get_messages)
+
+        prompts: list[str] = []
+
+        async def fake_subprocess(
+            argv,
+            stdin_payload,
+            *,
+            on_text_delta,
+            on_thinking_delta,
+            on_thinking_block_start=None,
+            on_thinking_block_stop=None,
+            timeout,
+            extra_env=None,
+            proc=None,
+        ):
+            prompts.append(stdin_payload)
+            if len(prompts) == 1:
+                raise cli_mod._StaleSessionError("stale")
+            await on_text_delta("ok")
+            return "fresh-sess", None
+
+        try:
+            with _handler_patches(db, fake_subprocess):
+                await cli_mod.handle_chat_message_claude_cli(
+                    ws, {"conversation_id": "c1", "content": "hi", "history": []}, None
+                )
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+        assert len(prompts) == 2, "the stale-session retry did not run"
+        retry_prompt = prompts[1]
+        assert "# Conversation so far" in retry_prompt
+        assert "LANDED-WHILE-WE-WAITED" in retry_prompt, (
+            "the retry rebuilt the conversation from the pre-lock snapshot, "
+            "silently dropping the turn that landed while we waited on the lock"
+        )
+        assert "OLD-REPLY" in retry_prompt, "earlier history must survive the reload"
+        # The first attempt was resumed, so it carried no history block at all —
+        # this is what makes the retry's block the sole carrier of prior turns.
+        assert "# Conversation so far" not in prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_retry_falls_back_to_the_snapshot_when_the_reload_fails(
+        self, monkeypatch, tmp_path
+    ):
+        """A failing reload must not lose the history we already had."""
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        cli_mod._CONVERSATION_SESSIONS["c1"] = "stale-sess"
+
+        db = _mock_db()
+        calls = {"n": 0}
+
+        async def _get_messages(_conv_id):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Trailing user row is this turn's own message and gets dropped,
+                # leaving a real snapshot behind.
+                return [
+                    {"role": "user", "content": "SNAPSHOT-TURN"},
+                    {"role": "assistant", "content": "SNAPSHOT-REPLY"},
+                    {"role": "user", "content": "hi"},
+                ]
+            raise RuntimeError("db went away")
+
+        db.get_dashboard_messages = AsyncMock(side_effect=_get_messages)
+
+        prompts: list[str] = []
+
+        async def fake_subprocess(
+            argv,
+            stdin_payload,
+            *,
+            on_text_delta,
+            on_thinking_delta,
+            on_thinking_block_start=None,
+            on_thinking_block_stop=None,
+            timeout,
+            extra_env=None,
+            proc=None,
+        ):
+            prompts.append(stdin_payload)
+            if len(prompts) == 1:
+                raise cli_mod._StaleSessionError("stale")
+            await on_text_delta("ok")
+            return "fresh-sess", None
+
+        try:
+            with _handler_patches(db, fake_subprocess):
+                await cli_mod.handle_chat_message_claude_cli(
+                    ws, {"conversation_id": "c1", "content": "hi", "history": []}, None
+                )
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+        assert len(prompts) == 2
+        assert "SNAPSHOT-REPLY" in prompts[1], "a failed reload must keep the snapshot"
+        assert ws.find("stream_end"), "the turn must still complete"
