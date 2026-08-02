@@ -1132,6 +1132,63 @@ def reset_session(conversation_id: str) -> None:
         _CONVERSATION_LOCKS.pop(conversation_id, None)
 
 
+# Conversation ids reaching the temp-dir writers below are already validated
+# against ``^[a-zA-Z0-9_\-]{1,128}\Z`` by BOTH WS entry points
+# (handle_chat_message_claude_cli / handle_ai_edit_message_claude_cli). This
+# re-check is containment, not a second opinion: the writers turn the id into a
+# filesystem path, and that precondition was previously enforced only by a
+# comment ~1500 lines away in a 4k-line module. Verified by probe that, handed a
+# traversal id directly, the old code happily created files in ``C:\Windows\Temp``
+# and outside ``data/tmp`` — so a future caller (a third entry point, a reused
+# helper) that forgot to validate would turn an attachment upload into an
+# arbitrary file write. Same reasoning as ``document_extractor`` re-enforcing the
+# upload extension allowlist that the temp-file path already applies: the
+# guarantee has to hold at every consumer, not just the first one.
+_CONV_ID_FS_SAFE = re.compile(r"^[A-Za-z0-9_\-]{1,128}\Z")
+
+
+def _conversation_temp_dir(root: Path, conversation_id: str, *, create: bool) -> Path | None:
+    """Resolve the per-conversation temp dir, or None if it isn't usable.
+
+    Rejects on the id's spelling first (cheap, and covers not-yet-existing
+    paths that ``resolve()`` normalises only lexically), then confirms
+    containment on the resolved path so a symlinked root can't widen scope.
+
+    ``create=True`` also performs the ``mkdir`` and returns None if it fails.
+    That belongs here rather than at the call sites because the attachment
+    writers run BEFORE the handler's main try/finally is entered, so anything
+    raised out of them escapes ``handle_chat_message_claude_cli`` completely —
+    the client never gets a terminal frame and the optimistically-saved user
+    row is left behind. A Windows RESERVED DEVICE NAME makes that reachable:
+    the entry-point regex ``^[a-zA-Z0-9_\\-]{1,128}$`` happily admits ``con`` /
+    ``nul`` / ``prn`` / ``aux``, and ``mkdir`` on those raises
+    ``NotADirectoryError``. Returning None instead degrades the turn to "no
+    attachments", which the caller already handles (see its re-check of
+    emptiness after saving) — matching this module's existing rule that a bad
+    attachment is skipped quietly rather than killing the request.
+    """
+    if not conversation_id or not _CONV_ID_FS_SAFE.match(conversation_id):
+        logger.warning(
+            "Refusing temp-dir access for suspicious conversation id %r", conversation_id
+        )
+        return None
+    try:
+        resolved_root = root.resolve()
+        target = (resolved_root / conversation_id[:64]).resolve()
+    except (OSError, ValueError):
+        return None
+    if target != resolved_root and resolved_root not in target.parents:
+        logger.warning("Refusing temp dir %s outside root %s", target, resolved_root)
+        return None
+    if create:
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except (OSError, ValueError):
+            logger.warning("Unusable temp dir %s for conversation %r", target, conversation_id)
+            return None
+    return target
+
+
 def _save_inline_images(
     conversation_id: str,
     images: list[Any],
@@ -1147,11 +1204,9 @@ def _save_inline_images(
     if not images or not conversation_id:
         return []
 
-    # conversation_id is pre-validated against ``^[a-zA-Z0-9_\-]{1,128}$``
-    # at the WS handler entry — only the length cap is meaningful here.
-    safe_conv = conversation_id[:64]
-    target_dir = _TEMP_IMAGE_ROOT / safe_conv
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = _conversation_temp_dir(_TEMP_IMAGE_ROOT, conversation_id, create=True)
+    if target_dir is None:
+        return []
 
     written: list[Path] = []
     timestamp = int(time.time() * 1000)
@@ -1216,9 +1271,9 @@ def _cleanup_image_dir(conversation_id: str) -> None:
     """
     if not conversation_id:
         return
-    # conversation_id is pre-validated; only length cap is needed.
-    safe_conv = conversation_id[:64]
-    target_dir = _TEMP_IMAGE_ROOT / safe_conv
+    target_dir = _conversation_temp_dir(_TEMP_IMAGE_ROOT, conversation_id, create=False)
+    if target_dir is None:
+        return
     cutoff = time.time() - 60
     with contextlib.suppress(Exception):
         if target_dir.exists():
@@ -1276,10 +1331,9 @@ def _save_inline_documents(
     if not documents or not conversation_id:
         return []
 
-    # conversation_id is pre-validated; only length cap is needed.
-    safe_conv = conversation_id[:64]
-    target_dir = _TEMP_DOCS_ROOT / safe_conv
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = _conversation_temp_dir(_TEMP_DOCS_ROOT, conversation_id, create=True)
+    if target_dir is None:
+        return []
 
     written: list[Path] = []
     timestamp = int(time.time() * 1000)
@@ -1374,9 +1428,9 @@ def _cleanup_docs_dir(conversation_id: str) -> None:
     """
     if not conversation_id:
         return
-    # conversation_id is pre-validated; only length cap is needed.
-    safe_conv = conversation_id[:64]
-    target_dir = _TEMP_DOCS_ROOT / safe_conv
+    target_dir = _conversation_temp_dir(_TEMP_DOCS_ROOT, conversation_id, create=False)
+    if target_dir is None:
+        return
     cutoff = time.time() - 60
     with contextlib.suppress(Exception):
         if target_dir.exists():
@@ -1498,9 +1552,19 @@ def _build_full_prompt(
         )
 
     # Inject the timestamp inline so Claude knows when the message was sent
-    # (matches the SDK backend's behavior). The DB stores the raw content,
-    # so this prefix never reaches the dashboard UI. Sanitized so a pasted
-    # "Assistant:" line or spoofed section header can't fake a turn boundary.
+    # (matches the SDK backend's behavior). The DB stores the raw content, so
+    # this prefix never reaches the dashboard UI.
+    #
+    # NOT sanitized. This comment used to claim the message was defanged so a
+    # pasted "Assistant:" line or spoofed section header couldn't fake a turn
+    # boundary; that defang was later removed on purpose for the whole
+    # dashboard flattened prompt (see the module-level note above
+    # _prompt_max_chars_from_env — single-user dashboard, segments go in
+    # verbatim), leaving the claim behind to outlive the code. Verified by
+    # probe: a message containing "# Current user message" really does emit
+    # that header twice. Accepted here because the only author of this string
+    # is the dashboard's own operator; the Discord flattener, where other
+    # users' text is untrusted, keeps its defang.
     timestamp = bangkok_now_iso()
     parts.append(f"# Current user message\n[{timestamp}] {current_message}")
     return "\n\n".join(parts)
@@ -3441,10 +3505,14 @@ async def handle_chat_message_claude_cli(
         # keeps the dir non-empty and this fails harmlessly (suppressed),
         # preserving the <60s concurrency guard.
         if conversation_id:
-            _safe_conv = conversation_id[:64]
             for _root in (_TEMP_IMAGE_ROOT, _TEMP_DOCS_ROOT):
+                # Route through the same containment helper the writers use, so
+                # this rmdir can never be aimed outside the temp roots either.
+                _dir = _conversation_temp_dir(_root, conversation_id, create=False)
+                if _dir is None:
+                    continue
                 with contextlib.suppress(Exception, asyncio.CancelledError):
-                    await asyncio.to_thread((_root / _safe_conv).rmdir)
+                    await asyncio.to_thread(_dir.rmdir)
         # Close the 💭 panel on any exit path that didn't already close it via
         # on_thinking_block_stop (error/timeout returns before reasoning ended,
         # or a backend that never fires block-stop). Idempotent —

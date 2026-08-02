@@ -681,3 +681,103 @@ class TestHandlerSearchAndWriteToggles:
         assert "Write mode" in warnings[0]["message"]
         # The notice has to land before the reply starts, not after it.
         assert ws.sent.index(warnings[0]) < ws.sent.index(ws.find("stream_start")[0])
+
+
+# ============================================================================
+# Temp-attachment dir containment
+# ============================================================================
+
+
+class TestConversationTempDirContainment:
+    r"""The attachment writers turn ``conversation_id`` into a filesystem path.
+
+    Both WS entry points validate the id first, so this is containment rather
+    than a second opinion — but the precondition used to live only in a comment
+    ~1500 lines away, and a probe confirmed that handing these helpers a
+    traversal id directly created real files in ``C:\Windows\Temp`` and outside
+    ``data/tmp``. A future third caller that forgot to validate would turn an
+    attachment upload into an arbitrary file write.
+    """
+
+    PNG = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+    TXT = {"name": "a.txt", "kind": "text", "data": "hello"}
+
+    TRAVERSAL_IDS = [
+        "../../escape",
+        r"..\..\escape",
+        "a/../../b",
+        "....//....//x",
+        "C:/Windows/Temp",
+        "//server/share",
+        r"\\?\C:\Windows",
+        ".",
+        "..",
+        "a:b",
+        "a\x00b",
+        "",
+    ]
+
+    @pytest.fixture(autouse=True)
+    def _temp_roots(self, tmp_path, monkeypatch):
+        img = tmp_path / "roots" / "images"
+        doc = tmp_path / "roots" / "docs"
+        img.mkdir(parents=True)
+        doc.mkdir(parents=True)
+        monkeypatch.setattr(cli_mod, "_TEMP_IMAGE_ROOT", img)
+        monkeypatch.setattr(cli_mod, "_TEMP_DOCS_ROOT", doc)
+        return img, doc
+
+    @pytest.mark.parametrize("conv", TRAVERSAL_IDS)
+    def test_images_refuse_traversal_ids(self, conv, _temp_roots):
+        img_root, _ = _temp_roots
+        written = cli_mod._save_inline_images(conv, [self.PNG], 10 * 1024 * 1024)
+        assert written == []
+        # Nothing may exist anywhere under (or beside) the root.
+        assert list(img_root.rglob("*")) == []
+
+    @pytest.mark.parametrize("conv", TRAVERSAL_IDS)
+    def test_documents_refuse_traversal_ids(self, conv, _temp_roots):
+        _, doc_root = _temp_roots
+        written = cli_mod._save_inline_documents(conv, [self.TXT], 10 * 1024 * 1024)
+        assert written == []
+        assert list(doc_root.rglob("*")) == []
+
+    @pytest.mark.parametrize("conv", TRAVERSAL_IDS)
+    def test_cleanup_helpers_refuse_traversal_ids(self, conv):
+        # Must not raise, and must not touch anything outside the root.
+        cli_mod._cleanup_image_dir(conv)
+        cli_mod._cleanup_docs_dir(conv)
+
+    def test_legit_conversation_still_writes(self, _temp_roots):
+        img_root, doc_root = _temp_roots
+        imgs = cli_mod._save_inline_images("conv-abc_123", [self.PNG], 10 * 1024 * 1024)
+        docs = cli_mod._save_inline_documents("conv-abc_123", [self.TXT], 10 * 1024 * 1024)
+        assert imgs and docs, "a valid conversation id must still work"
+        for p in (*imgs, *docs):
+            root = img_root if p in imgs else doc_root
+            assert root.resolve() in p.resolve().parents
+
+    @pytest.mark.parametrize("reserved", ["con", "nul", "prn", "aux", "CON"])
+    def test_windows_reserved_device_names_degrade_quietly(self, reserved, _temp_roots):
+        r"""``mkdir`` on a reserved device name raises NotADirectoryError.
+
+        The entry-point regex ``^[a-zA-Z0-9_\-]{1,128}$`` admits these, and the
+        writers run BEFORE the handler's main try/finally — so an escaping
+        exception would leave the WS client with no terminal frame. Degrade to
+        "no attachments" (which the caller already re-checks for) instead.
+        """
+        assert cli_mod._save_inline_images(reserved, [self.PNG], 10 * 1024 * 1024) == []
+        assert cli_mod._save_inline_documents(reserved, [self.TXT], 10 * 1024 * 1024) == []
+        cli_mod._cleanup_image_dir(reserved)
+        cli_mod._cleanup_docs_dir(reserved)
+
+    def test_resolved_target_must_stay_under_root(self, _temp_roots):
+        img_root, _ = _temp_roots
+        assert cli_mod._conversation_temp_dir(img_root, "good", create=False) is not None
+        # A syntactically valid id always lands directly beneath the root.
+        target = cli_mod._conversation_temp_dir(img_root, "good", create=False)
+        assert target is not None
+        assert target.parent.resolve() == img_root.resolve()
