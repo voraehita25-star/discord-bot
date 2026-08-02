@@ -1257,8 +1257,21 @@ def _save_inline_documents(
     Text kind: ``data`` is a decoded UTF-8 string — written directly.
 
     Files with unsafe extensions (anything outside the allowlist) are
-    silently skipped so a compromised frontend can't push ``.exe`` / ``.bat``
+    silently skipped so a compromised frontend can't push a native binary
+    (``.exe``, ``.dll``, ``.msi``, ``.jar``) or a secrets file (``.env``)
     into a directory Claude's Read tool later points at.
+
+    NOTE: shell/script SOURCE extensions (``.bat``, ``.cmd``, ``.ps1``,
+    ``.sh``, ``.py``, …) ARE on the allowlist — they sit with the other
+    source-code types because uploading a script for review is a normal
+    thing to do. This docstring used to claim ``.bat`` was skipped, which
+    was never true; don't rely on the allowlist to exclude script text.
+    Nothing here executes what it writes: the files land in a temp dir that
+    Claude only ever *reads* as text, and no spawn path can shell out —
+    write mode denies Bash outright (``--disallowedTools``) and the chat
+    path never allow-lists it, with no TTY under ``-p`` to approve it
+    interactively. The allowlist's job is to keep opaque binaries and
+    credential files out, not to judge whether text is script-shaped.
     """
     if not documents or not conversation_id:
         return []

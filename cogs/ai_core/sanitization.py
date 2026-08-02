@@ -13,6 +13,20 @@ import unicodedata
 _SAFE_CHANNEL_NAME = re.compile(r"[^a-zA-Z0-9\-_\u0E00-\u0E7F\s]")
 _SAFE_ROLE_NAME = re.compile(r"[<>@#&]")
 
+# Canonical bracketed-system-marker pattern, shared by every module that
+# re-injects stored conversational content into a prompt (``memory/entity_memory``
+# and ``memory/state_tracker``). Both used to carry their own copy and they drifted:
+# state_tracker's was unanchored while entity_memory's was pinned to start-of-line,
+# which \u2014 because every entity renderer emits ``<label>: <value>`` \u2014 meant the
+# anchored copy could never fire on the fact values it was meant to protect. Keep
+# this as the single definition so the two boundaries cannot diverge again.
+#
+# Matches from the marker to end of line so the injected *instruction* goes with
+# the marker, not just the tag. ``ignore[^\]]*`` covers ``[ignore previous \u2026]``
+# spellings; the plain reserved words require the bracket to close right after
+# them (``\s*\]``) so ordinary text like ``[User Guide]`` is left alone.
+SYSTEM_MARKER_RE = re.compile(r"(?im)\[\s*(?:system|inst|user|assistant|ignore[^\]]*)\s*\][^\n]*")
+
 
 def sanitize_channel_name(name: str, max_length: int = 100) -> str:
     """Sanitize channel name to prevent injection attacks.
@@ -311,15 +325,39 @@ _MEMORY_FORBIDDEN_NORMALIZED = (
     "disregard",
 )
 
+# A denylist that recognises only ONE spelling of the gap between two words is
+# trivially evaded: "ignore\nprevious", "ignore\tprevious", "ignore  previous"
+# and "ignore.previous" all read as the original instruction to a downstream LM,
+# yet none of them contain the literal "ignore previous" the set above checks
+# for (all four were confirmed to reach storage). Two extra normalisations close
+# that, applied on top of the de-confused/NFKD form:
+#
+#   * separator-folded — every run of non-alphanumeric characters collapses to a
+#     single space, so any separator spelling folds onto the canonical one.
+#   * whitespace-stripped — ALL whitespace removed and matched against the
+#     forbidden phrases with their spaces likewise removed, which additionally
+#     catches letter-spaced payloads ("i g n o r e   p r e v i o u s").
+#
+# The whitespace-stripped pass is deliberately restricted to the MULTI-TOKEN and
+# bracketed entries. Running it over the bare single words would manufacture
+# matches out of adjacent ones — "handed over ride quality" strips to
+# "…overridequality", which contains "override" — so those keep to the passes
+# that preserve word boundaries.
+_MEMORY_SEPARATOR_RUN = re.compile(r"[^a-z0-9]+")
+_MEMORY_FORBIDDEN_DESPACED = tuple(
+    f.replace(" ", "") for f in _MEMORY_FORBIDDEN_NORMALIZED if " " in f or "[" in f or "<" in f
+)
+
 
 def memory_content_has_injection(content: str) -> bool:
     """Return True if ``content`` carries a prompt-injection marker.
 
     Plain lowercased pass for the suspicious markers, then a de-confused +
     NFKD-decomposed + ASCII pass for the broader forbidden set so confusable
-    spellings can't evade detection. Pure predicate (no clamping/attribution) so
-    callers that only need the boolean (e.g. the ``!remember`` command) can reuse
-    the SAME denylists as the AI-tool/IPC sinks.
+    spellings can't evade detection, then the two separator-insensitive passes
+    described above. Pure predicate (no clamping/attribution) so callers that
+    only need the boolean (e.g. the ``!remember`` command) can reuse the SAME
+    denylists as the AI-tool/IPC sinks.
     """
     lowered = content.lower()
     if any(marker in lowered for marker in _MEMORY_SUSPICIOUS_MARKERS):
@@ -328,7 +366,18 @@ def memory_content_has_injection(content: str) -> bool:
     normalized = (
         unicodedata.normalize("NFKD", de_confused).encode("ascii", "ignore").decode("ascii").lower()
     )
-    return any(f in normalized for f in _MEMORY_FORBIDDEN_NORMALIZED)
+    if any(f in normalized for f in _MEMORY_FORBIDDEN_NORMALIZED):
+        return True
+    # Separator-folded pass — catches "ignore.previous", "ignore\nprevious",
+    # "ignore__previous", "ignore  previous". The bracketed entries can't match
+    # here (their brackets fold away too); the exact pass above owns those.
+    collapsed = _MEMORY_SEPARATOR_RUN.sub(" ", normalized)
+    if any(f in collapsed for f in _MEMORY_FORBIDDEN_NORMALIZED):
+        return True
+    # Whitespace-stripped pass — catches letter-spaced payloads and split tags
+    # ("[ system ]", "<sys tem>"). Multi-token/bracketed entries only.
+    despaced = "".join(normalized.split())
+    return any(f in despaced for f in _MEMORY_FORBIDDEN_DESPACED)
 
 
 def screen_memory_content(content: object) -> tuple[bool, str]:
@@ -364,6 +413,7 @@ def screen_memory_content(content: object) -> tuple[bool, str]:
 
 
 __all__ = [
+    "SYSTEM_MARKER_RE",
     "escape_mentions",
     "memory_content_has_injection",
     "sanitize_channel_name",
