@@ -1280,6 +1280,34 @@ async def cmd_get_user_info(
         await origin_channel.send(f"❌ ไม่พบผู้ใช้: {target}", allowed_mentions=_NO_MENTIONS)
 
 
+async def _mirror_edit_into_history(origin_channel, msg_id, old_content, new_content):
+    """Patch the AI's stored history after the bot edits one of its own messages.
+
+    Discord's ``MESSAGE_UPDATE`` listener (``AICog.on_raw_message_edit``) skips
+    anything the bot authored, because streaming edits the bot's own message
+    repeatedly and a late partial would clobber the canonical turn. That skip
+    also swallows the edits made here — so without this call the AI would fix
+    the text in Discord while its memory still held the original, and would go
+    on reproducing the wording it was asked to change.
+
+    Best-effort by design: the Discord edit has already succeeded and must not
+    be reported as failed because memory is unavailable (no live cog, session
+    not loaded, history already trimmed past the message).
+    """
+    try:
+        from ..api.chat_manager_registry import get_chat_manager
+
+        chat_manager = get_chat_manager()
+        channel_id = getattr(origin_channel, "id", None)
+        if chat_manager is None or channel_id is None:
+            return
+        await chat_manager.replace_message_text_in_history(
+            channel_id, msg_id, old_content, new_content
+        )
+    except Exception:
+        logger.exception("Failed to mirror bot message edit %s into AI history", msg_id)
+
+
 async def cmd_edit_message(_guild, origin_channel, _name, args, user=None):
     """Edit a message owned by the bot."""
     # Require manage_messages: cmd_edit_message can edit any bot-owned or
@@ -1322,13 +1350,18 @@ async def cmd_edit_message(_guild, origin_channel, _name, args, user=None):
                 "❌ ไม่พบ bot member ใน server นี้", allowed_mentions=_NO_MENTIONS
             )
             return
+        # Snapshot BEFORE the edit — mirroring the change into the AI's stored
+        # history is keyed on the pre-edit text (see _mirror_edit_into_history).
+        old_content = msg.content or ""
         if msg.author == bot:
             await msg.edit(content=new_content)
+            await _mirror_edit_into_history(origin_channel, msg_id, old_content, new_content)
         elif msg.webhook_id:
             webhooks = await origin_channel.webhooks()
             webhook = next((w for w in webhooks if w.id == msg.webhook_id), None)
             if webhook and webhook.user and webhook.user.id == bot.id:  # Check bot ID
                 await webhook.edit_message(msg_id, content=new_content)
+                await _mirror_edit_into_history(origin_channel, msg_id, old_content, new_content)
             else:
                 await origin_channel.send(
                     "❌ แก้ไขไม่ได้: Webhook นี้ไม่ใช่ของบอท", allowed_mentions=_NO_MENTIONS
@@ -1406,8 +1439,16 @@ async def cmd_read_channel(guild, origin_channel, _name, args, user=None):
             messages = []
             async for msg in target_channel.history(limit=limit):
                 content = msg.content or "[Image/Attachment]"
+                # The ``(id: …)`` annotation is what makes an after-the-fact
+                # correction possible: it is the ONLY place the AI can learn a
+                # message id for a message it did not send in the current
+                # session, and ``edit_message`` needs one. Character lines sent
+                # through a webhook each carry their own id here, which the
+                # per-turn history row (one row for the whole reply) cannot
+                # represent.
                 messages.append(
-                    f"[{msg.created_at.strftime('%H:%M')}] {msg.author.display_name}: {content}"
+                    f"[{msg.created_at.strftime('%H:%M')}] (id: {msg.id}) "
+                    f"{msg.author.display_name}: {content}"
                 )
             messages.reverse()
             await send_long_message(

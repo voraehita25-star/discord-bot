@@ -208,7 +208,11 @@ def get_tool_definitions() -> list[dict]:
                 },
                 {
                     "name": "read_channel",
-                    "description": "Read last N messages from a channel",
+                    "description": (
+                        "Read last N messages from a channel. Each line is returned as "
+                        "'[HH:MM] (id: <message_id>) <author>: <content>' — use that id "
+                        "with edit_message to correct an earlier message."
+                    ),
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
@@ -222,6 +226,34 @@ def get_tool_definitions() -> list[dict]:
                             },
                         },
                         "required": ["channel_name"],
+                    },
+                },
+                {
+                    # message_id is STRING, not INTEGER: Discord snowflakes exceed
+                    # the 2^53 range JSON numbers are safely round-tripped in, and
+                    # cmd_edit_message parses the argument textually anyway.
+                    "name": "edit_message",
+                    "description": (
+                        "Edit an earlier message the bot sent in this channel — including "
+                        "character messages sent through a webhook. Replaces the message's "
+                        "content ENTIRELY, so pass the full corrected text, not just the "
+                        "changed part. Get message ids from read_channel, or from the "
+                        "'(id: ...)' annotations on assistant turns in the conversation "
+                        "history. Requires the requesting user to have Manage Messages."
+                    ),
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "message_id": {
+                                "type": "STRING",
+                                "description": "Discord message ID of the message to edit",
+                            },
+                            "new_content": {
+                                "type": "STRING",
+                                "description": "Full replacement content for that message",
+                            },
+                        },
+                        "required": ["message_id", "new_content"],
                     },
                 },
                 {

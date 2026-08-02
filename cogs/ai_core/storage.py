@@ -1138,7 +1138,11 @@ async def _load_history_json(bot: Bot, channel_id: int) -> list[dict[str, Any]]:
             # permanently stripping per-user attribution even though the JSON
             # file still held the real ids (the DB loader deliberately keeps
             # it "so the round trip is lossless" — keep this path in lockstep).
-            for k in ("timestamp", "message_id", "user_id"):
+            # ``sent_message_ids`` (the per-character / per-chunk Discord ids of
+            # a reply that went out as several messages) only round-trips on
+            # this JSON path — ai_history has a single ``message_id`` column,
+            # so the DB loader above cannot restore it.
+            for k in ("timestamp", "message_id", "user_id", "sent_message_ids"):
                 if k in item:
                     history_item[k] = item[k]
 

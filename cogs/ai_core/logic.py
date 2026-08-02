@@ -175,7 +175,49 @@ if TYPE_CHECKING:
 # Post-processing patterns
 PATTERN_QUOTE = re.compile(r'^>\s*(["\'])', re.MULTILINE)
 PATTERN_SPACED = re.compile(r'^\s*>\s*(["\'])', re.MULTILINE)
+# Strips a leading ``[ID: nnn]`` from STORED text before it is re-fed to the
+# model. Kept deliberately: message ids reach the prompt from the authoritative
+# ``message_id``/``sent_message_ids`` bookkeeping (see
+# ``_format_message_id_prefix``), so an id the model once echoed into its own
+# reply must not be laundered back in as if it were one of ours.
 PATTERN_ID = re.compile(r"^\[ID:\s*\d+\]\s*")
+
+# How many per-message ids to name in one annotation. A turn is capped at ~30
+# {{Name}} blocks upstream; listing every one of a pathological turn would cost
+# more prompt than it is worth, and read_channel can always resolve the rest.
+_MAX_ANNOTATED_MESSAGE_IDS = 12
+
+
+def _format_message_id_prefix(item: dict[str, Any]) -> str:
+    """Render the ``(msg …)`` annotation for one stored model turn.
+
+    The AI cannot correct an earlier message without that message's Discord id,
+    and a turn is not always a single message: a long reply is split across
+    chunks, and a multi-character RP turn sends one webhook message per
+    ``{{Name}}`` block — while all of it is stored as ONE history row with room
+    for one ``message_id``. So prefer the recorded per-message ids and fall back
+    to the row's single id.
+
+    Returns "" when nothing was recorded (older rows, or a DB-backed restart —
+    ``sent_message_ids`` does not survive that). ``read_channel`` reports ids
+    straight from Discord and covers those cases.
+    """
+    sent = item.get("sent_message_ids")
+    if isinstance(sent, list) and sent:
+        labelled: list[str] = []
+        for entry in sent[:_MAX_ANNOTATED_MESSAGE_IDS]:
+            if not isinstance(entry, dict) or entry.get("id") is None:
+                continue
+            name = str(entry.get("name") or "").strip()
+            labelled.append(f"{name}={entry['id']}" if name else str(entry["id"]))
+        if labelled:
+            suffix = ", …" if len(sent) > _MAX_ANNOTATED_MESSAGE_IDS else ""
+            return f"(msgs {', '.join(labelled)}{suffix}) "
+    message_id = item.get("message_id")
+    if message_id is not None:
+        return f"(msg {message_id}) "
+    return ""
+
 
 # Server command pattern
 PATTERN_SERVER_COMMAND = re.compile(
@@ -968,6 +1010,92 @@ class ChatManager(SessionMixin, ResponseMixin):
         if hit:
             self._drop_cli_session_after_history_mutation(channel_id)
         return hit
+
+    async def replace_message_text_in_history(
+        self, channel_id: int, message_id: int, old_content: str, new_content: str
+    ) -> bool:
+        """Mirror an edit the BOT performed on its own message into memory.
+
+        ``on_raw_message_edit`` deliberately ignores edits authored by the bot
+        (streaming works by re-editing the bot's own message), so an edit made
+        through the ``edit_message`` tool would otherwise leave the ORIGINAL
+        text in history — and the model would keep replaying the very wording
+        it was just asked to remove.
+
+        :meth:`edit_message_in_history` can't be reused here because it swaps a
+        row's text WHOLESALE. That is right for one-message-per-row replies but
+        destructive for a multi-character RP turn, which stores every
+        ``{{Name}}`` block of the reply in ONE row while each block went out as
+        its own webhook message. So this replaces the edited message's text as a
+        FRAGMENT of whatever row contains it, keyed on the pre-edit content.
+
+        Row preference: one carrying this ``message_id`` (the normal path
+        stamps it), else the most recent model row containing the old text —
+        intermediate webhook messages never had their id recorded, so the text
+        is the only link back.
+
+        Returns True if a row was patched.
+        """
+        if not old_content or old_content == new_content:
+            return False
+        session = self.chats.get(channel_id)
+        if session is None:
+            return False
+        history = session.get("history") or []
+
+        def _contains(item: Any) -> bool:
+            return isinstance(item, dict) and old_content in _parts_to_text(item.get("parts", []))
+
+        target = next(
+            (item for item in history if _contains(item) and item.get("message_id") == message_id),
+            None,
+        )
+        if target is None:
+            # Reverse scan: the most recent occurrence is the edited one when
+            # there is no id to key on (an identical line said twice in the
+            # same channel would otherwise patch the older turn).
+            target = next(
+                (
+                    item
+                    for item in reversed(history)
+                    if _contains(item) and item.get("role") == "model"
+                ),
+                None,
+            )
+        if target is None:
+            return False
+
+        patched_parts: list[Any] = []
+        for part in target.get("parts", []):
+            if isinstance(part, str) and old_content in part:
+                patched_parts.append(part.replace(old_content, new_content))
+            elif (
+                isinstance(part, dict)
+                and isinstance(part.get("text"), str)
+                and old_content in part["text"]
+            ):
+                patched = dict(part)
+                patched["text"] = part["text"].replace(old_content, new_content)
+                patched_parts.append(patched)
+            else:
+                patched_parts.append(part)
+        target["parts"] = patched_parts
+        # Same reason as edit_message_in_history: an in-place edit leaves the
+        # history LENGTH unchanged, so the length-keyed compress cache would
+        # keep serving the pre-edit compression.
+        session.pop("_compress_cache", None)
+
+        row_id = target.get("message_id")
+        if row_id is not None:
+            # Targeted UPDATE — keeps ai_history row ids stable, so dashboard
+            # undo entries captured earlier stay valid.
+            await edit_message_by_id(channel_id, int(row_id), _parts_to_text(patched_parts))
+        else:
+            # No id on the row (an intermediate webhook message): nothing to key
+            # a targeted UPDATE on, so commit the in-memory view wholesale.
+            await save_history(self.bot, channel_id, session, force=True)
+        self._drop_cli_session_after_history_mutation(channel_id)
+        return True
 
     def patch_history_content(
         self, channel_id: int, *, row: dict[str, Any], new_content: str, occurrence: int = 0
@@ -1801,26 +1929,31 @@ class ChatManager(SessionMixin, ResponseMixin):
                         converted_parts = []
                         # Prefix-once: attach the stored send timestamp to the
                         # first text part so the model can see when each
-                        # historical message was sent.
-                        ts_prefix = ""
+                        # historical message was sent, plus — for the bot's own
+                        # turns — the Discord message id(s) that turn was sent
+                        # as, which is what makes ``edit_message`` usable on an
+                        # earlier reply without a read_channel lookup first.
+                        meta_prefix = ""
                         ts_raw = item.get("timestamp")
                         if ts_raw:
-                            ts_prefix = f"[{_norm_ts(ts_raw)}] "
-                        ts_applied = False
+                            meta_prefix = f"[{_norm_ts(ts_raw)}] "
+                        if role == "model":
+                            meta_prefix += _format_message_id_prefix(item)
+                        prefix_applied = False
                         had_image_only = False
                         for p in parts_data:
                             if isinstance(p, str):
                                 clean_text = PATTERN_ID.sub("", p)
-                                if ts_prefix and not ts_applied:
-                                    clean_text = ts_prefix + clean_text
-                                    ts_applied = True
+                                if meta_prefix and not prefix_applied:
+                                    clean_text = meta_prefix + clean_text
+                                    prefix_applied = True
                                 if clean_text.strip():
                                     converted_parts.append({"text": clean_text})
                             elif isinstance(p, dict) and "text" in p:
                                 clean_text = PATTERN_ID.sub("", p["text"])
-                                if ts_prefix and not ts_applied:
-                                    clean_text = ts_prefix + clean_text
-                                    ts_applied = True
+                                if meta_prefix and not prefix_applied:
+                                    clean_text = meta_prefix + clean_text
+                                    prefix_applied = True
                                 if clean_text.strip():
                                     converted_parts.append({"text": clean_text})
                             elif isinstance(p, dict) and (
@@ -1834,8 +1967,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 had_image_only = True
                         if not converted_parts and had_image_only:
                             placeholder = "[image]"
-                            if ts_prefix:
-                                placeholder = ts_prefix + placeholder
+                            if meta_prefix:
+                                placeholder = meta_prefix + placeholder
                             converted_parts.append({"text": placeholder})
                         if converted_parts:
                             contents.append({"role": role, "parts": converted_parts})
@@ -2174,6 +2307,14 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # If parts has more than 1 element, it means we found {{...}}
                     if len(parts) > 1:
+                        # Every Discord message this turn produces, paired with the
+                        # speaker it was sent as. ONE history row holds the whole
+                        # multi-character reply, but it goes out as many separate
+                        # messages — so a single ``message_id`` cannot address the
+                        # individual character lines the AI may later be asked to
+                        # correct. Collect them all; the prompt builder renders the
+                        # pairs so ``edit_message`` can target an exact line.
+                        sent_ids: list[dict[str, Any]] = []
                         # parts[0] is the text before the first {{...}} (Narrator/Intro).
                         # Must be chunked to Discord's 2000-char limit — a long
                         # narrator intro previously went out as ONE send, whose
@@ -2184,10 +2325,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                             # normal-send path) — a raw 2000-char slice could
                             # orphan a combining mark on a long intro.
                             for _chunk in _split_for_discord(narrator_text):
-                                await send_channel.send(
+                                _narrator_msg = await send_channel.send(
                                     _chunk,
                                     allowed_mentions=discord.AllowedMentions.none(),
                                 )
+                                if _narrator_msg is not None:
+                                    sent_ids.append({"name": "narration", "id": _narrator_msg.id})
 
                         # Iterate through the rest: odd indices are Names, even are Messages.
                         # ``range(1, len(parts), 2)`` already bounds ``i`` to
@@ -2207,16 +2350,23 @@ class ChatManager(SessionMixin, ResponseMixin):
                                     # Capture the last sent message ID
                                     if sent_msg:
                                         last_msg_id = sent_msg.id
+                                        sent_ids.append({"name": char_name, "id": sent_msg.id})
 
                                     # Small delay to ensure order and prevent rate limits
                                     await asyncio.sleep(0.5)
 
-                        # Update history with the last message ID if we sent anything.
-                        # NOTE: only the FINAL webhook message id is stamped onto the
-                        # tail model item, so intermediate per-character webhook
-                        # messages are not tracked and do not participate in Discord
-                        # edit/delete mirroring.
-                        if last_msg_id and chat_data.get("history"):
+                        # Stamp the tail model item. ``message_id`` keeps its old
+                        # meaning — the FINAL webhook message — because the Discord
+                        # delete/edit mirroring and the DB's one-id-per-row column
+                        # are both built on it. ``sent_message_ids`` carries the rest
+                        # so the individual character messages are addressable too.
+                        #
+                        # Note ``sent_message_ids`` is in-memory + JSON-backend only:
+                        # ai_history has a single ``message_id`` column and no room
+                        # for the list. After a restart on the DB backend the model
+                        # falls back to ``read_channel``, which reports every id
+                        # straight from Discord.
+                        if sent_ids and chat_data.get("history"):
                             history_list = chat_data["history"]
                             if history_list and len(history_list) > 0:
                                 last_item = history_list[-1]
@@ -2228,8 +2378,10 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 # make update_message_id retarget the previous
                                 # turn's model row in the DB.
                                 if isinstance(last_item, dict) and last_item.get("role") == "model":
-                                    last_item["message_id"] = last_msg_id
-                                    await update_message_id(context_channel.id, last_msg_id)
+                                    last_item["sent_message_ids"] = sent_ids
+                                    if last_msg_id:
+                                        last_item["message_id"] = last_msg_id
+                                        await update_message_id(context_channel.id, last_msg_id)
 
                         return  # Skip normal sending
 
@@ -2239,11 +2391,18 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # ends as the LAST chunk's send, which is what the history
                     # message-id stamping below expects.
                     sent_message = None
+                    # Every chunk's id, for the same reason as the webhook path:
+                    # a reply over 2000 chars becomes several Discord messages
+                    # while staying ONE history row, and only the last one's id
+                    # fits the row's ``message_id``.
+                    plain_sent_ids: list[dict[str, Any]] = []
                     if response_text:  # Only send if there is text left
                         for _chunk in _split_for_discord(response_text):
                             sent_message = await send_channel.send(
                                 _chunk, allowed_mentions=discord.AllowedMentions.none()
                             )
+                            if sent_message is not None:
+                                plain_sent_ids.append({"name": "reply", "id": sent_message.id})
 
                     # Update history with Message ID if available
                     if sent_message and chat_data.get("history"):
@@ -2252,6 +2411,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                             last_item = history_list[-1]
                             if isinstance(last_item, dict) and last_item.get("role") == "model":
                                 last_item["message_id"] = sent_message.id
+                                if len(plain_sent_ids) > 1:
+                                    # Single-chunk replies are fully described by
+                                    # ``message_id`` — only record the list when it
+                                    # actually adds something.
+                                    last_item["sent_message_ids"] = plain_sent_ids
                                 # Save again to persist ID
                                 await update_message_id(context_channel.id, sent_message.id)
 

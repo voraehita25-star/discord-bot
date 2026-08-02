@@ -131,6 +131,23 @@ def strip_leading_timestamp(text: str) -> str:
     return _LEADING_TIMESTAMP_RE.sub("", text, count=1)
 
 
+# Pattern for the leading message-id annotation logic.py attaches to the bot's
+# own historical turns so it can address them with the ``edit_message`` tool:
+#   (msg 1401234567890123456)
+#   (msgs narration=140…, ซออา=140…, แชวอน=140…)
+# Same hazard as the timestamp prefix — the model sees it on every past
+# assistant turn and starts reproducing it on new replies, which would then be
+# posted to Discord verbatim.
+_LEADING_MESSAGE_ID_RE = _re.compile(r"^\s*\(msgs?\s+[^()\n]{0,400}?\)\s*")
+
+
+def strip_leading_message_ids(text: str) -> str:
+    """Remove a single leading ``(msg …)`` / ``(msgs …)`` annotation if present."""
+    if not text:
+        return text
+    return _LEADING_MESSAGE_ID_RE.sub("", text, count=1)
+
+
 # Internal Claude Code CLI XML markup that occasionally bleeds into model
 # output because the same model powers interactive Claude Code and the
 # ``claude -p`` subprocess we spawn. When the user input or context

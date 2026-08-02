@@ -21,6 +21,7 @@ from ..commands.server_commands import (
     cmd_create_voice,
     cmd_delete_channel,
     cmd_delete_role,
+    cmd_edit_message,
     cmd_get_user_info,
     cmd_list_channels,
     cmd_list_members,
@@ -46,6 +47,11 @@ logger = logging.getLogger(__name__)
 # before bailing out, even if the input is pathologically long. Prevents
 # unbounded loops on adversarial or corrupted text.
 _MAX_CHUNKS = 50
+
+# Discord's per-message body limit. The send paths here chunk around it; the
+# ``edit_message`` tool can't (an edit replaces one message), so it rejects
+# oversized content up front rather than letting the API answer with a 400.
+_DISCORD_MESSAGE_LIMIT = 2000
 
 # Prefixes the cmd_* handlers use for a FAILED outcome (no permission, bot
 # Forbidden, role hierarchy, not-found, duplicate-name bail, …). Their success
@@ -301,12 +307,20 @@ async def execute_tool_call(
         "list_members",
         "get_user_info",
     }
+    # Same mirroring rule for ``manage_messages``: cmd_edit_message gates on that
+    # bit, not on administrator. Requiring admin here instead would deny the tool
+    # to exactly the moderators Discord considers authorized to edit messages,
+    # while the handler would have allowed them.
+    _MANAGE_MESSAGES_TOOLS = {
+        "edit_message",
+    }
     if not hasattr(user, "guild_permissions"):
         return f"⛔ Permission denied: User {getattr(user, 'display_name', 'Unknown')} has no guild membership."
     is_admin = user.guild_permissions.administrator
     is_read_only = fname in _READ_ONLY_TOOLS
     is_manage_guild_tool = fname in _MANAGE_GUILD_TOOLS
-    if not is_admin and not is_read_only and not is_manage_guild_tool:
+    is_manage_messages_tool = fname in _MANAGE_MESSAGES_TOOLS
+    if not (is_admin or is_read_only or is_manage_guild_tool or is_manage_messages_tool):
         return (
             f"⛔ Permission denied: User {getattr(user, 'display_name', 'Unknown')} "
             f"is not an Admin (tool '{fname}' requires admin privileges)."
@@ -317,6 +331,8 @@ async def execute_tool_call(
     # model. Admins resolve to Permissions.all(), so they pass this too.
     if is_manage_guild_tool and not user.guild_permissions.manage_guild:
         return "⛔ Permission denied: requires manage_guild permission."
+    if is_manage_messages_tool and not user.guild_permissions.manage_messages:
+        return "⛔ Permission denied: requires manage_messages permission."
 
     # Fine-grained mutation gating: even an Administrator-tagged caller
     # should not invoke channel/role mutation tools without the matching
@@ -641,6 +657,40 @@ async def execute_tool_call(
                 cmd_args.append(str(args.get("limit")))
             await cmd_read_channel(guild, origin_channel, None, cmd_args, user=user)
             return f"Requested reading channel '{channel_name}'"
+
+        elif fname == "edit_message":
+            # Both fields are model-supplied. Validate their SHAPE here so the
+            # model gets an actionable string instead of cmd_edit_message's
+            # chat-facing Thai error (which it only sees indirectly via the tee).
+            raw_id = args.get("message_id")
+            # Accept an int too: a model that ignores the STRING type in the
+            # schema would otherwise be rejected for a well-formed snowflake.
+            if isinstance(raw_id, int) and not isinstance(raw_id, bool):
+                raw_id = str(raw_id)
+            if not isinstance(raw_id, str) or not raw_id.strip():
+                return "❌ Failed: 'message_id' is required and must be a non-empty string"
+            new_content = args.get("new_content")
+            if not isinstance(new_content, str) or not new_content.strip():
+                return "❌ Failed: 'new_content' is required and must be a non-empty string"
+            # Discord rejects >2000 chars with an opaque 400. Say so plainly so
+            # the model can split the correction instead of retrying blindly.
+            if len(new_content) > _DISCORD_MESSAGE_LIMIT:
+                return (
+                    f"❌ Failed: 'new_content' is {len(new_content)} chars; "
+                    f"Discord allows at most {_DISCORD_MESSAGE_LIMIT} per message"
+                )
+            # ``|`` is cmd_edit_message's argument separator on the legacy
+            # dispatcher path, but here the args arrive already split, so the
+            # content is passed through verbatim — no escaping needed.
+            tee = _TeeChannel(origin_channel)
+            await cmd_edit_message(
+                guild,
+                cast(discord.TextChannel, tee),
+                None,
+                [raw_id.strip(), new_content],
+                user=user,
+            )
+            return _mutation_outcome(tee, f"Edited message {raw_id.strip()}")
 
         elif fname == "remember":
             # Funnel through the SHARED memory screen (sanitization.py) so this

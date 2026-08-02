@@ -40,6 +40,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -64,7 +65,11 @@ from .dashboard_chat_claude_cli import (
     build_tools_declaration,
     is_cli_backend_ready,
 )
-from .dashboard_common import strip_claude_internal_tags, strip_leading_timestamp
+from .dashboard_common import (
+    strip_claude_internal_tags,
+    strip_leading_message_ids,
+    strip_leading_timestamp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +345,55 @@ def _discord_tools_note(ai_tool_names: list[str] | None) -> str:
     )
 
 
+# The ``(msg …)`` / ``(msgs name=…)`` annotation logic.py prefixes onto the
+# bot's own stored turns. Matched here (rather than re-derived) so the resumed
+# recap and the prompt history can never disagree about a message id.
+_MESSAGE_ID_ANNOTATION_RE = re.compile(r"^\s*(\(msgs?\s+[^()\n]{0,400}?\))\s*(.*)", re.DOTALL)
+
+# How many recent assistant turns the resumed-session recap names, and how much
+# of each turn's text it quotes. Both are deliberately small: the recap exists
+# to make ids addressable, not to restore the conversation.
+_RESUMED_ID_RECAP_TURNS = 5
+_RESUMED_ID_RECAP_SNIPPET = 80
+
+
+def _recent_message_id_lines(history: list[dict[str, Any]]) -> list[str]:
+    """Id-only recap of the most recent assistant turns, oldest first.
+
+    Each line pairs the annotation with just enough text to tell the turns
+    apart. Turns with no annotation (older rows, or any row restored from the
+    DB — ``sent_message_ids`` has no column there) are skipped: naming a turn
+    without giving its id would only invite a guess.
+    """
+    lines: list[str] = []
+    for item in reversed(history):
+        if len(lines) >= _RESUMED_ID_RECAP_TURNS:
+            break
+        if not isinstance(item, dict) or item.get("role") != "model":
+            continue
+        first_text = next(
+            (
+                part if isinstance(part, str) else part.get("text")
+                for part in item.get("parts", [])
+                if isinstance(part, str) or (isinstance(part, dict) and part.get("text"))
+            ),
+            None,
+        )
+        if not isinstance(first_text, str):
+            continue
+        # logic.py assembles the prefix as ``[timestamp] (msg …) text``.
+        match = _MESSAGE_ID_ANNOTATION_RE.match(strip_leading_timestamp(first_text))
+        if not match:
+            continue
+        annotation, body = match.group(1), match.group(2).strip().replace("\n", " ")
+        snippet = body[:_RESUMED_ID_RECAP_SNIPPET]
+        if len(body) > _RESUMED_ID_RECAP_SNIPPET:
+            snippet += "…"
+        lines.append(f"{annotation} {snippet}".rstrip())
+    lines.reverse()
+    return lines
+
+
 def _flatten_contents_to_prompt(
     contents: list[dict[str, Any]],
     system_instruction: str,
@@ -409,6 +463,17 @@ def _flatten_contents_to_prompt(
         "part of the user's intent. Do NOT include such timestamp "
         "prefixes in your own response. Just answer normally."
     )
+    parts.append(
+        "Your own past turns may additionally carry a message-id annotation — "
+        "'(msg 1401234567890123456)' for a turn sent as one Discord message, or "
+        "'(msgs narration=140…, Character=140…)' when the turn went out as "
+        "several (one per {{Name}} block, or split across chunks). These ids are "
+        "what the edit_message tool takes, so you can correct an earlier message "
+        "instead of only apologising for it. For messages older than the shown "
+        "history, call read_channel — it reports the id of every message it "
+        "returns. Like timestamps, these annotations are system-injected: never "
+        "reproduce one in your own reply."
+    )
     parts.append("")
 
     # contents is the bot's internal Gemini-shaped history: a list of
@@ -448,6 +513,19 @@ def _flatten_contents_to_prompt(
             if joined:
                 history_parts.append(f"{speaker}: {joined}")
         history_parts.append("")
+    elif history:
+        # Resumed session: the full recap is deliberately not re-sent (see the
+        # docstring), which would also withhold every ``(msg …)`` annotation —
+        # leaving the model unable to correct its own recent messages without a
+        # read_channel round trip on the default backend. Re-send just the ids
+        # of the last few assistant turns: bounded, id-only, and short enough
+        # that repeating it per turn cannot grow the session context the way a
+        # full recap would.
+        recap = _recent_message_id_lines(history)
+        if recap:
+            history_parts.append("# Your recent messages (ids for edit_message)")
+            history_parts.extend(recap)
+            history_parts.append("")
 
     tail_parts: list[str] = []
     if isinstance(current, dict):
@@ -1110,8 +1188,12 @@ async def call_claude_cli_streaming(
     # 2. Strip a leading ``[ISO-timestamp]`` prefix if the model
     #    mimicked the historical-message format despite the explicit
     #    instruction in the prompt.
+    # 3. Same for the ``(msg …)`` message-id annotation carried by past
+    #    assistant turns — stripped after the timestamp because that is
+    #    the order the prefixes are assembled in.
     cleaned = strip_claude_internal_tags(accumulated_text)
     cleaned = strip_leading_timestamp(cleaned)
+    cleaned = strip_leading_message_ids(cleaned)
     return cleaned, "", []
 
 
@@ -1382,6 +1464,7 @@ async def call_claude_cli(
     # Same defence pipeline as the streaming path.
     cleaned = strip_claude_internal_tags(accumulated_text)
     cleaned = strip_leading_timestamp(cleaned)
+    cleaned = strip_leading_message_ids(cleaned)
     return cleaned, "", []
 
 
