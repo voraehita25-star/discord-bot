@@ -19,6 +19,7 @@ import {
     openModal,
     closeModal,
     _resetModalInertState,
+    _resetPaneScrollState,
     DataCache,
     addChartDataPoint,
     niceChartScale,
@@ -956,6 +957,109 @@ describe('Page Navigation', () => {
         expect(resolvePage('does-not-exist')).toBeNull();
         expect(resolvePage('')).toBeNull();
         expect(resolvePage('page-settings')).toBeNull();
+    });
+});
+
+// ============================================================================
+// Page Navigation — transcript scroll memory (switchPage save/restore)
+// ============================================================================
+
+describe('Page Navigation — transcript scroll memory', () => {
+    // The regression: `.page` is display:none while inactive, and a
+    // display:none element has no layout box, so the browser DISCARDS its
+    // scroll offset. Neither transcript reloads on re-entry (the chat hook only
+    // re-lists conversations, historyManager.onEnter() only re-requests the
+    // channel list), so leaving AI Chat / AI History and coming back always
+    // landed on the OLDEST message instead of where the user was reading.
+    //
+    // jsdom has no layout, so it neither drops the offset on hide nor clamps on
+    // assignment — the `scrollTop = 0` lines below stand in for what the
+    // browser does when the pane goes display:none.
+
+    const PAGES_DOM = `
+        <section id="page-status" class="page active"></section>
+        <section id="page-chat" class="page">
+            <div id="chat-messages"></div>
+        </section>
+        <section id="page-history" class="page">
+            <div id="ai-history-messages"></div>
+        </section>`;
+
+    /** jsdom's own scrollTop is inert — give the pane one that stores a value. */
+    function scrollable(id: string): HTMLElement {
+        const el = document.getElementById(id) as HTMLElement;
+        Object.defineProperty(el, 'scrollTop', { value: 0, writable: true, configurable: true });
+        return el;
+    }
+
+    const showPage = (p: string): void =>
+        (window as unknown as { showPage: (p: string) => void }).showPage(p);
+
+    beforeEach(() => {
+        _resetPaneScrollState();
+        document.body.innerHTML = PAGES_DOM;
+        showPage('status');   // normalise `currentPage` after earlier suites
+    });
+
+    afterEach(() => {
+        _resetPaneScrollState();
+        document.body.innerHTML = '';
+    });
+
+    it('restores the chat transcript to where the user was reading', () => {
+        showPage('chat');
+        const pane = scrollable('chat-messages');
+        pane.scrollTop = 1200;                 // reading mid-transcript
+
+        showPage('status');
+        pane.scrollTop = 0;                    // the browser drops it on hide
+        showPage('chat');
+
+        expect(pane.scrollTop).toBe(1200);
+    });
+
+    it('restores the AI History transcript independently of the chat one', () => {
+        showPage('chat');
+        const chatPane = scrollable('chat-messages');
+        chatPane.scrollTop = 900;
+
+        showPage('history');
+        const historyPane = scrollable('ai-history-messages');
+        historyPane.scrollTop = 350;
+
+        showPage('status');
+        chatPane.scrollTop = 0;
+        historyPane.scrollTop = 0;
+
+        showPage('history');
+        expect(historyPane.scrollTop).toBe(350);
+        expect(chatPane.scrollTop).toBe(0);     // still hidden — untouched
+
+        showPage('chat');
+        expect(chatPane.scrollTop).toBe(900);
+    });
+
+    it('leaves a pane the user had at the top alone', () => {
+        // Nothing to restore, and assigning 0 over a fresh load's
+        // scroll-to-bottom would undo it.
+        showPage('chat');
+        const pane = scrollable('chat-messages');
+        pane.scrollTop = 0;
+
+        showPage('status');
+        pane.scrollTop = 4000;                  // stands in for a fresh load
+        showPage('chat');
+
+        expect(pane.scrollTop).toBe(4000);
+    });
+
+    it('does not resurrect an offset for a pane that is gone', () => {
+        showPage('chat');
+        scrollable('chat-messages').scrollTop = 700;
+        showPage('status');
+        document.getElementById('chat-messages')!.remove();
+
+        expect(() => showPage('chat')).not.toThrow();
     });
 });
 

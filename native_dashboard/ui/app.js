@@ -1974,6 +1974,62 @@ function initHistoryManager() {
     if (chatManager)
         chatManager.historyManager = historyManager;
 }
+// Remembered scroll offset of each page's transcript pane, keyed by page id.
+// `.page` is display:none while inactive (styles.css) and a display:none
+// element has no layout box, so the browser DISCARDS its scroll offset — the
+// pane came back at 0. Neither page reloads its transcript on re-entry (the
+// chat hook only re-lists conversations; historyManager.onEnter() only
+// re-requests the channel list), so nothing ever put the reader back where
+// they were: leaving AI Chat / AI History and returning always landed on the
+// oldest message instead of the exchange they had been reading.
+const PANE_SCROLL_IDS = {
+    chat: 'chat-messages',
+    history: 'ai-history-messages',
+};
+const paneScrollOffsets = new Map();
+/** Capture a transcript pane's offset while it still HAS one (pre-hide). */
+function savePaneScroll(page) {
+    const id = PANE_SCROLL_IDS[page];
+    if (id === undefined)
+        return;
+    const pane = document.getElementById(id);
+    // A hidden pane already reads 0 — don't let that overwrite a good offset.
+    if (pane && pane.scrollTop > 0)
+        paneScrollOffsets.set(page, pane.scrollTop);
+}
+/**
+ * Put the reader back where they were. Applied synchronously (the pane has its
+ * layout box back the moment `.active` is on, and assigning scrollTop flushes
+ * layout) and re-applied one frame later, because the chat pane's height also
+ * depends on #chat-container's display:flex from showChatContainer() and on the
+ * `.page.active` fadeIn settling.
+ */
+function restorePaneScroll(page) {
+    const id = PANE_SCROLL_IDS[page];
+    if (id === undefined)
+        return;
+    const saved = paneScrollOffsets.get(page);
+    if (saved === undefined || saved <= 0)
+        return;
+    const apply = () => {
+        // The user may have navigated away again before the frame ran.
+        if (currentPage !== page)
+            return;
+        const pane = document.getElementById(id);
+        // Assignment is clamped by the browser, so a transcript that shrank
+        // while away lands at its own bottom rather than out of bounds.
+        if (pane)
+            pane.scrollTop = saved;
+    };
+    apply();
+    if (typeof requestAnimationFrame === 'function')
+        requestAnimationFrame(apply);
+}
+// Test-only: clear remembered pane offsets between cases (see
+// _resetModalInertState). Not used in production.
+export function _resetPaneScrollState() {
+    paneScrollOffsets.clear();
+}
 function switchPage(page) {
     // Resolve stale aliases (config→settings) then reject anything unknown, so
     // a bad page id can't blank the UI by deactivating every .page section.
@@ -1981,6 +2037,9 @@ function switchPage(page) {
     if (resolved === null)
         return;
     page = resolved;
+    // BEFORE the class toggle below hides the outgoing page: once `.active` is
+    // gone the pane is display:none and its scrollTop reads (and stays) 0.
+    savePaneScroll(currentPage);
     currentPage = page;
     document.querySelectorAll('.nav-item').forEach(item => {
         const itemPage = item.dataset.page;
@@ -2033,6 +2092,9 @@ function switchPage(page) {
         }
         historyManager?.onEnter();
     }
+    // Last: the chat hook above restores #chat-container's display:flex, so the
+    // pane only has a scrollable box to position once that has run.
+    restorePaneScroll(page);
 }
 // ============================================================================
 // Optimized Refresh Loop

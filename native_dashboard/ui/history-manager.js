@@ -1126,10 +1126,22 @@ export class HistoryManager {
         const ae = document.activeElement;
         if (ae && ae !== document.body)
             return;
+        // The fallback is the LAST row, not the first. Deleting the NEWEST
+        // message leaves nothing at `idx` (no row slides into the tail), and
+        // the old `.history-msg .history-edit-btn` fallback resolved to the
+        // FIRST — i.e. the OLDEST — row in the DOM: focus jumped the length of
+        // the transcript, which is the wrong anchor by every measure.
+        const rows = container.querySelectorAll('.history-msg .history-edit-btn');
         const target = container.querySelector(`.history-msg[data-idx="${idx}"] .history-edit-btn`)
-            ?? container.querySelector('.history-msg .history-edit-btn')
+            ?? rows[rows.length - 1]
             ?? container;
-        target.focus();
+        // preventScroll: this only hands focus back to a stable anchor — the
+        // viewport was already positioned by the caller (the edit/delete/restore
+        // acks restore `savedPos`; removeRowInPlace deliberately leaves it
+        // alone). A scrolling focus() ran AFTER all of them and overrode them,
+        // so deleting the newest message scrolled the transcript to the very
+        // top. Same reasoning as showOlderMessages' own preventScroll below.
+        target.focus({ preventScroll: true });
     }
     // ------------------------------------------------------------------
     // Delete flow (confirm → delete_ai_history_message → ack removes the

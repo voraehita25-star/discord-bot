@@ -2644,6 +2644,55 @@ describe('in-place row updates', () => {
         expect(active.closest('.history-msg')!.getAttribute('data-id')).toBe('9');
     });
 
+    it('deleting the NEWEST row anchors focus at the new last row, not the oldest', async () => {
+        // The regression: nothing slides into the tail index, so the
+        // `[data-idx]` lookup missed and the fallback resolved to the FIRST
+        // `.history-msg` in the DOM — the OLDEST message. Focusing it scrolled
+        // the transcript back to the very top on every delete of the newest
+        // message, which is the delete users actually perform.
+        const { hm } = mountHistory();
+        loadFour(hm);
+        const container = document.getElementById('ai-history-messages')!;
+        (container.querySelector('.history-msg[data-id="10"] .history-delete-btn') as HTMLElement)
+            .focus();
+        await hm.requestDelete(3); // id 10 — the newest row
+        hm.handleMessage({
+            type: 'ai_history_message_deleted',
+            channel_id: CHANNEL_A,
+            id: 10,
+            live_session: 'patched',
+            live_session_patched: true,
+            total_count: 3,
+        });
+        const active = document.activeElement as HTMLElement;
+        expect(active.closest('.history-msg')!.getAttribute('data-id')).toBe('9');
+    });
+
+    it('the post-delete focus never scrolls the transcript', async () => {
+        // jsdom implements neither scrolling nor focus()'s scroll side effect,
+        // so the only way to pin this is the option the browser acts on.
+        const { hm } = mountHistory();
+        loadFour(hm);
+        const container = document.getElementById('ai-history-messages')!;
+        (container.querySelector('.history-msg[data-id="10"] .history-delete-btn') as HTMLElement)
+            .focus();
+        const focusSpy = vi.spyOn(HTMLElement.prototype, 'focus');
+        try {
+            await hm.requestDelete(3); // id 10 — the newest row
+            hm.handleMessage({
+                type: 'ai_history_message_deleted',
+                channel_id: CHANNEL_A,
+                id: 10,
+                live_session: 'patched',
+                live_session_patched: true,
+                total_count: 3,
+            });
+            expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
+        } finally {
+            focusSpy.mockRestore();
+        }
+    });
+
     it('a restore ack inserts only the affected row at its id-sorted spot', async () => {
         const { hm } = mountHistory();
         loadFour(hm);
