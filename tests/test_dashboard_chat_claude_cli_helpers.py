@@ -213,6 +213,36 @@ class TestSaveInlineDocuments:
         )
         assert result == []
 
+    def test_long_filename_keeps_its_extension(self):
+        # The stored name is capped, but slicing the WHOLE name cut the suffix
+        # off anything longer than the cap — a .pdf reached disk with no
+        # extension, so Claude's Read tool sees opaque bytes instead of a PDF.
+        # Truncate the stem and re-attach the (already allowlisted) extension.
+        url = _data_url("application/pdf", b"%PDF-1.4 stub")
+        long_name = "r" * 120 + ".pdf"
+        result = cli._save_inline_documents(
+            "conv-1", [{"name": long_name, "kind": "binary", "data": url}], 1024
+        )
+        assert len(result) == 1
+        assert result[0].suffix == ".pdf"
+        assert result[0].read_bytes() == b"%PDF-1.4 stub"
+
+    def test_long_filename_stays_bounded(self):
+        # Re-attaching the extension must not defeat the length cap. Stay under
+        # the earlier 200-char cap on the RAW name: past that the extension is
+        # gone before the allowlist check even runs, and the document is dropped
+        # outright — a fail-safe outcome, unlike the silent extension loss this
+        # guards.
+        result = cli._save_inline_documents(
+            "conv-1",
+            [{"name": "n" * 150 + ".md", "kind": "text", "data": "x"}],
+            1024,
+        )
+        assert len(result) == 1
+        stored = result[0].name.split("_", 3)[-1]  # strip "<ts>_<rand>_<idx>_"
+        assert len(stored) <= 80
+        assert result[0].suffix == ".md"
+
     def test_drops_oversized_text(self):
         result = cli._save_inline_documents(
             "conv-1",
@@ -1229,6 +1259,73 @@ async def _run_with_fake(
 _BETAS_WARNING = (
     b"Warning: Custom betas are only available for API key users. Ignoring provided betas.\n"
 )
+
+
+class TestRunClaudeSubprocessMalformedFrames:
+    """A junk stdout frame must be skipped, never propagated as a turn failure.
+
+    Every NESTED level of the stream-json parser was isinstance-guarded, but the
+    top-level ``json.loads`` result was not: a valid-JSON non-object line
+    (``null``, ``1``, ``"x"``, ``[]``, ``true``) parsed fine and then
+    AttributeError'd on ``.get``. That escaped ``consume_stdout`` past the
+    LimitOverrun/Timeout handlers around it, killing a turn whose text may have
+    already streamed. Same guard the sibling JSON entry points carry
+    (ai_tools_ipc._handle_exec, mcp_tools_server.main, cli_write_guard.main).
+    """
+
+    @pytest.mark.parametrize(
+        "junk",
+        [b"null\n", b"123\n", b'"hello"\n', b"[1,2,3]\n", b"true\n"],
+    )
+    async def test_non_object_frame_is_skipped(self, monkeypatch, tmp_path, junk):
+        stdout = [
+            *_ndjson({"type": "system", "subtype": "init", "session_id": "sess-1"}),
+            junk,
+            *_ndjson({"type": "result", "subtype": "success", "usage": {"input_tokens": 7}}),
+        ]
+        sid, usage = await _run_with_fake(
+            monkeypatch, tmp_path, stdout_lines=stdout, stderr_chunks=[], rc=0
+        )
+        # The frames on either side of the junk must still be honoured.
+        assert sid == "sess-1"
+        assert usage == {"input_tokens": 7}
+
+    async def test_text_streamed_before_a_junk_frame_survives(self, monkeypatch, tmp_path):
+        stdout = [
+            *_ndjson(
+                {"type": "system", "subtype": "init", "session_id": "sess-2"},
+                {
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": "partial answer"},
+                    },
+                },
+            ),
+            b"null\n",
+            *_ndjson({"type": "result", "subtype": "success", "usage": {"output_tokens": 3}}),
+        ]
+        seen: list[str] = []
+        proc = _FakeProc(stdout, [], 0)
+
+        async def fake_exec(*_a, **_k):
+            return proc
+
+        async def on_text(chunk: str) -> None:
+            seen.append(chunk)
+
+        monkeypatch.setattr(cli, "_CLAUDE_CLI_WORKDIR", tmp_path)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        sid, usage = await cli._run_claude_subprocess(
+            ["claude", "-p"],
+            "hello",
+            on_text_delta=on_text,
+            on_thinking_delta=None,
+            timeout=30,
+        )
+        assert seen == ["partial answer"]
+        assert sid == "sess-2"
+        assert usage == {"output_tokens": 3}
 
 
 class TestRunClaudeSubprocessErrors:

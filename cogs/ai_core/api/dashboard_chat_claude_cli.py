@@ -1366,7 +1366,18 @@ def _save_inline_documents(
 
         # Preserve the user's filename (sanitised) so Claude sees meaningful
         # names — makes prompt output more coherent than `doc_0.pdf`.
-        safe_name = re.sub(r"[^A-Za-z0-9._\-]", "_", name)[:80] or f"doc_{idx}{ext}"
+        # Truncate the STEM and re-attach the extension, rather than slicing the
+        # whole name: a blunt [:80] silently cut the suffix off any filename
+        # longer than that ("<100 chars>.pdf" landed on disk with no extension
+        # at all), and the extension is what tells Claude's Read tool how to
+        # parse the file — a .pdf without its suffix reads as opaque bytes.
+        # ``ext`` passed the allowlist check above, so re-attaching it cannot
+        # widen what gets written. rstrip so the join can't produce "foo..pdf"
+        # or a trailing dot/space Windows would strip anyway.
+        safe_full = re.sub(r"[^A-Za-z0-9._\-]", "_", name)
+        if len(safe_full) > 80:
+            safe_full = safe_full[: max(1, 80 - len(ext))].rstrip(". ") + ext
+        safe_name = safe_full or f"doc_{idx}{ext}"
         path = target_dir / f"{timestamp}_{rand_suffix}_{idx}_{safe_name}"
 
         # Route by the data shape, not solely by kind/extension: a file whose
@@ -2436,6 +2447,19 @@ async def _run_claude_subprocess(
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            # A valid-JSON NON-object frame (``null``, ``1``, ``"x"``, ``[]``,
+            # ``true``) parses fine and then AttributeErrors on ``.get`` below.
+            # That escapes consume_stdout past the LimitOverrun/Timeout handlers
+            # wrapping it, so it kills a turn whose text may already have
+            # streamed — the caller sees a generic backend failure with no
+            # terminal frame. Every NESTED level here is already isinstance-
+            # guarded (``event``, ``content_block``, ``delta``, ``usage``); the
+            # top level was the one gap. Skip the frame, matching the malformed-
+            # JSON branch above and the identical guard in
+            # ai_tools_ipc._handle_exec, mcp_tools_server.main, and
+            # cli_write_guard.main.
+            if not isinstance(event, dict):
                 continue
 
             etype = event.get("type")
