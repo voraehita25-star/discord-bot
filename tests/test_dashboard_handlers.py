@@ -975,3 +975,100 @@ class TestDocumentMemoryScopeValidation:
         with patch.object(mod, "_get_db", side_effect=RuntimeError("stop here")):
             await handler(ws, {"id": 1, "conversation_id": ok_scope})
         assert not [m for m in ws.sent if m.get("message") == "Invalid conversation id"]
+
+
+class TestAiHistoryIdParsers:
+    """The entry gate for the four AI-history handlers, which edit and delete
+    the AI's stored Discord history. Both parsers had zero coverage.
+
+    The sharp edge is the ASCII restriction. ``int()`` happily accepts
+    non-ASCII decimal digits — ``int("١٢٣") == 123`` — and ``str.isdigit()``
+    returns True for them, so the obvious spellings of this parser would let a
+    client address a row with a string that no ASCII comparison elsewhere would
+    ever match. ``_SNOWFLAKE_RE.fullmatch`` restricts to ``[0-9]``, which is
+    what makes that safe; pin it so a refactor to isdigit()/try-int can't
+    silently widen the gate.
+    """
+
+    SQLITE_MAX = (1 << 63) - 1
+
+    @staticmethod
+    def _parsers():
+        from cogs.ai_core.api.dashboard_handlers import (
+            _parse_history_row_id,
+            _parse_snowflake,
+        )
+
+        return _parse_snowflake, _parse_history_row_id
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "\u0661\u0662\u0663",  # Arabic-Indic — int() accepts these
+            "\u0e51\u0e52\u0e53",  # Thai
+            "\uff11\uff12\uff13",  # Fullwidth
+        ],
+    )
+    def test_non_ascii_digits_are_rejected(self, value):
+        assert int(value) == 123, "precondition: int() really does accept these"
+        snowflake, row_id = self._parsers()
+        assert snowflake(value) is None
+        assert row_id(value) is None
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            True,  # bool is an int subclass — must be rejected explicitly
+            False,
+            -5,
+            "-5",
+            1.5,
+            5.0,  # a float that is integral is still not an id
+            None,
+            "",
+            " 123 ",
+            "+123",
+            "0x1f",
+            "1e5",
+            "123\n",
+            "123\x00",
+            "1 OR 1=1",
+            [1],
+            {"a": 1},
+            10**40,
+            "1" * 21,  # over the 20-digit cap
+            str(1 << 63),  # over SQLite's signed-64-bit max
+        ],
+    )
+    def test_malformed_values_are_rejected_by_both(self, value):
+        snowflake, row_id = self._parsers()
+        assert snowflake(value) is None
+        assert row_id(value) is None
+
+    def test_accepts_well_formed_ids_in_both_wire_forms(self):
+        snowflake, row_id = self._parsers()
+        for form in ("123456789012345678", 123456789012345678):
+            assert snowflake(form) == 123456789012345678
+            assert row_id(form) == 123456789012345678
+        assert snowflake(str(self.SQLITE_MAX)) == self.SQLITE_MAX
+        assert row_id(str(self.SQLITE_MAX)) == self.SQLITE_MAX
+
+    def test_zero_differs_between_the_two_parsers(self):
+        # Documented split: a row id is a positive AUTOINCREMENT key, so 0 is
+        # invalid; a snowflake parse only bounds the range, and a 0 channel
+        # simply matches no row downstream.
+        snowflake, row_id = self._parsers()
+        assert row_id("0") is None
+        assert row_id(0) is None
+        assert snowflake("0") == 0
+
+    @pytest.mark.parametrize("value", ["123456789012345678", 5, "000000000000000123"])
+    def test_output_is_always_a_plain_int_in_sqlite_range(self, value):
+        # Both results are bound straight into SQL, so a bool or an
+        # out-of-range int must never survive parsing.
+        snowflake, row_id = self._parsers()
+        for out in (snowflake(value), row_id(value)):
+            if out is None:
+                continue
+            assert type(out) is int
+            assert 0 <= out <= self.SQLITE_MAX
