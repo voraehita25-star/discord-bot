@@ -827,12 +827,13 @@
                                         <svg class="ic" aria-hidden="true"><use href="#i-paperclip"/></svg>
                                     </button>
                                     <input type="file" id="image-input" accept="image/*" multiple hidden>
-                                    <div class="attached-images" id="attached-images">
-                                        <!-- Preview of attached images -->
-                                    </div>
-                                    <div class="attached-docs" id="attached-docs">
-                                        <!-- Preview of attached documents (PDF, txt, code, etc.) -->
-                                    </div>
+                                    <!-- Preview of attached images. Both strips MUST stay closed on
+                                         their own line with no inner whitespace: `:empty` (styles.css)
+                                         is what keeps an unused strip from eating flex width, and a
+                                         single whitespace text node inside defeats it. -->
+                                    <div class="attached-images" id="attached-images"></div>
+                                    <!-- Preview of attached documents (PDF, txt, code, etc.) -->
+                                    <div class="attached-docs" id="attached-docs"></div>
                                 </div>
                                 <div class="chat-input-container">
                                     <!-- Placeholder says WHAT to do, .chat-input-hint below

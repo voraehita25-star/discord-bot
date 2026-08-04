@@ -1199,7 +1199,12 @@ export class ChatManager {
                 // what was saved so the user knows the upload will persist
                 // across restarts (scoped to this conversation only).
                 {
-                    const docs = (data.documents as Array<{filename: string; file_kind: string; char_count: number}>) || [];
+                    // Array.isArray for the same reason as `conversation_documents`
+                    // below: a non-array truthy `documents` passes `|| []` and then
+                    // throws on .reduce, taking the whole frame handler with it.
+                    const docs = Array.isArray(data.documents)
+                        ? data.documents as Array<{filename: string; file_kind: string; char_count: number}>
+                        : [];
                     if (docs.length === 1) {
                         const d = docs[0];
                         const charCount = typeof d.char_count === 'number' ? d.char_count : 0;
@@ -1239,7 +1244,15 @@ export class ChatManager {
                 // document list. Also updates the chat-header badge so the
                 // count stays accurate.
                 const convId = data.conversation_id as string | undefined;
-                const docs = (data.documents as ChatFileEntry[]) || [];
+                // Array.isArray, not `|| []`: the field is a TYPE CAST of an
+                // unvalidated frame, and a non-array truthy value (an object, a
+                // string) survives `|| []`. `docs.length` is then undefined, which
+                // makes updateChatFilesBadge paint the literal text "undefined"
+                // (`undefined <= 0` is false, so it doesn't even hide), and the
+                // `docs.reduce` two lines down throws out of handleMessage — the
+                // blank-modal failure every field-level guard in this file exists
+                // to prevent, reached one level up.
+                const docs = Array.isArray(data.documents) ? data.documents as ChatFileEntry[] : [];
                 this.renderChatFilesModal(convId, docs);
                 // Feed the persistent-document footprint into the context-window
                 // meter so attached files are reflected on OPEN, before the first
@@ -3246,11 +3259,20 @@ export class ChatManager {
             // could send a non-numeric string with embedded quotes that
             // would break out of the attribute.
             const safeId = escapeHtml(String(d.id));
+            // `title` on the name, matching the composer chip
+            // (.attached-doc-preview) and the in-message chip (.message-doc-chip),
+            // which both carry the full filename in a tooltip. `.file-name` is
+            // `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`, so a
+            // name longer than the row cuts off — and this was the ONE file surface
+            // with no way to read the rest. Measured at a 1280px window: a 118-char
+            // name renders 476px of an 856px string, i.e. the ellipsis hides the
+            // extension and any version suffix, which is exactly the part that
+            // distinguishes two uploads of the same document.
             return `
                 <div class="chat-file-row" data-id="${safeId}">
                     <span class="file-icon" aria-hidden="true">${fileIcon}</span>
                     <div class="file-body">
-                        <div class="file-name">${escapeHtml(name)}</div>
+                        <div class="file-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
                         <div class="file-meta">${escapeHtml(meta)}</div>
                     </div>
                     <button class="file-edit" data-id="${safeId}" title="Edit contents">Edit</button>
@@ -3330,11 +3352,19 @@ export class ChatManager {
         listView?.classList.add('hidden');
         editView?.classList.remove('hidden');
         modalContent?.classList.add('editing');
-        this.send({
+        const sent = this.send({
             type: 'get_document_memory_content',
             id: docId,
             conversation_id: this.currentConversation.id,
         });
+        // send() returns false (and toasts) when the WS is down. Without this the
+        // editor sits on the 'Loading…' placeholder forever with no in-view
+        // failure state — reachable whenever the bot restarts AFTER the list
+        // rendered, which is the only way to have a row to click Edit on with a
+        // dead socket. Mirrors openChatFilesModal's subtitle fallback.
+        if (!sent && textInput) {
+            textInput.placeholder = 'Not connected — start the bot, then reopen this file.';
+        }
     }
 
     /** Populate the edit form from a `document_memory_content` WS frame. */

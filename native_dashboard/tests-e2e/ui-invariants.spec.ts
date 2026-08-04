@@ -1789,3 +1789,75 @@ test('every control in a populated chat clears the 24px target floor', async ({ 
         `controls under the 24px target floor: ${undersized.join(', ')}`,
     ).toEqual([]);
 });
+
+// ---------------------------------------------------------------------------
+// The composer's two attachment preview strips are the last items of the
+// wrapping `.chat-input-options` row, and both were `flex: 1` — i.e.
+// `flex-basis: 0`. A zero base size never forces a line break, so a strip could
+// only absorb whatever width the Search/Write/Unrestricted toggles left over,
+// and the two strips then SPLIT that remainder. Measured consequences at 1280px:
+// an EMPTY pair still ate ~360px of the row (`:empty` cannot fire while the
+// element holds a whitespace text node, which the old markup's indentation put
+// there), and five staged documents stacked five-deep in a 260px column, growing
+// the composer to 277px and cutting the message list from 417px to 191px. The
+// bug got WORSE as the window got wider, because a wider row leaves more
+// remainder to be squeezed into. `flex: 1 0 100%` + genuinely-empty markup gives
+// a populated strip its own full-width line.
+// ---------------------------------------------------------------------------
+test('composer attachment strips: empty ones take no space, a full one takes one row', async ({ page }) => {
+    await boot(page);
+    await openListConversation(page, 'hello');
+    await freezeMotion(page);
+
+    type Strip = { docsDisplay: string; imagesDisplay: string; optionsH: number; messagesH: number; docsW: number; optionsInnerW: number; chipRows: number };
+    const measure = (): Promise<Strip> => page.evaluate(() => {
+        const docs = document.getElementById('attached-docs') as HTMLElement;
+        const images = document.getElementById('attached-images') as HTMLElement;
+        const options = document.querySelector('.chat-input-options') as HTMLElement;
+        const messages = document.getElementById('chat-messages') as HTMLElement;
+        const ys = Array.from(document.querySelectorAll('.attached-doc-preview'))
+            .map(c => Math.round(c.getBoundingClientRect().top));
+        return {
+            docsDisplay: getComputedStyle(docs).display,
+            imagesDisplay: getComputedStyle(images).display,
+            optionsH: options.getBoundingClientRect().height,
+            messagesH: messages.getBoundingClientRect().height,
+            docsW: docs.getBoundingClientRect().width,
+            optionsInnerW: options.clientWidth,
+            chipRows: new Set(ys).size,
+        };
+    });
+
+    // Nothing attached — and nothing has re-rendered the strips yet, so this is
+    // the first-paint state where the old markup's whitespace defeated `:empty`.
+    const bare = await measure();
+    expect(bare.docsDisplay, 'empty docs strip must not be a flex item').toBe('none');
+    expect(bare.imagesDisplay, 'empty images strip must not be a flex item').toBe('none');
+
+    // Stage the maximum the manager accepts (MAX_ATTACHED_DOCS = 5). restore()
+    // is the snapshot path retryFailedSend uses, so this exercises the shipped
+    // render, not a test-only one.
+    await page.evaluate(() => {
+        const cm = (window as unknown as {
+            chatManager: { docAttach: { restore: (d: unknown[]) => void } };
+        }).chatManager;
+        cm.docAttach.restore(Array.from({ length: 5 }, (_, i) => ({
+            name: `document-${i + 1}.pdf`,
+            mime: 'application/pdf',
+            kind: 'binary',
+            data: 'data:application/pdf;base64,AA',
+            size_bytes: 100_000,
+        })));
+    });
+    const staged = await measure();
+
+    // The strip owns its own line rather than living in the toggles' leftovers:
+    // at this viewport it measured 159px of a 688px row pre-fix (23%), 664px after.
+    expect(staged.docsW).toBeGreaterThan(staged.optionsInnerW * 0.9);
+    // With room to pack, five 157px chips fit four-then-one. Pre-fix each chip
+    // was alone on its own line — five rows for five files.
+    expect(staged.chipRows, 'chips must pack, not stack one per row').toBeLessThanOrEqual(2);
+    // And the composer must not swallow the conversation it belongs to: the
+    // message list went 597px -> 371px pre-fix (62%), 597px -> 488px after (82%).
+    expect(staged.messagesH).toBeGreaterThan(bare.messagesH * 0.75);
+});

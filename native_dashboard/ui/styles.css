@@ -3579,11 +3579,35 @@ html[data-theme="light"] .role-card:hover {
     border-color: var(--accent-purple);
 }
 
+/* `flex: 1 0 100%`, NOT `flex: 1`. Both preview strips are the last items of the
+   wrapping `.chat-input-options` row, and `flex: 1` resolves to `flex-basis: 0`
+   — a base size of zero never forces a line break, so a strip could only ever
+   absorb the width the Search/Write/Unrestricted toggles left over, and the two
+   strips then SPLIT that remainder between them. On a 1600px window the docs
+   strip landed at 293px of a 970px row, so a chip whose natural width is ~157px
+   was pushed onto its own line: two attachments stacked, five stacked five deep
+   and grew the composer to 277px, cutting the message list from 597px to 371px.
+   The bug got worse as the window got wider (a narrow window has no leftover to
+   absorb, so the strip wrapped by itself and looked correct). A 100% basis makes
+   a populated strip always take its own full-width line, which is what the
+   layout wanted all along — five chips now fit on one 944px row.
+
+   The `:empty` rules matter for the same reason: an empty strip is invisible but
+   still a flex item, and at `flex: 1` an empty pair ate ~590px of a 970px row.
+   `:empty` only fires when the element has NO child nodes — a whitespace text
+   node defeats it (Selectors 3; still true in Chrome 148 / WebView2), which is
+   why the two divs in index.html are written closed-on-the-same-line with their
+   explanatory comments moved OUTSIDE. Before that, the strips were `display:
+   flex` from first paint until the first renderPreview() wiped their innerHTML. */
 .attached-images {
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
-    flex: 1;
+    flex: 1 0 100%;
+}
+
+.attached-images:empty {
+    display: none;
 }
 
 /* No `overflow: hidden` here. The wrapper is the containing block for the
@@ -3635,11 +3659,13 @@ html[data-theme="light"] .role-card:hover {
 }
 
 /* Attached documents (PDF, text, code) — pill preview with icon + filename */
+/* `flex: 1 0 100%` — see the note on `.attached-images` above for why a zero
+   flex-basis squeezed this strip into the toggles' leftover width. */
 .attached-docs {
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
-    flex: 1;
+    flex: 1 0 100%;
     margin-top: 6px;
 }
 
