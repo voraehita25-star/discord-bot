@@ -837,6 +837,36 @@ def _validate_conversation_id(conversation_id: Any) -> bool:
     return isinstance(conversation_id, str) and bool(_CONVERSATION_ID_RE.match(conversation_id))
 
 
+def _valid_optional_scope(value: Any) -> bool:
+    """True when ``value`` is usable as an OPTIONAL conversation scope.
+
+    The per-document handlers legitimately accept an ABSENT scope (a global
+    document, stored with ``source_conversation_id IS NULL``), so they can't use
+    :func:`_validate_conversation_id`, which demands a well-formed id. They must
+    still reject a non-string, because the raw value flows on to
+    ``invalidate_user_context_cache`` → ``dict.pop(value, None)``:
+
+      * ``[]`` and ``{}`` are FALSY, so ``conversation_id or None`` normalises
+        them to ``None`` and they pass the global-document scope check, but
+      * they are UNHASHABLE, so the later ``pop`` raises TypeError — *after* the
+        delete/update has already committed.
+
+    The handler's broad ``except`` then reports a write that SUCCEEDED as
+    INTERNAL_ERROR, and — worse — the stale ``user_context`` is never dropped,
+    so the next AI turn still sees the document that was just removed or edited.
+    Intermittent by nature: CPython skips hashing the key on an EMPTY dict, so
+    this only starts failing once some conversation has cached a context.
+    """
+    return value is None or isinstance(value, str)
+
+
+_INVALID_SCOPE_FRAME = {
+    "type": "error",
+    "code": "INVALID_ARG",
+    "message": "Invalid conversation id",
+}
+
+
 async def handle_add_conversation_tag(ws: WebSocketResponse, data: dict[str, Any]) -> None:
     """Attach a tag to a conversation."""
     conversation_id = data.get("conversation_id")
@@ -1190,6 +1220,9 @@ async def handle_delete_document_memory(ws: WebSocketResponse, data: dict[str, A
     """
     raw_id = data.get("id")
     conversation_id = data.get("conversation_id")
+    if not _valid_optional_scope(conversation_id):
+        await ws.send_json(dict(_INVALID_SCOPE_FRAME))
+        return
     if raw_id is None:
         await ws.send_json(
             {
@@ -1300,6 +1333,9 @@ async def handle_update_document_memory(ws: WebSocketResponse, data: dict[str, A
     """
     raw_id = data.get("id")
     conversation_id = data.get("conversation_id")
+    if not _valid_optional_scope(conversation_id):
+        await ws.send_json(dict(_INVALID_SCOPE_FRAME))
+        return
     new_filename = data.get("filename")
     new_text = data.get("extracted_text")
 
@@ -1502,6 +1538,9 @@ async def handle_get_document_memory_content(ws: WebSocketResponse, data: dict[s
     """
     raw_id = data.get("id")
     conversation_id = data.get("conversation_id")
+    if not _valid_optional_scope(conversation_id):
+        await ws.send_json(dict(_INVALID_SCOPE_FRAME))
+        return
     if raw_id is None:
         await ws.send_json(
             {

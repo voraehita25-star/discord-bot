@@ -922,3 +922,56 @@ class TestSaveProfile:
         assert ws.last()["type"] == "profile_saved"
         kwargs = mock_db.save_dashboard_user_profile.call_args.kwargs
         assert kwargs["preferences"] is None
+
+
+class TestDocumentMemoryScopeValidation:
+    """The per-document handlers accept an ABSENT conversation scope (global
+    documents), so they can't use ``_validate_conversation_id`` — but a
+    falsy-yet-UNHASHABLE scope used to slip all the way through.
+
+    ``[]`` and ``{}`` normalise to None via ``conversation_id or None``, so they
+    passed the global-document scope check; the write then committed, and the
+    trailing ``invalidate_user_context_cache(owner or conversation_id)`` raised
+    TypeError on ``dict.pop``. The handler's broad ``except`` reported the
+    SUCCESSFUL delete/update as INTERNAL_ERROR and the stale user_context was
+    never dropped, so the next AI turn still saw the document. Intermittent, too:
+    CPython skips hashing on an empty dict, so it only began failing once some
+    conversation had cached a context.
+
+    The guard runs before any DB access, so these need no database.
+    """
+
+    HANDLERS = (
+        "handle_delete_document_memory",
+        "handle_update_document_memory",
+        "handle_get_document_memory_content",
+    )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("handler_name", HANDLERS)
+    @pytest.mark.parametrize("bad_scope", [[], {}, set(), 0, 1, 2.5, True, ["x"], {"a": 1}])
+    async def test_non_string_scope_is_rejected(self, ws, handler_name, bad_scope):
+        import cogs.ai_core.api.dashboard_handlers as mod
+
+        handler = getattr(mod, handler_name)
+        with patch.object(mod, "_get_db") as get_db:
+            await handler(ws, {"id": 1, "conversation_id": bad_scope})
+        assert ws.last()["code"] == "INVALID_ARG"
+        # Rejected before the handler ever reaches for the database.
+        get_db.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("handler_name", HANDLERS)
+    @pytest.mark.parametrize("ok_scope", [None, "", "conv-1"])
+    async def test_string_and_absent_scopes_are_not_rejected(self, ws, handler_name, ok_scope):
+        # These must NOT be turned away by the new check — "" and None are the
+        # legitimate spellings of "global document", and the guard sits ahead of
+        # every other validation, so over-rejecting here would break the feature
+        # outright. What the handler does AFTER the guard is not this test's
+        # business, so assert only that the guard itself stayed silent.
+        import cogs.ai_core.api.dashboard_handlers as mod
+
+        handler = getattr(mod, handler_name)
+        with patch.object(mod, "_get_db", side_effect=RuntimeError("stop here")):
+            await handler(ws, {"id": 1, "conversation_id": ok_scope})
+        assert not [m for m in ws.sent if m.get("message") == "Invalid conversation id"]
