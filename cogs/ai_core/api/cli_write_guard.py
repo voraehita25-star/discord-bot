@@ -17,8 +17,9 @@ so a prompt-injected upload cannot drive a write to ``.env``, ``~/.claude``,
 root (see ``_denied_subtrees``), so the exclusion holds even when the repo is
 cloned under a write root such as ``~/Documents``. Targets are additionally
 rejected when spelled to name a different file than they appear to — an NTFS
-data stream or a trailing dot/space — which ``resolve()`` alone does not
-canonicalise for a not-yet-existing path (see ``_deceptive_windows_spelling``).
+data stream or a trailing dot/space in ANY component — which ``resolve()`` alone
+does not canonicalise for a not-yet-existing path (see
+``_deceptive_windows_spelling``).
 
 Contract (Claude Code hooks):
   - stdin  : JSON ``{"tool_name": ..., "tool_input": {...}, ...}``
@@ -104,17 +105,39 @@ def _deceptive_windows_spelling(target_raw: str) -> str | None:
     trying to normalise them — one less spelling to have to canonicalise
     correctly. POSIX has neither semantic and ``:`` is a legal filename
     character there, so the check is scoped to Windows.
+
+    EVERY component is checked, not just the final one. Windows strips a trailing
+    dot/space from each component of a path, so the decoration relocates the
+    trick from the leaf to a DIRECTORY — and the directory bans in
+    ``_denied_subtrees`` are exactly what matches on directory components.
+    ``~/Documents/PowerShell./profile.ps1`` resolves (lexically, because
+    ``Documents/PowerShell`` does not exist yet) to a path that no longer matches
+    the ``Documents/PowerShell`` ban but still sits inside the allowed
+    ``Documents`` root, and the write then lands on the real PowerShell 7 profile
+    because ``mkdir`` drops the dot too. Checking only ``.name`` missed it: the
+    leaf ``profile.ps1`` is perfectly ordinary.
     """
     if os.name != "nt":
         return None
-    # PureWindowsPath keeps the drive's colon in .drive, so a ':' surviving in
-    # .name is always a stream separator (or a drive-relative spelling, equally
-    # unwelcome as an edit target).
-    name = PureWindowsPath(target_raw).name
-    if ":" in name:
-        return f"target {target_raw!r} names an NTFS data stream"
-    if name and name[-1] in ". ":
-        return f"target {target_raw!r} ends in a dot/space that Windows strips"
+    path = PureWindowsPath(target_raw)
+    # parts[0] is the anchor when the path has one — ``C:\``, ``C:``, ``\\?\C:\``,
+    # ``\\server\share\``. It legitimately carries the drive's colon and a
+    # trailing separator, so it is never a deceptive component; skip it and let
+    # the allow/deny checks judge the resolved path instead (a ``\\?\`` spelling
+    # resolves to a drive that matches no configured root, so it still denies —
+    # one step later and for a different reason). Outside the anchor a ':' can
+    # only be a stream separator. ``.`` segments need no exemption: pathlib drops
+    # them while parsing, so they never reach this loop.
+    for part in path.parts[1 if path.anchor else 0 :]:
+        if part == "..":
+            continue  # ordinary parent traversal — resolve() collapses it
+        if ":" in part:
+            return f"target {target_raw!r} names an NTFS data stream in {part!r}"
+        if part and part[-1] in ". ":
+            return (
+                f"target {target_raw!r} has a component {part!r} ending in a "
+                f"dot/space that Windows strips"
+            )
     return None
 
 

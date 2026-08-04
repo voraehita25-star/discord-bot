@@ -190,6 +190,15 @@ _MEMORY_SUSPICIOUS_MARKERS = (
 # would be ASCII-stripped by NFKD, leaving "gnore previous" which evades the
 # "ignore previous" marker while still reading as the original to a downstream LM.
 _MEMORY_CONFUSABLE_MAP = {
+    # Dotless Latin letters — the OPPOSITE failure mode from the script
+    # confusables below. NFKD has no decomposition for these, so the ASCII fold
+    # DELETES them instead of folding: "ıgnore previous" arrived at the denylist
+    # as "gnore previous" and matched nothing (audit: confirmed reaching
+    # storage). Map them so the letter survives as its dotted ASCII twin. Only
+    # the lowercase forms need entries — uppercase İ (U+0130) DOES decompose
+    # (I + combining dot above), so NFKD already folds it to "I".
+    "ı": "i",  # U+0131 dotless i — Latin 'i' minus the tittle
+    "ȷ": "j",  # U+0237 dotless j — 'j' appears in "jailbreak"
     # Cyrillic lowercase -> Latin lowercase
     "а": "a",
     "в": "b",
@@ -334,9 +343,10 @@ _MEMORY_FORBIDDEN_NORMALIZED = (
 #
 #   * separator-folded — every run of non-alphanumeric characters collapses to a
 #     single space, so any separator spelling folds onto the canonical one.
-#   * whitespace-stripped — ALL whitespace removed and matched against the
-#     forbidden phrases with their spaces likewise removed, which additionally
-#     catches letter-spaced payloads ("i g n o r e   p r e v i o u s").
+#   * whitespace-stripped — ALL whitespace AND ASCII control characters removed,
+#     matched against the forbidden phrases with their spaces likewise removed,
+#     which additionally catches letter-spaced payloads
+#     ("i g n o r e   p r e v i o u s").
 #
 # The whitespace-stripped pass is deliberately restricted to the MULTI-TOKEN and
 # bracketed entries. Running it over the bare single words would manufacture
@@ -344,6 +354,15 @@ _MEMORY_FORBIDDEN_NORMALIZED = (
 # "…overridequality", which contains "override" — so those keep to the passes
 # that preserve word boundaries.
 _MEMORY_SEPARATOR_RUN = re.compile(r"[^a-z0-9]+")
+# Stripped for the whitespace-stripped pass: real whitespace plus the C0/DEL
+# control range. ``str.split()`` alone removed only whitespace, so a control
+# character kept the word boundary this pass exists to erase —
+# "ig\x00nore previous" survived every pass and reached storage. The non-ASCII
+# zero-width spellings (ZWSP, ZWNJ, …) are already dropped by the NFKD + ASCII
+# fold above, which is why only the ASCII controls need naming here. Brackets
+# and angle brackets must SURVIVE this strip: the despaced needles keep theirs
+# ("[system]", "<inst>").
+_MEMORY_INVISIBLE_RUN = re.compile(r"[\s\x00-\x1f\x7f]+")
 _MEMORY_FORBIDDEN_DESPACED = tuple(
     f.replace(" ", "") for f in _MEMORY_FORBIDDEN_NORMALIZED if " " in f or "[" in f or "<" in f
 )
@@ -374,9 +393,10 @@ def memory_content_has_injection(content: str) -> bool:
     collapsed = _MEMORY_SEPARATOR_RUN.sub(" ", normalized)
     if any(f in collapsed for f in _MEMORY_FORBIDDEN_NORMALIZED):
         return True
-    # Whitespace-stripped pass — catches letter-spaced payloads and split tags
-    # ("[ system ]", "<sys tem>"). Multi-token/bracketed entries only.
-    despaced = "".join(normalized.split())
+    # Whitespace-stripped pass — catches letter-spaced payloads, split tags
+    # ("[ system ]", "<sys tem>"), and control-character-separated spellings
+    # ("ig\x00nore previous"). Multi-token/bracketed entries only.
+    despaced = _MEMORY_INVISIBLE_RUN.sub("", normalized)
     return any(f in despaced for f in _MEMORY_FORBIDDEN_DESPACED)
 
 

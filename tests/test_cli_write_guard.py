@@ -309,6 +309,54 @@ class TestWriteGuardDeceptiveSpellings:
         res = run_guard(write_payload(f"{home / '.claude.json'}{trail}"), [home])
         assert res.returncode == DENY
 
+    @pytest.mark.parametrize("trail", [".", " "])
+    def test_denies_protected_dir_via_decorated_intermediate_component(self, trail):
+        # Windows strips a trailing dot/space from EVERY component, not only the
+        # last, so decorating a DIRECTORY moves the trick onto exactly what the
+        # _denied_subtrees bans match. resolve() undoes it only for a directory
+        # that already exists — ~/Documents/PowerShell (the PS7 profile dir)
+        # usually does not, so the ban missed, the target still sat inside the
+        # allowed ~/Documents root, and mkdir dropped the dot on the way to the
+        # real profile. Checking only .name could not see it: the leaf
+        # "profile.ps1" is entirely ordinary.
+        home = Path.home()
+        target = f"{home / 'Documents'}\\PowerShell{trail}\\profile.ps1"
+        res = run_guard(write_payload(target), [home / "Documents"])
+        assert res.returncode == DENY
+
+    def test_denies_decorated_intermediate_component_inside_allowed_root(self, tmp_path):
+        # Machine-independent form of the same check — the rejection is lexical,
+        # so it fires even where no denylisted directory is involved.
+        root = tmp_path / "out"
+        root.mkdir()
+        res = run_guard(write_payload(f"{root}\\sub.\\note.txt"), [root])
+        assert res.returncode == DENY
+        assert "dot/space" in res.stderr
+
+    def test_denies_stream_suffix_on_an_intermediate_component(self, tmp_path):
+        root = tmp_path / "out"
+        root.mkdir()
+        res = run_guard(write_payload(f"{root}\\sub:evil\\note.txt"), [root])
+        assert res.returncode == DENY
+        assert "data stream" in res.stderr
+
+    def test_allows_intermediate_component_with_internal_dots(self, tmp_path):
+        # Must not over-reject: dots inside a directory name are ordinary.
+        root = tmp_path / "out"
+        (root / "v1.2.3").mkdir(parents=True)
+        res = run_guard(write_payload(root / "v1.2.3" / "note.txt"), [root])
+        assert res.returncode == ALLOW
+
+    def test_allows_non_escaping_parent_traversal(self, tmp_path):
+        # ".." ends in a dot but is ordinary navigation that resolve() collapses,
+        # so the component check must exempt it. Traversal that ESCAPES a root is
+        # still denied — by the allow check, not by this one (see
+        # test_denies_parent_traversal_escape).
+        root = tmp_path / "out"
+        (root / "a").mkdir(parents=True)
+        res = run_guard(write_payload(f"{root}\\a\\..\\note.txt"), [root])
+        assert res.returncode == ALLOW
+
     def test_denies_stream_suffix_on_an_otherwise_in_scope_target(self, tmp_path):
         # Not about the denylist: an ADS is never a legitimate edit target, so
         # the rejection applies inside an allowed root too.

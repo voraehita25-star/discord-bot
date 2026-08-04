@@ -84,7 +84,7 @@ except ImportError:
     aiosqlite = None  # type: ignore[assignment]
     db = None  # type: ignore[assignment]
 
-    def encode_sent_message_ids(value: Any) -> str | None:  # type: ignore[misc]
+    def encode_sent_message_ids(value: Any) -> str | None:
         """No-op stand-in for the JSON fallback, which stores lists natively."""
         return None
 
