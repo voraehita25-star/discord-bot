@@ -777,6 +777,26 @@ class TestPrewarm:
         assert proc.killed is True
         assert "conv1" not in cli._warm_procs
 
+    def test_take_warm_never_crosses_conversations(self, monkeypatch):
+        # The pool's sharpest edge: a warm process was spawned with a specific
+        # ``--resume <session id>`` in its argv, so handing it to a DIFFERENT
+        # conversation would answer that conversation's turn inside another
+        # user's server-side session. Keyed by conversation_id, so the miss must
+        # be a clean None — and it must not disturb the rightful owner's entry.
+        monkeypatch.setattr(cli, "_PREWARM_ENABLED", True)
+        argv = ["claude", "-p", "--resume", "sess-A"]
+        proc = self._FakeProc()
+        cli._warm_procs["conv-A"] = {
+            "proc": proc,
+            "argv": list(argv),
+            "created": cli.time.monotonic(),
+        }
+        assert cli._take_warm("conv-B", argv) is None
+        assert proc.killed is False
+        assert cli._warm_procs.get("conv-A", {}).get("proc") is proc
+        # …and the owner can still claim it afterwards.
+        assert cli._take_warm("conv-A", argv) is proc
+
     def test_take_warm_dead_proc_returns_none(self, monkeypatch):
         monkeypatch.setattr(cli, "_PREWARM_ENABLED", True)
         proc = self._FakeProc(returncode=1)  # already exited
