@@ -3236,6 +3236,48 @@ mark.chat-search-hit.active {
     color: white;
 }
 
+/* Stop-generating button — occupies the send button's slot while a turn
+   streams, so it must match its geometry exactly or the composer's height
+   twitches on every send. Deliberately NOT the brand gradient: this is a
+   destructive-ish action and needs to read as a different control at a
+   glance, not as a send button that changed its glyph. */
+.btn-stop-generating {
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    background: var(--surface-3);
+    border: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--text-primary);
+    transition: all 0.2s ease;
+}
+
+/* Glyph size is left to the shared `.send-icon .ic` rule so the two buttons
+   can never render at different scales in the same slot. */
+
+.btn-stop-generating:hover:not(:disabled) {
+    transform: scale(1.05);
+    border-color: var(--accent-pink);
+    box-shadow: 0 4px 20px var(--glow-pink);
+}
+
+.btn-stop-generating:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* The shared .send-icon sets color:white, which is invisible on the light
+   theme's pale plate. Inherit the button's themed ink instead. */
+.btn-stop-generating .send-icon {
+    color: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
 .chat-input-hint {
     text-align: center;
     margin-top: 8px;

@@ -848,6 +848,14 @@
                                     <button class="btn btn-send" id="btn-send" title="Send Message (Enter)" aria-label="Send Message">
                                         <span class="send-icon"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg></span>
                                     </button>
+                                    <!-- Swapped in for #btn-send while a turn is in flight
+                                         (chat-manager syncComposerMode, driven by isStreaming).
+                                         A SIBLING rather than a mode on #btn-send: that button is
+                                         disabled for the whole stream, and this one must stay
+                                         clickable through exactly the same window. -->
+                                    <button class="btn btn-stop-generating hidden" id="btn-stop-generating" title="Stop generating — the reply so far is kept" aria-label="Stop generating">
+                                        <span class="send-icon"><svg class="ic" aria-hidden="true"><use href="#i-stop"/></svg></span>
+                                    </button>
                                 </div>
                                 <div class="chat-input-hint">
                                     Press <kbd>Enter</kbd> to send • <kbd>Shift+Enter</kbd> for new line

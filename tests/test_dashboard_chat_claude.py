@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from types import SimpleNamespace
 from typing import Any, cast
@@ -483,3 +484,153 @@ class TestClaudeDashboardContinuationThinking:
         assert calls[0]["thinking"] == {"type": "adaptive", "display": "summarized"}
         # Omitting genuinely means "off" on this generation, so the key goes.
         assert "thinking" not in calls[1]
+
+
+class TestClaudeSdkStopButton:
+    """Stop mid-stream keeps the partial; a plain cancel still unwinds."""
+
+    class _ParkingStream:
+        """Yields one text delta, then blocks — the model is still generating."""
+
+        def __init__(self, event: object, streaming: asyncio.Event):
+            self._event = event
+            self._streaming = streaming
+            self._served = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._served:
+                self._served = True
+                return self._event
+            self._streaming.set()
+            await asyncio.sleep(30)
+            raise StopAsyncIteration
+
+        async def get_final_message(self):
+            return None
+
+    def _client(self, streaming: asyncio.Event):
+        parking = self._ParkingStream(_text_event("half an answ"), streaming)
+
+        class _Ctx:
+            async def __aenter__(self):
+                return parking
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        return SimpleNamespace(messages=SimpleNamespace(stream=lambda **kwargs: _Ctx()))
+
+    @pytest.mark.asyncio
+    async def test_stop_persists_the_partial_and_sends_a_cancelled_stream_end(self, ws: FakeWS):
+        from cogs.ai_core.api.dashboard_chat_claude import handle_chat_message_claude
+        from cogs.ai_core.api.dashboard_common import request_stop
+
+        streaming = asyncio.Event()
+        mock_db = MagicMock()
+        mock_db.save_dashboard_message = AsyncMock(return_value=42)
+        mock_db.get_dashboard_messages = AsyncMock(return_value=[])
+        mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Existing"})
+
+        with (
+            patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat_claude._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_common.get_db", return_value=mock_db),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
+                new=AsyncMock(return_value=("User context", False)),
+            ),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli.delete_session_file",
+                new=AsyncMock(),
+            ),
+        ):
+            task = asyncio.get_running_loop().create_task(
+                handle_chat_message_claude(
+                    cast(Any, ws),
+                    {"content": "hello", "conversation_id": "conv-1"},
+                    cast(Any, self._client(streaming)),
+                    stream_timeout=60,
+                )
+            )
+            await streaming.wait()
+            request_stop(task)
+            await task  # graceful: must NOT raise CancelledError
+
+        ends = ws.find("stream_end")
+        assert len(ends) == 1
+        assert ends[0]["cancelled"] is True
+        assert ends[0]["full_response"] == "half an answ"
+        saved = [
+            c for c in mock_db.save_dashboard_message.call_args_list if c.args[1] == "assistant"
+        ]
+        assert len(saved) == 1
+        assert saved[0].args[2] == "half an answ"
+
+    @pytest.mark.asyncio
+    async def test_a_stop_does_not_count_against_failover_health(self, ws: FakeWS):
+        # A deliberate stop is not an endpoint failure — it must not record a
+        # failure or retry the turn against another endpoint.
+        import cogs.ai_core.api.dashboard_chat_claude as sdk_mod
+        from cogs.ai_core.api.dashboard_chat_claude import handle_chat_message_claude
+        from cogs.ai_core.api.dashboard_common import request_stop
+
+        streaming = asyncio.Event()
+        failover = MagicMock()
+        failover.record_failure = AsyncMock(return_value=True)
+        failover.record_success = AsyncMock()
+
+        with (
+            patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", False),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
+                new=AsyncMock(return_value=("User context", False)),
+            ),
+            patch.object(sdk_mod, "_FAILOVER_AVAILABLE", True),
+            patch.object(sdk_mod, "_api_failover", failover, create=True),
+        ):
+            task = asyncio.get_running_loop().create_task(
+                handle_chat_message_claude(
+                    cast(Any, ws),
+                    {"content": "hello", "conversation_id": "conv-1"},
+                    cast(Any, self._client(streaming)),
+                    stream_timeout=60,
+                )
+            )
+            await streaming.wait()
+            request_stop(task)
+            await task
+
+        failover.record_failure.assert_not_awaited()
+        assert ws.find("stream_end")[0]["cancelled"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_unmarked_cancel_still_unwinds(self, ws: FakeWS):
+        from cogs.ai_core.api.dashboard_chat_claude import handle_chat_message_claude
+
+        streaming = asyncio.Event()
+        with (
+            patch("cogs.ai_core.api.dashboard_chat_claude.DB_AVAILABLE", False),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude.build_user_context",
+                new=AsyncMock(return_value=("User context", False)),
+            ),
+        ):
+            task = asyncio.get_running_loop().create_task(
+                handle_chat_message_claude(
+                    cast(Any, ws),
+                    {"content": "hello", "conversation_id": "conv-1"},
+                    cast(Any, self._client(streaming)),
+                    stream_timeout=60,
+                )
+            )
+            await streaming.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert not ws.find("stream_end")
+        # …and no error frame either: there is nobody on the other end.
+        assert not ws.find("error")

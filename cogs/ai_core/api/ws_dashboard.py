@@ -58,6 +58,7 @@ from .dashboard_chat_claude_cli import (
     reset_session as _reset_cli_session,
     shutdown_prewarm as _shutdown_cli_prewarm,
 )
+from .dashboard_common import request_stop as _request_stop
 from .dashboard_config import (
     API_FAILOVER_AVAILABLE,
     AVAILABLE_PROVIDERS,
@@ -313,6 +314,12 @@ class DashboardWebSocketServer:
     # _client_tasks BEFORE spawning); the inner _client_inflight backstops in
     # handle_message reuse the same constant so the two caps can never drift.
     MAX_INFLIGHT_PER_CLIENT = 2
+    # How long handle_cancel_generation waits for the tasks it just cancelled
+    # to unwind. Matches the disconnect drain. In practice this lands in tens
+    # of milliseconds — the `claude -p` child is SIGKILLed and reaped at once —
+    # but it is bounded because the wait happens ON the read loop: a wedged
+    # task must not stall the client's ping/pong while it hangs.
+    CANCEL_DRAIN_TIMEOUT = 5.0
     # Read-only / housekeeping message types that bypass rate limiting.
     # Hoisted to a class-level constant so adding a new lightweight op
     # is a one-line change instead of editing the body of the read loop.
@@ -330,6 +337,12 @@ class DashboardWebSocketServer:
             # tag-picker suggestion list.
             "list_tags",
             "list_conversation_documents",
+            # Composer Stop button. Exempt on purpose: the frame does nothing
+            # but cancel work this same client already started, and a stop
+            # that gets rate-limited would strand the UI in its "generating"
+            # state for up to a minute — the exact situation the user is
+            # trying to escape. Cheap enough to spam (a dict scan + cancel).
+            "cancel_generation",
             # AI-history viewer: only the channel-list summary (one cheap
             # GROUP BY) is exempt. "load_ai_history" is NOT — it is the
             # heaviest read op (up to 2000 full-content rows fetched, then
@@ -1453,6 +1466,11 @@ class DashboardWebSocketServer:
                 self._client_inflight[client_id] = max(
                     0, self._client_inflight.get(client_id, 1) - 1
                 )
+        elif msg_type == "cancel_generation":
+            # NOT dispatched as a background task (see the read loop): it must
+            # be serviced on the read loop itself, while the AI task it targets
+            # is still running.
+            await self.handle_cancel_generation(ws, data, client_id)
         elif msg_type == "delete_message":
             await handle_delete_message(ws, data)
         elif msg_type == "list_ai_channels":
@@ -1540,6 +1558,62 @@ class DashboardWebSocketServer:
             await ws.send_json({"type": "pong"})
         else:
             await ws.send_json({"type": "error", "message": f"Unknown message type: {msg_type}"})
+
+    async def handle_cancel_generation(
+        self, ws: WebSocketResponse, data: dict[str, Any], client_id: str = ""
+    ) -> None:
+        """Stop this client's in-flight AI turn(s) — the composer's Stop button.
+
+        Cancels the dispatched chat/ai_edit tasks exactly the way the
+        disconnect path does, but *marks* them first (``request_stop``) so the
+        backends can tell a deliberate stop from a dropped socket: a stop
+        finalizes the turn and keeps whatever already streamed, a drop just
+        unwinds. The cancellation is what actually kills the ``claude -p``
+        child — ``_run_claude_subprocess``'s finally already does that on every
+        unwind path.
+
+        Every in-flight task for the client is cancelled, not just the one for
+        ``conversation_id``: the task→client map carries no conversation, and
+        the frontend blocks a second send while one is streaming, so in
+        practice there is exactly one. Separate tabs get separate client ids
+        and are unaffected.
+
+        The ack is a *safety net*, not the stream terminator — a stopped chat
+        turn sends its own ``stream_end`` with ``cancelled: true``. The ack
+        exists so the composer is never stranded in its generating state when
+        no such frame arrives: the click raced a turn that had already
+        finished, or the AI-edit path deliberately discarded its half-rewritten
+        message and simply unwound.
+        """
+        # Snapshot before cancelling: _on_background_task_done mutates
+        # _client_tasks, and although its call_soon can't run before this
+        # coroutine yields, iterating a live dict across a cancel is fragile.
+        targets = [
+            task for task, cid in self._client_tasks.items() if cid == client_id and not task.done()
+        ]
+        for task in targets:
+            _request_stop(task)
+        if targets:
+            # Drain before acking so the ack cannot overtake the stopped turn's
+            # own stream_end and make the frontend tear down a bubble the
+            # backend is still finalizing.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.gather(*targets, return_exceptions=True),
+                    timeout=self.CANCEL_DRAIN_TIMEOUT,
+                )
+        logger.info(
+            "🛑 Stop requested by client %s — cancelled %d in-flight AI task(s)",
+            client_id,
+            len(targets),
+        )
+        await ws.send_json(
+            {
+                "type": "generation_cancelled",
+                "conversation_id": data.get("conversation_id"),
+                "cancelled_tasks": len(targets),
+            }
+        )
 
     async def handle_new_conversation(self, ws: WebSocketResponse, data: dict[str, Any]) -> None:
         """Create a new conversation."""

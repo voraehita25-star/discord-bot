@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from cogs.ai_core.api.dashboard_common import (
     LeadingTimestampStripper,
     bangkok_now_iso,
+    finalize_stopped_turn,
     invalidate_user_context_cache,
     normalize_timestamp_to_bangkok,
     sanitize_profile_field,
+    stop_was_requested,
     strip_leading_timestamp,
 )
 
@@ -187,3 +190,144 @@ class TestInvalidateUserContextCache:
     def test_invalidate_all_with_none(self):
         # None means "wipe entire cache" — must not raise.
         invalidate_user_context_cache(None)
+
+
+class TestFinalizeStoppedTurn:
+    """The shared tail the Gemini/SDK backends run when a turn is stopped.
+
+    (The CLI backend catches its CancelledError a level deeper and falls
+    through to its own persist/emit tail instead — see
+    test_dashboard_chat_claude_cli.TestHandlerStopButton.)
+    """
+
+    @staticmethod
+    def _ws():
+        class _WS:
+            def __init__(self) -> None:
+                self.sent: list[dict] = []
+
+            async def send_json(self, data: dict, **kwargs) -> None:
+                self.sent.append(data)
+
+            def find(self, msg_type: str) -> list[dict]:
+                return [m for m in self.sent if m.get("type") == msg_type]
+
+        return _WS()
+
+    @staticmethod
+    def _db(title: str = "set"):
+        db = MagicMock()
+        db.save_dashboard_message = AsyncMock(return_value=77)
+        db.get_dashboard_conversation = AsyncMock(return_value={"title": title})
+        db.update_dashboard_conversation = AsyncMock()
+        return db
+
+    @pytest.mark.asyncio
+    async def test_persists_the_partial_and_emits_a_cancelled_stream_end(self):
+        ws = self._ws()
+        db = self._db()
+        with patch("cogs.ai_core.api.dashboard_common.get_db", return_value=db):
+            await finalize_stopped_turn(
+                ws,
+                conversation_id="c1",
+                full_response="half an answ",
+                thinking="hmm",
+                mode="🤖 test",
+                user_message_id=5,
+                context_window=1000,
+            )
+
+        db.save_dashboard_message.assert_awaited_once()
+        assert db.save_dashboard_message.await_args.args[:3] == ("c1", "assistant", "half an answ")
+        end = ws.find("stream_end")[0]
+        assert end["cancelled"] is True
+        assert end["full_response"] == "half an answ"
+        assert end["assistant_message_id"] == 77
+        assert end["user_message_id"] == 5
+
+    @pytest.mark.asyncio
+    async def test_saves_nothing_when_the_stop_beat_the_first_token(self):
+        ws = self._ws()
+        db = self._db()
+        with patch("cogs.ai_core.api.dashboard_common.get_db", return_value=db):
+            await finalize_stopped_turn(
+                ws, conversation_id="c1", full_response="", context_window=1000
+            )
+
+        db.save_dashboard_message.assert_not_awaited()
+        end = ws.find("stream_end")[0]
+        assert end["cancelled"] is True
+        assert end["assistant_message_id"] is None
+        # A genuine zero, not the estimate's max(1, …) floor.
+        assert end["token_usage"]["output_tokens"] == 0
+
+    @pytest.mark.asyncio
+    async def test_still_sends_the_terminal_frame_when_the_db_write_fails(self):
+        # Losing the partial is bad; leaving the composer locked forever is
+        # worse. The frame must go out either way.
+        ws = self._ws()
+        db = self._db()
+        db.save_dashboard_message = AsyncMock(side_effect=RuntimeError("disk on fire"))
+        with patch("cogs.ai_core.api.dashboard_common.get_db", return_value=db):
+            await finalize_stopped_turn(
+                ws, conversation_id="c1", full_response="partial", context_window=1000
+            )
+
+        assert ws.find("stream_end")[0]["cancelled"] is True
+
+    @pytest.mark.asyncio
+    async def test_persist_false_skips_the_db_entirely(self):
+        ws = self._ws()
+        db = self._db()
+        with patch("cogs.ai_core.api.dashboard_common.get_db", return_value=db) as get_db:
+            await finalize_stopped_turn(
+                ws,
+                conversation_id="c1",
+                full_response="partial",
+                context_window=1000,
+                persist=False,
+            )
+
+        get_db.assert_not_called()
+        assert ws.find("stream_end")[0]["full_response"] == "partial"
+
+    @pytest.mark.asyncio
+    async def test_titles_a_conversation_stopped_on_its_first_turn(self):
+        # Otherwise it keeps the "New Conversation" placeholder until some
+        # later turn happens to run to completion.
+        ws = self._ws()
+        db = self._db(title="New Conversation")
+        with patch("cogs.ai_core.api.dashboard_common.get_db", return_value=db):
+            await finalize_stopped_turn(
+                ws,
+                conversation_id="c1",
+                full_response="partial",
+                context_window=1000,
+                first_user_message="what is the airspeed velocity of a swallow",
+            )
+
+        db.update_dashboard_conversation.assert_awaited_once()
+        assert ws.find("title_updated")
+
+    @pytest.mark.asyncio
+    async def test_strips_an_echoed_leading_timestamp_before_persisting(self):
+        ws = self._ws()
+        db = self._db()
+        with patch("cogs.ai_core.api.dashboard_common.get_db", return_value=db):
+            await finalize_stopped_turn(
+                ws,
+                conversation_id="c1",
+                full_response="[2026-04-22T23:17:33+07:00] hello",
+                context_window=1000,
+            )
+
+        assert db.save_dashboard_message.await_args.args[2] == "hello"
+        assert ws.find("stream_end")[0]["full_response"] == "hello"
+
+
+class TestStopMarker:
+    """request_stop / stop_was_requested — see also test_ws_dashboard."""
+
+    @pytest.mark.asyncio
+    async def test_returns_false_outside_a_stopped_task(self):
+        assert stop_was_requested() is False

@@ -934,3 +934,187 @@ class TestStaleRetryReloadsHistory:
         assert len(prompts) == 2
         assert "SNAPSHOT-REPLY" in prompts[1], "a failed reload must keep the snapshot"
         assert ws.find("stream_end"), "the turn must still complete"
+
+
+# ============================================================================
+# handle_chat_message_claude_cli — Stop button
+# ============================================================================
+
+
+class TestHandlerStopButton:
+    """A stopped turn must end like a completed one, only truncated.
+
+    The distinction that matters here is between the two cancellations the
+    handler can receive: a Stop (marked via dashboard_common.request_stop —
+    keep the partial, send the terminal frame) and a dropped socket / server
+    shutdown (unmarked — unwind silently, there is nobody to answer).
+    """
+
+    @staticmethod
+    def _parked_subprocess(streaming: asyncio.Event, partial: str):
+        async def fake_subprocess(
+            argv,
+            stdin_payload,
+            *,
+            on_text_delta,
+            on_thinking_delta,
+            on_thinking_block_start=None,
+            on_thinking_block_stop=None,
+            timeout,
+            extra_env=None,
+            proc=None,
+        ):
+            await on_text_delta(partial)
+            streaming.set()
+            await asyncio.sleep(30)  # the model is still generating
+            return "sess-complete", None
+
+        return fake_subprocess
+
+    @staticmethod
+    def _assistant_saves(db) -> list:
+        return [c for c in db.save_dashboard_message.call_args_list if c.args[1] == "assistant"]
+
+    @pytest.mark.asyncio
+    async def test_stop_keeps_the_partial_and_sends_a_cancelled_stream_end(
+        self, monkeypatch, tmp_path
+    ):
+        from cogs.ai_core.api.dashboard_common import request_stop
+
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        db = _mock_db()
+        streaming = asyncio.Event()
+        cli_mod._CONVERSATION_SESSIONS["c1"] = "sess-before"
+
+        try:
+            with _handler_patches(db, self._parked_subprocess(streaming, "half an answ")):
+                task = asyncio.get_running_loop().create_task(
+                    cli_mod.handle_chat_message_claude_cli(
+                        ws,
+                        {"conversation_id": "c1", "content": "hello", "role_preset": "general"},
+                        None,
+                    )
+                )
+                await streaming.wait()
+                request_stop(task)
+                await task  # graceful: must NOT raise CancelledError
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+        ends = ws.find("stream_end")
+        assert len(ends) == 1
+        assert ends[0]["cancelled"] is True
+        assert ends[0]["full_response"] == "half an answ"
+        # The partial is persisted, so it survives the next reload instead of
+        # being a bubble that exists only on screen.
+        saves = self._assistant_saves(db)
+        assert len(saves) == 1
+        assert saves[0].args[2] == "half an answ"
+
+    @pytest.mark.asyncio
+    async def test_stop_drops_the_cli_session(self, monkeypatch, tmp_path):
+        # The killed child may or may not have committed its forked session,
+        # and the partial we just saved never reached it — so the next turn has
+        # to rebuild history from the DB, same as the timeout path.
+        from cogs.ai_core.api.dashboard_common import request_stop
+
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        streaming = asyncio.Event()
+        cli_mod._CONVERSATION_SESSIONS["c1"] = "sess-before"
+
+        try:
+            with _handler_patches(_mock_db(), self._parked_subprocess(streaming, "partial")):
+                task = asyncio.get_running_loop().create_task(
+                    cli_mod.handle_chat_message_claude_cli(
+                        ws,
+                        {"conversation_id": "c1", "content": "hello", "role_preset": "general"},
+                        None,
+                    )
+                )
+                await streaming.wait()
+                request_stop(task)
+                await task
+            assert "c1" not in cli_mod._CONVERSATION_SESSIONS
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+    @pytest.mark.asyncio
+    async def test_an_unmarked_cancel_unwinds_without_persisting_or_answering(
+        self, monkeypatch, tmp_path
+    ):
+        # Client disconnect / server shutdown: the socket is gone, so the
+        # pre-existing behaviour (propagate, write nothing, send nothing) must
+        # survive the Stop button being added.
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        db = _mock_db()
+        streaming = asyncio.Event()
+
+        try:
+            with _handler_patches(db, self._parked_subprocess(streaming, "orphaned")):
+                task = asyncio.get_running_loop().create_task(
+                    cli_mod.handle_chat_message_claude_cli(
+                        ws,
+                        {"conversation_id": "c1", "content": "hello", "role_preset": "general"},
+                        None,
+                    )
+                )
+                await streaming.wait()
+                task.cancel()  # no marker
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+        assert not ws.find("stream_end")
+        assert self._assistant_saves(db) == []
+
+    @pytest.mark.asyncio
+    async def test_a_completed_turn_reports_cancelled_false(self, monkeypatch, tmp_path):
+        # The flag rides on every stream_end, so pin that the ordinary path
+        # doesn't start claiming turns were stopped.
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+
+        async def fake_subprocess(
+            argv,
+            stdin_payload,
+            *,
+            on_text_delta,
+            on_thinking_delta,
+            on_thinking_block_start=None,
+            on_thinking_block_stop=None,
+            timeout,
+            extra_env=None,
+            proc=None,
+        ):
+            await on_text_delta("all done")
+            return "sess", None
+
+        try:
+            with _handler_patches(_mock_db(), fake_subprocess):
+                await cli_mod.handle_chat_message_claude_cli(
+                    ws,
+                    {"conversation_id": "c1", "content": "hello", "role_preset": "general"},
+                    None,
+                )
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+        ends = ws.find("stream_end")
+        assert len(ends) == 1
+        assert ends[0]["cancelled"] is False

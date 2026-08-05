@@ -25,9 +25,11 @@ from .dashboard_common import (
     LeadingTimestampStripper,
     bangkok_now_iso,
     build_user_context,
+    finalize_stopped_turn,
     get_db as _get_db,
     normalize_timestamp_to_bangkok,
     sanitize_profile_field as _sanitize_profile_field,  # noqa: F401 - contract re-export for tests
+    stop_was_requested,
     strip_leading_timestamp,
 )
 from .dashboard_config import (
@@ -497,14 +499,18 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     # Store mode string for saving to DB
     mode_str = " • ".join(mode_info)
 
+    # Bound BEFORE the try: the Stop-button handler below reads both to persist
+    # whatever streamed, and a stop that lands on the very first await (the
+    # stream_start send) would otherwise hit an unbound local.
+    full_response = ""
+    thinking_content = ""
+
     # Stream response (loop handles function-calling tool rounds)
     try:
         await ws.send_json(
             {"type": "stream_start", "conversation_id": conversation_id, "mode": mode_str}
         )
 
-        full_response = ""
-        thinking_content = ""
         chunks_count = 0
         is_thinking = False
         input_tokens = 0
@@ -972,6 +978,30 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             }
         )
 
+    except asyncio.CancelledError:
+        # Stop button — keep the partial answer instead of throwing it away.
+        if not stop_was_requested():
+            # Client disconnect or server shutdown: no socket to answer on.
+            raise
+        logger.info(
+            "🛑 Gemini turn stopped by user conv=%s after %d chars",
+            conversation_id,
+            len(full_response),
+        )
+        await finalize_stopped_turn(
+            ws,
+            conversation_id=conversation_id,
+            full_response=full_response,
+            thinking=thinking_content,
+            mode=mode_str,
+            user_message_id=user_msg_id,
+            context_window=GEMINI_CONTEXT_WINDOW,
+            persist=DB_AVAILABLE,
+            # Provider routing is per-message — same reason the success path
+            # wipes it: a CLI --resume session never saw this Gemini exchange.
+            reset_cli_session=True,
+            first_user_message=content,
+        )
     except TimeoutError:
         logger.error("❌ Streaming timeout after %ss", stream_timeout)
         try:

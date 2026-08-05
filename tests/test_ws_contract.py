@@ -55,6 +55,13 @@ CLIENT_SCHEMAS: dict[str, dict] = {
         "required": {"type"},
         "optional": set(),
     },
+    # Composer Stop button. conversation_id is advisory — the server cancels
+    # every in-flight AI task for the client regardless (see
+    # DashboardWebSocketServer.handle_cancel_generation).
+    "cancel_generation": {
+        "required": {"type"},
+        "optional": {"conversation_id"},
+    },
 }
 
 # Server → Client message types
@@ -90,6 +97,14 @@ SERVER_SCHEMAS: dict[str, dict] = {
     "profile": {
         "required": {"type"},
         "optional": {"username", "avatar", "guilds"},
+    },
+    # Ack for cancel_generation. NOT the stream terminator — a stopped chat
+    # turn still sends its own stream_end, flagged ``cancelled``. This only
+    # tells the client the server heard the stop, so a turn that can produce
+    # no terminal frame still unsticks the composer.
+    "generation_cancelled": {
+        "required": {"type"},
+        "optional": {"conversation_id", "cancelled_tasks"},
     },
 }
 

@@ -1971,6 +1971,29 @@ html[data-theme="light"] .btn-send {
 html[data-theme="light"] .btn-send:disabled .ic { color: var(--text-tertiary); }
 .btn-send:disabled .send-icon { filter: none; }
 
+/* Stop-generating occupies the send button's slot, so it takes the same
+   soft-square. It keeps the neutral --surface-3 plate from the base sheet
+   (deliberately not the brand gradient — see there) and needs two orbital
+   fixes on top:
+     · the light-theme plate, for the same specificity trap documented above:
+       styles.css's `html[data-theme="light"] .btn` is (0,2,1) and outranks a
+       bare `.btn-stop-generating`, so the neutral surface has to be restated
+       at matching specificity from this sheet, which loads second;
+     · the ink, because `.send-icon .ic` above paints for the GRADIENT plate —
+       near-black at night, #fff on dawn — and both disappear on --surface-3.
+   --text-primary rather than the disabled button's --text-tertiary: this
+   control is live, and it is the only way out of a long generation. */
+.btn-stop-generating {
+    border-radius: var(--radius-sm);
+}
+html[data-theme="light"] .btn-stop-generating {
+    background: var(--surface-3);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+}
+.btn-stop-generating .ic,
+html[data-theme="light"] .btn-stop-generating .ic { color: var(--text-primary); }
+
 /* ---------------------------------------------------------------------------
    WHITE INK ON A PLATE THAT IS BRIGHT AT NIGHT
    ---------------------------------------------------------------------------

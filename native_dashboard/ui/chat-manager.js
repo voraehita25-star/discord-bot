@@ -212,7 +212,20 @@ export class ChatManager {
     conversations = [];
     messages = [];
     selectedRole = 'general';
-    isStreaming = false;
+    /** True from the optimistic gate in sendMessage() until the turn's terminal
+     *  frame lands. Exposed as an accessor purely so the composer's send↔stop
+     *  swap cannot drift from it: every assignment site — optimistic send and
+     *  its rollbacks, stream_start, each stream_end branch, the error teardown,
+     *  the disconnect teardown, both AI-edit entry points — routes through the
+     *  setter, so there is no path that leaves a Stop button over a finished
+     *  turn (or hides it during a live one). Reads/writes behave exactly like
+     *  the plain field this replaced. */
+    _isStreaming = false;
+    get isStreaming() { return this._isStreaming; }
+    set isStreaming(value) {
+        this._isStreaming = value;
+        this.syncComposerMode();
+    }
     /** Set when setInputEnabled(false) blurred a focused composer; consumed by
      *  the matching re-enable to hand the cursor back. See setInputEnabled(). */
     composerHadFocus = false;
@@ -341,41 +354,58 @@ export class ChatManager {
         onConnectStateChange: (connected) => this.updateConnectionStatus(connected),
         onDisconnect: () => {
             // Reset streaming state to prevent chat input from being permanently locked.
-            if (this.isStreaming) {
-                const wasEditStreaming = this.isEditStreaming;
-                this.isStreaming = false;
-                this.isEditStreaming = false;
-                this.editTargetMessageId = null;
-                this.editStreamContent = '';
-                // Stream is dead on disconnect — drop the guard + partial buffers
-                // so a reconnect + switch can't replay a stale half-response.
-                this.streamingConversationId = null;
-                this.clearStreamBuffers();
-                this.setInputEnabled(true);
-                // Re-enable auto-scroll (only stream_start/end reset this; a
-                // mid-stream disconnect left it stuck on for the session).
-                this.userScrolledUp = false;
-                if (wasEditStreaming) {
-                    // /edit stream uses an in-place .edit-streaming-text on an
-                    // existing message rather than #streaming-message, so the
-                    // generic stuckMsg.remove() below misses it. Restore the
-                    // affected message to its normal display state.
-                    document.querySelectorAll('.chat-message.streaming').forEach(el => {
-                        el.classList.remove('streaming');
-                        const actions = el.querySelector('.message-actions');
-                        if (actions)
-                            actions.style.display = '';
-                    });
-                    // Re-render to drop the typing indicator + restore original
-                    // content from `this.messages`.
-                    this.renderMessages();
-                }
-                const stuckMsg = document.getElementById('streaming-message');
-                if (stuckMsg)
-                    stuckMsg.remove();
-            }
+            if (this.isStreaming)
+                this.forceStreamTeardown();
         },
     });
+    /** Abandon the in-flight turn and unstick the composer, discarding whatever
+     *  had streamed.
+     *
+     *  Used by the two paths where no terminal frame is coming: a mid-stream WS
+     *  disconnect, and the `generation_cancelled` safety net. Discarding the
+     *  partial is the correct choice for both — neither reached the server-side
+     *  persist, so keeping it on screen would show a bubble that vanishes on the
+     *  next reload. A turn that ends with a real `stream_end` (including a
+     *  stopped one) never comes through here. */
+    forceStreamTeardown() {
+        const wasEditStreaming = this.isEditStreaming;
+        this.isStreaming = false;
+        this.isEditStreaming = false;
+        this.editTargetMessageId = null;
+        this.editStreamContent = '';
+        // Stream is dead — drop the guard + partial buffers so a reconnect
+        // and switch can't replay a stale half-response.
+        this.streamingConversationId = null;
+        // Mark the turn torn down so a stream_end that lands AFTER us bails
+        // instead of pushing a phantom assistant bubble. Reachable on the
+        // cancel path: the server bounds how long it waits for a cancelled
+        // task, and a task that outlives that deadline still finishes and
+        // still emits its frame. Cleared on the next stream_start.
+        this.streamErrored = true;
+        this.clearStreamBuffers();
+        this.setInputEnabled(true);
+        // Re-enable auto-scroll (only stream_start/end reset this; a
+        // mid-stream teardown left it stuck on for the session).
+        this.userScrolledUp = false;
+        if (wasEditStreaming) {
+            // /edit stream uses an in-place .edit-streaming-text on an
+            // existing message rather than #streaming-message, so the
+            // generic stuckMsg.remove() below misses it. Restore the
+            // affected message to its normal display state.
+            document.querySelectorAll('.chat-message.streaming').forEach(el => {
+                el.classList.remove('streaming');
+                const actions = el.querySelector('.message-actions');
+                if (actions)
+                    actions.style.display = '';
+            });
+            // Re-render to drop the typing indicator + restore original
+            // content from `this.messages`.
+            this.renderMessages();
+        }
+        const stuckMsg = document.getElementById('streaming-message');
+        if (stuckMsg)
+            stuckMsg.remove();
+    }
     // Field-style forwarders so existing call sites (this.ws, this.connected, etc.)
     // keep working. TS getters are fine here since the fields were public before.
     get ws() { return this.wsClient.ws; }
@@ -802,7 +832,27 @@ export class ChatManager {
                     this.updateContextWindowIndicator(data.token_usage);
                 }
                 this.setInputEnabled(true);
+                if (data.cancelled) {
+                    // Stopped turn. It took the branch above like any other
+                    // stream_end — the partial is finalized and persisted — so
+                    // all that is left is telling the user it was cut short
+                    // rather than that the model simply stopped talking.
+                    showToast('Stopped — the reply so far was kept', { type: 'info' });
+                }
                 this.listConversations(); // Refresh sidebar message count
+                break;
+            case 'generation_cancelled':
+                // Safety net, NOT the stream terminator: the server drains the
+                // cancelled task before acking, so a stopped chat turn's own
+                // stream_end has normally already landed and isStreaming is
+                // false by now. This fires only when no terminal frame could
+                // arrive — the click raced a turn that had just finished, the
+                // AI-edit path discarded its half-rewritten message and simply
+                // unwound, or a wedged task blew the server's drain deadline.
+                if (this.isStreaming || this.isEditStreaming) {
+                    this.forceStreamTeardown();
+                    showToast('Stopped', { type: 'info' });
+                }
                 break;
             case 'title_updated':
                 {
@@ -2626,6 +2676,57 @@ export class ChatManager {
             container.style.setProperty('display', 'none', 'important');
         }
     }
+    /** Swap the composer's Send button for Stop (and back) to match
+     *  ``isStreaming``. Driven by the isStreaming setter rather than by
+     *  setInputEnabled's ``enabled`` flag, because the two are NOT the same
+     *  window: sendMessage() sets the gate optimistically and the composer only
+     *  locks when ``stream_start`` arrives — seconds later on the CLI backend
+     *  while it extracts attachments. That gap is exactly when a user is most
+     *  likely to want out, so Stop has to be live for all of it. */
+    syncComposerMode() {
+        const busy = this._isStreaming;
+        const sendBtn = document.getElementById('btn-send');
+        const stopBtn = document.getElementById('btn-stop-generating');
+        // `.hidden` (display:none !important, styles.css) rather than the
+        // `hidden` attribute: `.btn` sets display:flex, which wins over the UA
+        // stylesheet's [hidden] rule and would leave both buttons visible.
+        sendBtn?.classList.toggle('hidden', busy);
+        if (stopBtn) {
+            stopBtn.classList.toggle('hidden', !busy);
+            // A new turn always gets a usable Stop button, whatever the
+            // previous turn's click left behind.
+            if (busy)
+                stopBtn.disabled = false;
+        }
+    }
+    /** Stop button: ask the server to abort the in-flight turn.
+     *
+     *  Deliberately does NOT tear down locally — the server answers a stop with
+     *  the turn's ordinary ``stream_end`` (flagged ``cancelled``), so whatever
+     *  streamed is finalized and persisted through the one path that already
+     *  handles that correctly. ``generation_cancelled`` is the safety net for
+     *  when no such frame can arrive. */
+    stopGenerating() {
+        if (!this.isStreaming)
+            return;
+        const stopBtn = document.getElementById('btn-stop-generating');
+        // Dim + block repeat clicks while the request is in flight. Re-enabled
+        // by syncComposerMode's next run (the button hides on teardown anyway,
+        // but a failed send leaves it visible and it must stay usable).
+        if (stopBtn)
+            stopBtn.disabled = true;
+        const sent = this.send({
+            type: 'cancel_generation',
+            conversation_id: this.streamingConversationId ?? this.currentConversation?.id ?? null,
+        });
+        if (!sent) {
+            // Socket is down, so no stream_end is coming either — the WS
+            // client's own onDisconnect teardown is what will unstick the UI.
+            // Just give the button back so a reconnect-then-retry works.
+            if (stopBtn)
+                stopBtn.disabled = false;
+        }
+    }
     setInputEnabled(enabled) {
         const input = document.getElementById('chat-input');
         const btn = document.getElementById('btn-send');
@@ -3898,6 +3999,11 @@ export class ChatManager {
             localStorage.setItem('dashboard_unrestricted', String(e.target.checked));
         });
         document.getElementById('btn-send')?.addEventListener('click', () => this.sendMessage());
+        document.getElementById('btn-stop-generating')?.addEventListener('click', () => this.stopGenerating());
+        // The Stop button starts hidden in the markup; run one sync so its
+        // state is derived from isStreaming from the very first frame rather
+        // than only from the next transition.
+        this.syncComposerMode();
         document.getElementById('thinking-toggle')?.addEventListener('change', (e) => {
             if (this.currentConversation) {
                 this.currentConversation.thinking_enabled = e.target.checked;

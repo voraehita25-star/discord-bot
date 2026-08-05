@@ -10,6 +10,7 @@ import asyncio
 import logging
 import re as _re
 import time
+import weakref
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
@@ -114,6 +115,146 @@ def get_db():
     from .dashboard_config import Database
 
     return Database()
+
+
+# ---------------------------------------------------------------------------
+# "Stop generating" — user-initiated cancellation of an in-flight AI turn
+# ---------------------------------------------------------------------------
+# The dashboard composer swaps its send button for a Stop button while a turn
+# streams. Pressing it makes the WS read loop cancel that client's AI task
+# (ws_dashboard.handle_cancel_generation); the cancellation is what actually
+# kills the `claude -p` child / aborts the SDK stream.
+#
+# A bare Task.cancel() is indistinguishable from the two cancellations that
+# already existed — client disconnect and server shutdown — and those MUST keep
+# unwinding silently, because there is no socket left to answer on. So a stop
+# is announced here first: a backend handler that catches CancelledError asks
+# stop_was_requested(), and only then finalizes the turn gracefully (keeping
+# whatever the model had already streamed) instead of re-raising.
+#
+# A WeakSet is used so a marker that is never consumed cannot leak: the AI-edit
+# handlers deliberately discard their half-rewritten message and just unwind,
+# leaving their marker behind until the task itself is collected.
+_STOP_REQUESTED: weakref.WeakSet[asyncio.Task[Any]] = weakref.WeakSet()
+
+
+def request_stop(task: asyncio.Task[Any]) -> None:
+    """Mark ``task`` as user-stopped, then cancel it."""
+    _STOP_REQUESTED.add(task)
+    task.cancel()
+
+
+def stop_was_requested() -> bool:
+    """True when the CancelledError being handled came from the Stop button.
+
+    Consumes the marker and clears the task's cancellation bookkeeping
+    (``Task.uncancel``) so the handler may keep awaiting — it still has a
+    partial answer to persist and a terminal frame to send. A *later*,
+    unrelated cancellation of the same task (disconnect / shutdown) then finds
+    no marker and unwinds normally.
+    """
+    task = asyncio.current_task()
+    if task is None or task not in _STOP_REQUESTED:
+        return False
+    _STOP_REQUESTED.discard(task)
+    task.uncancel()
+    return True
+
+
+async def finalize_stopped_turn(
+    ws: Any,
+    *,
+    conversation_id: str | None,
+    full_response: str,
+    thinking: str = "",
+    mode: str = "",
+    user_message_id: int | None = None,
+    context_window: int = 0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    persist: bool = True,
+    reset_cli_session: bool = False,
+    first_user_message: str = "",
+) -> None:
+    """Persist a stopped turn's partial answer and send its terminal frame.
+
+    Mirrors the happy-path tail of the chat backends so a stopped turn leaves
+    the same state behind as a completed one: what the model had already
+    streamed stays on screen AND in the DB, instead of vanishing on the next
+    reload. Reusing ``stream_end`` (rather than a bespoke frame) is deliberate
+    — the frontend already has one well-tested teardown path, and
+    ``cancelled: true`` only changes the notice it shows.
+
+    Used by the Gemini and SDK backends, whose persist/emit tail sits *inside*
+    the streaming ``try``. The CLI backend catches its own CancelledError one
+    level deeper and falls through to that shared tail instead.
+    """
+    text = strip_leading_timestamp(full_response or "")
+    assistant_msg_id = 0
+
+    if persist and conversation_id and text:
+        try:
+            db = get_db()
+            assistant_msg_id = await db.save_dashboard_message(
+                conversation_id,
+                "assistant",
+                text,
+                thinking=thinking or None,
+                mode=mode,
+            )
+            if reset_cli_session:
+                # Same reasoning as the Gemini/SDK success paths: a persisted
+                # --resume session never saw this exchange, so the next CLI
+                # turn would silently drop it from Claude's context.
+                try:
+                    from .dashboard_chat_claude_cli import delete_session_file
+
+                    await delete_session_file(conversation_id)
+                except Exception:
+                    logger.exception("Failed to reset CLI session after stopped turn")
+
+            # A conversation stopped on its very first turn would otherwise
+            # keep the "New Conversation" placeholder until some later turn
+            # ran to completion.
+            conv = await db.get_dashboard_conversation(conversation_id)
+            if conv and (not conv.get("title") or conv.get("title") == "New Conversation"):
+                title = first_user_message[:40].strip()
+                if title:
+                    await db.update_dashboard_conversation(conversation_id, title=title)
+                    await ws.send_json(
+                        {
+                            "type": "title_updated",
+                            "conversation_id": conversation_id,
+                            "title": title,
+                        }
+                    )
+        except Exception:
+            logger.exception("Failed to save stopped assistant message")
+
+    in_tok = input_tokens or 0
+    # No text streamed before the stop → report a genuine 0 rather than the
+    # ``max(1, …)`` floor the estimate carries.
+    if not text:
+        out_tok = 0
+    else:
+        out_tok = output_tokens or max(1, len(text) // 3)
+    await ws.send_json(
+        {
+            "type": "stream_end",
+            "conversation_id": conversation_id,
+            "full_response": text,
+            "chunks_count": len(text),
+            "user_message_id": user_message_id or None,
+            "assistant_message_id": assistant_msg_id or None,
+            "cancelled": True,
+            "token_usage": {
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+                "total_tokens": in_tok + out_tok,
+                "context_window": context_window,
+            },
+        }
+    )
 
 
 # Pattern for a single leading ISO-8601 timestamp prefix like:

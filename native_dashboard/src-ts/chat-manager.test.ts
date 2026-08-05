@@ -74,6 +74,7 @@ const CHAT_DOM = `
         <div id="attached-images"></div>
         <textarea id="chat-input"></textarea>
         <button id="btn-send"></button>
+        <button id="btn-stop-generating" class="hidden"></button>
     </div>
 
     <div id="new-chat-modal" class="modal">
@@ -393,6 +394,137 @@ describe('handleMessage — streaming lifecycle', () => {
         // The buffer still holds A's partial, so returning to A replays it.
         cm.handleMessage({ type: 'conversation_loaded', conversation: convA, messages: [{ id: 1, role: 'user', content: 'ask A', created_at: '2026-04-01' }] });
         expect(document.querySelector('#streaming-message .streaming-text')?.textContent).toContain("A's secret answer");
+    });
+});
+
+describe('stop generating', () => {
+    const conv = {
+        id: 'c', title: 't', role_preset: 'general', thinking_enabled: false,
+        is_starred: false, created_at: '2026-04-01',
+    };
+    const sendBtn = () => document.getElementById('btn-send')!;
+    const stopBtn = () => document.getElementById('btn-stop-generating') as HTMLButtonElement;
+
+    it('swaps Send for Stop the moment isStreaming flips, and back on stream_end', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = conv;
+        expect(sendBtn().classList.contains('hidden')).toBe(false);
+        expect(stopBtn().classList.contains('hidden')).toBe(true);
+
+        cm.handleMessage({ type: 'stream_start' });
+        expect(sendBtn().classList.contains('hidden')).toBe(true);
+        expect(stopBtn().classList.contains('hidden')).toBe(false);
+
+        cm.handleMessage({ type: 'stream_end', full_response: 'done' });
+        expect(sendBtn().classList.contains('hidden')).toBe(false);
+        expect(stopBtn().classList.contains('hidden')).toBe(true);
+    });
+
+    it('shows Stop during the optimistic gap BEFORE stream_start arrives', () => {
+        // sendMessage() sets isStreaming optimistically and the composer only
+        // locks on stream_start — seconds later on the CLI backend. Stop has to
+        // be live for that whole window, which is exactly when a user wants it.
+        const cm = mountDomAndChat();
+        cm.currentConversation = conv;
+        cm.wsClient.send = vi.fn().mockReturnValue(true);
+        (document.getElementById('chat-input') as HTMLTextAreaElement).value = 'hi';
+        cm.sendMessage();
+        expect(cm.isStreaming).toBe(true);
+        expect(stopBtn().classList.contains('hidden')).toBe(false);
+        expect(sendBtn().classList.contains('hidden')).toBe(true);
+    });
+
+    it('sends cancel_generation bound to the SERVER-bound stream conversation', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = conv;
+        // stream_start binds to 'A' even though 'c' is the open conversation.
+        cm.handleMessage({ type: 'stream_start', conversation_id: 'A' });
+        cm.wsClient.send = vi.fn().mockReturnValue(true);
+
+        cm.stopGenerating();
+        expect(cm.wsClient.send).toHaveBeenCalledWith({
+            type: 'cancel_generation',
+            conversation_id: 'A',
+        });
+        // Disabled so a second click can't fire a duplicate cancel.
+        expect(stopBtn().disabled).toBe(true);
+    });
+
+    it('is a no-op when nothing is streaming', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = conv;
+        (cm.wsClient.send as ReturnType<typeof vi.fn>).mockClear();
+        cm.stopGenerating();
+        expect(cm.wsClient.send).not.toHaveBeenCalled();
+    });
+
+    it('gives the button back when the frame could not be sent', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = conv;
+        cm.handleMessage({ type: 'stream_start' });
+        cm.wsClient.send = vi.fn().mockReturnValue(false);
+        cm.stopGenerating();
+        // Socket is down: no stream_end is coming, so a retry after reconnect
+        // must still be possible.
+        expect(stopBtn().disabled).toBe(false);
+    });
+
+    it('does NOT tear down locally — the stopped turn ends on its own stream_end', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = conv;
+        cm.handleMessage({ type: 'stream_start' });
+        cm.handleMessage({ type: 'chunk', content: 'partial' });
+        cm.stopGenerating();
+        expect(cm.isStreaming).toBe(true);
+        expect(document.getElementById('streaming-message')).not.toBeNull();
+
+        cm.handleMessage({ type: 'stream_end', full_response: 'partial', cancelled: true });
+        expect(cm.isStreaming).toBe(false);
+        // The partial is KEPT — the server persisted the same text.
+        expect(cm.messages[cm.messages.length - 1]).toMatchObject({
+            role: 'assistant', content: 'partial',
+        });
+        expect(stopBtn().classList.contains('hidden')).toBe(true);
+    });
+
+    it('generation_cancelled unsticks a turn that produced no terminal frame', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = conv;
+        cm.handleMessage({ type: 'stream_start' });
+        cm.handleMessage({ type: 'chunk', content: 'orphaned' });
+
+        cm.handleMessage({ type: 'generation_cancelled', conversation_id: 'c' });
+        expect(cm.isStreaming).toBe(false);
+        expect(document.getElementById('streaming-message')).toBeNull();
+        // Nothing reached the server-side persist, so nothing is kept.
+        expect(cm.messages.some(m => m.content === 'orphaned')).toBe(false);
+        expect(sendBtn().classList.contains('hidden')).toBe(false);
+    });
+
+    it('generation_cancelled that loses the race to stream_end changes nothing', () => {
+        const cm = mountDomAndChat();
+        cm.currentConversation = conv;
+        cm.handleMessage({ type: 'stream_start' });
+        cm.handleMessage({ type: 'stream_end', full_response: 'complete', cancelled: true });
+        const before = cm.messages.length;
+
+        cm.handleMessage({ type: 'generation_cancelled', conversation_id: 'c' });
+        expect(cm.messages.length).toBe(before);
+        expect(cm.messages[cm.messages.length - 1]).toMatchObject({ content: 'complete' });
+    });
+
+    it('a stream_end that outlives the teardown does not push a phantom bubble', () => {
+        // The server bounds how long it waits for a cancelled task; one that
+        // blows that deadline still finishes and still emits its frame.
+        const cm = mountDomAndChat();
+        cm.currentConversation = conv;
+        cm.handleMessage({ type: 'stream_start' });
+        cm.handleMessage({ type: 'generation_cancelled', conversation_id: 'c' });
+        const before = cm.messages.length;
+
+        cm.handleMessage({ type: 'stream_end', full_response: 'late arrival' });
+        expect(cm.messages.length).toBe(before);
+        expect(cm.isStreaming).toBe(false);
     });
 });
 

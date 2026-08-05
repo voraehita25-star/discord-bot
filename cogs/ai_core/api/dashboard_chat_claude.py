@@ -298,8 +298,10 @@ from .dashboard_common import (
     apply_search_replace as _apply_search_replace,
     bangkok_now_iso,
     build_user_context,
+    finalize_stopped_turn,
     get_db as _get_db,
     normalize_timestamp_to_bangkok,
+    stop_was_requested,
     strip_leading_timestamp,
 )
 from .dashboard_config import (
@@ -864,6 +866,12 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
     if _effort:
         api_kwargs["output_config"] = {"effort": _effort}
 
+    # Bound BEFORE the try: the Stop-button handler below reads both to persist
+    # whatever streamed, and a stop that lands on the very first await (the
+    # stream_start send) would otherwise hit an unbound local.
+    full_response = ""
+    thinking_content = ""
+
     # Stream response
     try:
         stream_start_msg: dict[str, Any] = {
@@ -875,8 +883,6 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
             stream_start_msg["_failover_retry"] = True
         await ws.send_json(stream_start_msg)
 
-        full_response = ""
-        thinking_content = ""
         chunks_count = 0
         is_thinking = False
         input_tokens = 0
@@ -1349,6 +1355,33 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
         if _FAILOVER_AVAILABLE:
             await _api_failover.record_success()
 
+    except asyncio.CancelledError:
+        # Stop button — keep the partial answer instead of throwing it away.
+        # Placed ahead of the failover handlers on purpose: a deliberate stop
+        # is not an endpoint failure and must not count against failover health
+        # or trigger a retry against another endpoint.
+        if not stop_was_requested():
+            # Client disconnect or server shutdown: no socket to answer on.
+            raise
+        logger.info(
+            "🛑 Claude SDK turn stopped by user conv=%s after %d chars",
+            conversation_id,
+            len(full_response),
+        )
+        await finalize_stopped_turn(
+            ws,
+            conversation_id=conversation_id,
+            full_response=full_response,
+            thinking=thinking_content,
+            mode=mode_str,
+            user_message_id=user_msg_id,
+            context_window=CLAUDE_CONTEXT_WINDOW,
+            persist=DB_AVAILABLE,
+            # Same reason the success path wipes it: a persisted CLI --resume
+            # session never saw this SDK exchange.
+            reset_cli_session=True,
+            first_user_message=content,
+        )
     except TimeoutError:
         logger.error("❌ Claude streaming timeout after %ss", stream_timeout)
         if _FAILOVER_AVAILABLE and not is_failover_retry:

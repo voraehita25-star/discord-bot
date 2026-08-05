@@ -7,6 +7,7 @@ input validation, and conversation management.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -917,3 +918,189 @@ class TestStopDetachesFailoverListener:
             await server.stop()
 
         stub.remove_listener.assert_not_called()
+
+
+# ===================================================================
+# Stop generating (composer Stop button)
+# ===================================================================
+class TestStopGeneration:
+    """cancel_generation — abort the in-flight AI turn on request.
+
+    The mechanism is a plain Task.cancel(), which is what actually kills the
+    ``claude -p`` child. What these tests pin is the part that is NOT plain:
+    the marker that lets a backend tell a deliberate stop (finalize the turn,
+    keep the partial) from a dropped socket (unwind silently).
+    """
+
+    @staticmethod
+    def _park(server, client_id: str) -> asyncio.Task:
+        """Register a long-parked task as an in-flight AI turn for ``client_id``."""
+
+        async def _sleep() -> None:
+            await asyncio.sleep(30)
+
+        task = asyncio.get_running_loop().create_task(_sleep())
+        server._client_tasks[task] = client_id
+        server._background_tasks.add(task)
+        return task
+
+    @staticmethod
+    async def _reap(*tasks: asyncio.Task) -> None:
+        for task in tasks:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    @pytest.mark.asyncio
+    async def test_cancels_only_the_requesting_clients_tasks(self, server, ws):
+        mine = self._park(server, "me")
+        theirs = self._park(server, "another-tab")
+        await asyncio.sleep(0)  # let both reach their await
+
+        await server.handle_cancel_generation(ws, {"conversation_id": "c1"}, "me")
+
+        assert mine.cancelled()
+        assert not theirs.done(), "a second connection's turn must survive my Stop"
+        await self._reap(theirs)
+
+    @pytest.mark.asyncio
+    async def test_acks_with_the_cancelled_count(self, server, ws):
+        mine = self._park(server, "me")
+        await asyncio.sleep(0)
+
+        await server.handle_cancel_generation(ws, {"conversation_id": "c1"}, "me")
+
+        ack = ws.find("generation_cancelled")
+        assert len(ack) == 1
+        assert ack[0]["conversation_id"] == "c1"
+        assert ack[0]["cancelled_tasks"] == 1
+        assert mine.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_acks_even_when_nothing_was_running(self, server, ws):
+        # The click raced a turn that had just finished. The composer must
+        # still be told, or it sits on a Stop button forever.
+        await server.handle_cancel_generation(ws, {"conversation_id": "c1"}, "me")
+
+        ack = ws.find("generation_cancelled")
+        assert len(ack) == 1
+        assert ack[0]["cancelled_tasks"] == 0
+        assert not ws.find("error")
+
+    @pytest.mark.asyncio
+    async def test_marks_the_task_so_the_backend_finalizes_instead_of_unwinding(self, server, ws):
+        from cogs.ai_core.api.dashboard_common import stop_was_requested
+
+        seen: list[bool] = []
+
+        async def turn() -> None:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                # What every chat backend does: ask whether this was a Stop,
+                # and if so keep going to persist the partial + send stream_end.
+                seen.append(stop_was_requested())
+
+        task = asyncio.get_running_loop().create_task(turn())
+        server._client_tasks[task] = "me"
+        await asyncio.sleep(0)
+
+        await server.handle_cancel_generation(ws, {}, "me")
+
+        assert seen == [True]
+        assert not task.cancelled(), "a stopped turn completes its graceful tail"
+
+    @pytest.mark.asyncio
+    async def test_a_disconnect_cancel_is_not_mistaken_for_a_stop(self):
+        from cogs.ai_core.api.dashboard_common import stop_was_requested
+
+        seen: list[bool] = []
+
+        async def turn() -> None:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                seen.append(stop_was_requested())
+                raise
+
+        task = asyncio.get_running_loop().create_task(turn())
+        await asyncio.sleep(0)
+        task.cancel()  # the disconnect / shutdown path — no marker
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert seen == [False]
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_the_marker_is_single_use(self):
+        # A stop consumes the marker. If the client then drops mid-finalize,
+        # that second cancellation must unwind, not be read as another stop.
+        from cogs.ai_core.api.dashboard_common import request_stop, stop_was_requested
+
+        seen: list[bool] = []
+        finalizing = asyncio.Event()
+
+        async def turn() -> None:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                seen.append(stop_was_requested())
+            finalizing.set()
+            try:
+                await asyncio.sleep(30)  # stands in for the persist + send tail
+            except asyncio.CancelledError:
+                seen.append(stop_was_requested())
+
+        task = asyncio.get_running_loop().create_task(turn())
+        await asyncio.sleep(0)
+        request_stop(task)
+        await finalizing.wait()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert seen == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_ack_still_arrives_when_a_task_outlives_the_drain(self, server, ws):
+        # The drain runs ON the read loop, so it is bounded: a slow unwind
+        # (subprocess reap, temp-attachment cleanup) must not stall ping/pong.
+        async def slow_unwind() -> None:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.2)
+
+        task = asyncio.get_running_loop().create_task(slow_unwind())
+        server._client_tasks[task] = "me"
+        await asyncio.sleep(0)
+        server.CANCEL_DRAIN_TIMEOUT = 0.01
+
+        await server.handle_cancel_generation(ws, {}, "me")
+
+        assert ws.find("generation_cancelled")
+        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            await asyncio.wait_for(task, timeout=2.0)
+
+    @pytest.mark.asyncio
+    async def test_routed_from_handle_message(self, server, ws):
+        server.handle_cancel_generation = AsyncMock()
+        await server.handle_message(ws, {"type": "cancel_generation"}, "me")
+        server.handle_cancel_generation.assert_awaited_once()
+        assert not ws.find("error"), "must not fall through to 'Unknown message type'"
+
+    def test_is_rate_exempt(self, server):
+        # A stop that gets rate-limited strands the UI in the state the user is
+        # trying to escape.
+        assert "cancel_generation" in server.RATE_EXEMPT_MESSAGE_TYPES
+
+    def test_is_not_dispatched_as_a_background_task(self):
+        # It has to be serviced on the read loop, while the task it targets is
+        # still running — the read loop only backgrounds these two types.
+        import inspect
+
+        import cogs.ai_core.api.ws_dashboard as ws_module
+
+        src = inspect.getsource(ws_module.DashboardWebSocketServer.websocket_handler)
+        assert 'msg_type in ("message", "ai_edit_message")' in src

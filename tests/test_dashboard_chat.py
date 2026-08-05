@@ -1081,3 +1081,95 @@ class TestClaudeConversationIdRegex:
         from cogs.ai_core.api.dashboard_chat_claude import _CONVERSATION_ID_RE
 
         assert _CONVERSATION_ID_RE.match("") is None
+
+
+class TestGeminiStopButton:
+    """Stop mid-stream keeps the partial; a plain cancel still unwinds."""
+
+    class _ParkingStream:
+        """Yields one chunk, then blocks — the model is still generating."""
+
+        def __init__(self, chunk, streaming: asyncio.Event):
+            self._chunk = chunk
+            self._streaming = streaming
+            self._served = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._served:
+                self._served = True
+                return self._chunk
+            self._streaming.set()
+            await asyncio.sleep(30)
+            raise StopAsyncIteration
+
+    def _client(self, streaming):
+        client = MagicMock()
+        stream = self._ParkingStream(FakeChunk(text="half an answ"), streaming)
+
+        async def mock_stream(**kwargs):
+            return stream
+
+        client.aio.models.generate_content_stream = mock_stream
+        return client
+
+    @pytest.mark.asyncio
+    async def test_stop_persists_the_partial_and_sends_a_cancelled_stream_end(self, ws):
+        from cogs.ai_core.api.dashboard_chat import handle_chat_message
+        from cogs.ai_core.api.dashboard_common import request_stop
+
+        streaming = asyncio.Event()
+        mock_db = MagicMock()
+        mock_db.save_dashboard_message = AsyncMock(return_value=42)
+        mock_db.get_dashboard_user_profile = AsyncMock(return_value={})
+        mock_db.get_dashboard_conversation = AsyncMock(return_value={"title": "Existing"})
+
+        with (
+            patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_common.get_db", return_value=mock_db),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli.delete_session_file",
+                new=AsyncMock(),
+            ),
+        ):
+            task = asyncio.get_running_loop().create_task(
+                handle_chat_message(
+                    ws, {"content": "hi", "conversation_id": "conv-1"}, self._client(streaming)
+                )
+            )
+            await streaming.wait()
+            request_stop(task)
+            await task  # graceful: must NOT raise CancelledError
+
+        ends = ws.find("stream_end")
+        assert len(ends) == 1
+        assert ends[0]["cancelled"] is True
+        assert ends[0]["full_response"] == "half an answ"
+        saved = [
+            c for c in mock_db.save_dashboard_message.call_args_list if c.args[1] == "assistant"
+        ]
+        assert len(saved) == 1
+        assert saved[0].args[2] == "half an answ"
+
+    @pytest.mark.asyncio
+    async def test_an_unmarked_cancel_still_unwinds(self, ws):
+        from cogs.ai_core.api.dashboard_chat import handle_chat_message
+
+        streaming = asyncio.Event()
+        with patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", False):
+            task = asyncio.get_running_loop().create_task(
+                handle_chat_message(
+                    ws, {"content": "hi", "conversation_id": "conv-1"}, self._client(streaming)
+                )
+            )
+            await streaming.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert not ws.find("stream_end")
+        # …and no error frame either: there is nobody on the other end.
+        assert not ws.find("error")

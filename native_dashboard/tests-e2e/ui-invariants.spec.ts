@@ -1861,3 +1861,126 @@ test('composer attachment strips: empty ones take no space, a full one takes one
     // message list went 597px -> 371px pre-fix (62%), 597px -> 488px after (82%).
     expect(staged.messagesH).toBeGreaterThan(bare.messagesH * 0.75);
 });
+
+// ---------------------------------------------------------------------------
+// The composer's Stop button. It shares the send button's slot, which is the
+// whole risk: the two must be the same size (or the composer twitches on every
+// send), only one can ever be on screen, and the Stop plate is the one control
+// in the composer that is NOT the brand gradient — so its glyph runs on the
+// `.send-icon .ic` ink written for that gradient (near-black at night, #fff on
+// dawn) and disappears on both themes unless orbital.css overrides it. None of
+// that is reachable from the jsdom unit tests, which have no stylesheet.
+// ---------------------------------------------------------------------------
+async function composerButtons(page: Page) {
+    return page.evaluate(() => {
+        const rect = (id: string) => {
+            const el = document.getElementById(id) as HTMLElement | null;
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            const cs = getComputedStyle(el);
+            const glyph = el.querySelector('svg') as SVGElement | null;
+            return {
+                visible: el.checkVisibility(),
+                w: Math.round(r.width),
+                h: Math.round(r.height),
+                x: Math.round(r.x),
+                bg: cs.backgroundColor,
+                ink: glyph ? getComputedStyle(glyph).color : '',
+            };
+        };
+        return {
+            send: rect('btn-send'),
+            stop: rect('btn-stop-generating'),
+            composerH: Math.round(
+                (document.querySelector('.chat-input-area') as HTMLElement).getBoundingClientRect().height,
+            ),
+        };
+    });
+}
+
+function luminance(rgb: string): number {
+    const [r, g, b] = (rgb.match(/[\d.]+/g) ?? ['0', '0', '0']).slice(0, 3).map(Number);
+    const lin = (c: number) => {
+        const s = c / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+function contrast(a: string, b: string): number {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+}
+
+for (const theme of ['dark', 'light'] as const) {
+    test(`the Stop button takes the send slot exactly, and its glyph is legible (${theme})`, async ({ page }) => {
+        await boot(page);
+        await openListConversation(page, 'hello');
+        await freezeMotion(page);
+        await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+
+        const idle = await composerButtons(page);
+        expect(idle.send!.visible, 'Send is the resting state').toBe(true);
+        expect(idle.stop!.visible, 'Stop stays out of the way until a turn is in flight').toBe(false);
+
+        await sendWsFrame(page, { type: 'stream_start', conversation_id: LIST_CONV.id, mode: '' });
+        await page.waitForTimeout(200);
+
+        const busy = await composerButtons(page);
+        expect(busy.stop!.visible).toBe(true);
+        expect(busy.send!.visible, 'exactly one button occupies the slot').toBe(false);
+        // Same box, same place — a size change here shows up as the whole
+        // composer jumping the instant you press Enter.
+        expect(busy.stop!.w).toBe(idle.send!.w);
+        expect(busy.stop!.h).toBe(idle.send!.h);
+        expect(busy.stop!.x).toBe(idle.send!.x);
+        expect(busy.composerH).toBe(idle.composerH);
+        // AA for non-text/UI (WCAG 1.4.11) is 3:1. The failure this guards is
+        // total: #fff ink on the light plate, or near-black on the dark one.
+        expect(
+            contrast(busy.stop!.ink, busy.stop!.bg),
+            `stop glyph ${busy.stop!.ink} on ${busy.stop!.bg}`,
+        ).toBeGreaterThanOrEqual(3);
+    });
+}
+
+test('pressing Stop asks the server to cancel, then the terminal frame restores the composer', async ({ page }) => {
+    await boot(page);
+    await openListConversation(page, 'hello');
+    await freezeMotion(page);
+
+    await sendWsFrame(page, { type: 'stream_start', conversation_id: LIST_CONV.id, mode: '' });
+    await sendWsFrame(page, { type: 'chunk', content: 'half an answ', conversation_id: LIST_CONV.id });
+    await page.waitForTimeout(200);
+
+    await page.locator('#btn-stop-generating').click();
+    await page.waitForTimeout(150);
+
+    const sent = await page.evaluate(() =>
+        ((window as unknown as { __mockWsLastSent?: { frames: string[] } })
+            .__mockWsLastSent?.frames ?? []).map(f => JSON.parse(f) as Record<string, unknown>),
+    );
+    const cancels = sent.filter(f => f.type === 'cancel_generation');
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0].conversation_id).toBe(LIST_CONV.id);
+
+    // Stop does NOT tear down locally — the turn is still live until the
+    // server's terminal frame lands, so a second click can't fire.
+    expect(await page.locator('#btn-stop-generating').isDisabled()).toBe(true);
+    expect(await page.locator('#streaming-message').count()).toBe(1);
+
+    await sendWsFrame(page, {
+        type: 'stream_end',
+        conversation_id: LIST_CONV.id,
+        full_response: 'half an answ',
+        cancelled: true,
+        assistant_message_id: 99,
+    });
+    await page.waitForTimeout(300);
+
+    const after = await composerButtons(page);
+    expect(after.send!.visible).toBe(true);
+    expect(after.stop!.visible).toBe(false);
+    // The partial the user chose to keep is still on screen.
+    await expect(page.locator('#chat-messages')).toContainText('half an answ');
+});

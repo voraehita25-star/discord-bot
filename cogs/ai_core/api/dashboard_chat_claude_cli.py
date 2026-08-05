@@ -72,6 +72,7 @@ from .dashboard_common import (
     build_user_context,
     get_db,
     normalize_timestamp_to_bangkok,
+    stop_was_requested,
     strip_claude_internal_tags,
     strip_leading_timestamp,
 )
@@ -3241,6 +3242,10 @@ async def handle_chat_message_claude_cli(
 
     new_session_id = ""
     usage: dict[str, Any] | None = None
+    # Set when the user pressed Stop mid-turn. The turn then takes the ordinary
+    # tail below (persist + stream_end) rather than an error return, so the
+    # partial answer survives both on screen and in the DB.
+    stopped = False
     # Serialize CLI calls per-conversation. Without this, two browser tabs (or
     # a fast double-send) could spawn parallel `claude -p` processes both
     # using the same --resume id, racing on the server-side session state.
@@ -3422,6 +3427,30 @@ async def handle_chat_message_claude_cli(
                     )
                 else:
                     raise
+        except asyncio.CancelledError:
+            # Stop button. Everything the model streamed is already rendered
+            # client-side and accumulated in ``full_response``, so fall through
+            # to the ordinary tail below (persist + stream_end) instead of
+            # returning: a stopped turn then ends exactly like a completed one,
+            # only truncated. The `claude -p` child was already SIGKILLed by
+            # _run_claude_subprocess's finally on the way out.
+            if not stop_was_requested():
+                # Client disconnect or server shutdown — no socket to answer
+                # on. Unwind untouched, exactly as before this button existed.
+                raise
+            stopped = True
+            logger.info(
+                "🛑 chat-cli stopped by user conv=%s after %d chars",
+                conversation_id,
+                len(full_response),
+            )
+            if conversation_id:
+                # Same DB/session desync as the timeout path below: the killed
+                # child may or may not have committed its forked session, and
+                # the partial we are about to save never reached it either.
+                # Drop the session so the next turn rebuilds '# Conversation so
+                # far' from the DB, which now includes both rows.
+                reset_session(conversation_id)
         except TimeoutError:
             # The user turn is already in the DB but never reached the resumed
             # server-side session — leaving the session id in place would make
@@ -3651,6 +3680,10 @@ async def handle_chat_message_claude_cli(
             "user_message_id": user_msg_id,
             "assistant_message_id": assistant_msg_id or None,
             "chunks_count": len(full_response),
+            # True only when the user pressed Stop: same terminal frame, so the
+            # frontend keeps its single well-tested teardown path and only the
+            # notice it shows differs.
+            "cancelled": stopped,
             "token_usage": {
                 "input_tokens": in_tok,
                 "output_tokens": out_tok,
@@ -3667,7 +3700,9 @@ async def handle_chat_message_claude_cli(
     # only the happy path needs an explicit done line. Duration is wall-clock
     # from after CLI-readiness check; tokens come from the ``result`` event.
     logger.info(
-        "✅ chat-cli done conv=%s duration=%.1fs in=%d out=%d response_len=%d session=%s",
+        "%s chat-cli %s conv=%s duration=%.1fs in=%d out=%d response_len=%d session=%s",
+        "🛑" if stopped else "✅",
+        "stopped" if stopped else "done",
         conversation_id,
         time.monotonic() - start_ts,
         in_tok,
