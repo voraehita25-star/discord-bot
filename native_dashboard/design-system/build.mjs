@@ -73,6 +73,12 @@ body { padding: 28px; }
 .ds-swatch b { padding-top: 8px; font-size: var(--step--1); color: var(--text-secondary); }
 .ds-swatch code { padding-bottom: 8px; font-family: var(--font-mono); font-size: var(--step--1); color: var(--text-muted); }
 .ds-stage { padding: 18px; border: 1px solid var(--edge); border-radius: var(--radius-lg); background: var(--tile); }
+
+/* Screen cards run the real app shell, so the harness gets out of its way:
+   no body padding, and the shell takes the viewport the way it does in Tauri. */
+body.ds-screen { padding: 0; }
+body.ds-screen .ds-head { padding: 22px 26px 0; }
+body.ds-screen .app { height: 100vh; }
 `;
 
 // ---------------------------------------------------------------------------
@@ -531,6 +537,63 @@ for (const src of LIGHT_OF) {
 // ---------------------------------------------------------------------------
 const PROPOSALS = [];
 
+// ---------------------------------------------------------------------------
+// SCREENS — the six pages, whole, lifted out of ui/index.html at build time.
+//
+// The component cards show parts. Nothing showed a PAGE, which is how an
+// earlier pass over this project missed that AI History exists at all. These
+// are cut from the shipping markup by the scanner below and rendered through
+// the same cascade, so they are the app's actual screens rather than a
+// reconstruction — and they cannot drift, because they are re-cut every build.
+//
+// What they cannot show: the performance charts (a canvas app.ts paints) and
+// the sakura petal field (WebGL). Both need the running app. Each blurb says
+// so rather than letting a reader assume the page is emptier than it is.
+// ---------------------------------------------------------------------------
+
+/** Slice a balanced <tag …id="…"> … </tag> out of the source, nesting-aware. */
+function sliceElement(html, openPattern, tag) {
+    const start = html.search(openPattern);
+    if (start < 0) throw new Error(`screen extract: ${openPattern} not found in index.html`);
+    const open = new RegExp(`<${tag}\\b`, 'g');
+    const close = new RegExp(`</${tag}>`, 'g');
+    open.lastIndex = close.lastIndex = start;
+    let depth = 0, i = start;
+    for (;;) {
+        open.lastIndex = close.lastIndex = i;
+        const o = open.exec(html);
+        const c = close.exec(html);
+        if (!c) throw new Error(`screen extract: unbalanced <${tag}>`);
+        if (o && o.index < c.index) { depth++; i = o.index + 1; continue; }
+        depth--;
+        if (depth === 0) return html.slice(start, c.index + c[0].length);
+        i = c.index + 1;
+    }
+}
+
+const SIDEBAR = sliceElement(indexHtml, /<nav class="sidebar"/, 'nav');
+
+const SCREENS = [
+    ['status', 'Status', 'SYS // STATUS', 'The bot you are operating: one ticked instrument card, a five-tile metric strip, the charts, quick actions and API failover. The two chart canvases read as empty here — app.ts paints them, and no script runs in a card.'],
+    ['chat', 'AI Chat', 'COMMS // AI CHAT', 'The only screen that hides its own title bar (visually — the h1 stays in the accessibility tree) so the transcript can take the full column. Shown in its offline state, which is the state the app boots into.'],
+    ['logs', 'Log Viewer', 'LOG // STREAM', 'The one page whose title row carries controls, so it uses .page-header rather than .page-title-bar. The panel keeps a scanline texture but is cut from the same tile as every other surface.'],
+    ['database', 'Database Statistics', 'DATA // STORE', 'Four metric tiles over two ruled lists and the one panel allowed a coloured border. Both lists stand empty here; the Data rows card shows them populated.'],
+    ['history', 'AI History', 'ARCHIVE // AI HISTORY', 'Two panes, each with the same panel header on a shared baseline — they sit either side of a seam the eye follows, so a few pixels of disagreement between them reads as a defect.'],
+    ['settings', 'Settings', 'CFG // SETTINGS', 'Seven stacked cards, no sub-navigation. Each row is a caption beside its field down to 860px, where it stacks and hands the width back to the control.'],
+];
+
+for (const [id, title, eyebrow, blurb] of SCREENS) {
+    const section = sliceElement(indexHtml, new RegExp(`<section id="page-${id}"`), 'section')
+        .replace(`<section id="page-${id}" class="page">`, `<section id="page-${id}" class="page active">`);
+    CARDS.push({
+        path: `screens/${id}.html`, group: 'Screens', name: title,
+        subtitle: `${eyebrow} — the whole page, cut from ui/index.html`,
+        title, blurb,
+        chrome: `<div class="app">${SIDEBAR}<div class="content">${section}</div></div>`,
+        body: '',
+    });
+}
+
 const page = (card) => `<!-- @dsCard group="${card.group}" -->
 <!doctype html>
 <html lang="en" data-theme="${card.theme || 'dark'}">
@@ -542,10 +605,10 @@ const page = (card) => `<!-- @dsCard group="${card.group}" -->
 <link rel="stylesheet" href="../assets/preview.css">${card.css ? `
 <link rel="stylesheet" href="${card.path.replace(/^proposals\/(.+)\.html$/, '$1.css')}">` : ''}
 </head>
-<body>
+<body${card.chrome ? ' class="ds-screen"' : ''}>
 ${SPRITE}
 <header class="ds-head"><h1>${card.title}</h1><p>${card.blurb}</p></header>
-${card.body}
+${card.chrome || card.body}
 </body>
 </html>
 `;
@@ -555,6 +618,7 @@ mkdirSync(join(OUT, 'components'), { recursive: true });
 mkdirSync(join(OUT, 'foundations'), { recursive: true });
 mkdirSync(join(OUT, 'assets/vendor/fonts'), { recursive: true });
 mkdirSync(join(OUT, 'proposals'), { recursive: true });
+    mkdirSync(join(OUT, 'screens'), { recursive: true });
 writeFileSync(join(OUT, 'assets/preview.css'), PREVIEW_CSS, 'utf8');
 
 CARDS.push(...PROPOSALS);
