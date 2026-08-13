@@ -938,7 +938,13 @@ html[data-theme="light"] .api-health-result {
     font-size: 13px;
     line-height: 1.7;
     white-space: pre-wrap;
-    word-break: break-all;
+    /* `break-all` split lines mid-identifier: a 19-digit guild id came apart
+     * across the wrap and left orphan fragments ("789", "6789") alone on the
+     * next line. At 400 lines that is most of the screen. `break-word` only
+     * breaks inside a token when the token alone cannot fit, so the id moves
+     * whole to the continuation line and the columns stay scannable. */
+    word-break: normal;
+    overflow-wrap: break-word;
     position: relative;
     /* Removed nested `overflow-y: auto` + `height: 100%` — both this and the
      * parent .log-container had their own scrollbars, so wheel events scrolled
@@ -961,28 +967,16 @@ html[data-theme="light"] .api-health-result {
     background: var(--surface-2);
 }
 
-/* CRITICAL outranks ERROR, so it cannot look the same as it. Same red family,
-   but bold and carrying a tint of its own (see orbital.css) — the bot only
-   emits this for fatals it is about to die on. */
+/* Severity is signalled ONCE, by the left rail (+ a faint row wash for the
+   three that matter) — see orbital.css. Colouring the whole line on top of
+   that was a third signal, and it turned every ERROR row into a paragraph of
+   low-contrast red body text: the levels became easier to spot and the
+   MESSAGES became harder to read, which is backwards for a log viewer.
+   CRITICAL is the deliberate exception — the bot only emits it for fatals it
+   is about to die on, so it keeps weight and colour and shouts. */
 .log-line.critical {
     color: var(--accent-red);
     font-weight: 700;
-}
-
-.log-line.error {
-    color: var(--accent-red);
-}
-
-.log-line.warning {
-    color: var(--accent-orange);
-}
-
-.log-line.debug {
-    color: var(--sev-debug);
-}
-
-.log-line.info {
-    color: var(--accent-green);
 }
 
 /* Light theme: --accent-green (#0a8a55) on the light log surface (~#f4faf6)

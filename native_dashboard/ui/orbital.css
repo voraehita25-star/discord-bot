@@ -194,7 +194,11 @@
     --sev-error: var(--accent-red);
     --sev-warn:  var(--accent-orange);
     --sev-info:  var(--accent-green);
-    --sev-debug: var(--accent-cyan);
+    /* Debug was var(--accent-cyan) — i.e. the PRIMARY slot, sakura pink. The
+       app's signature colour meant "debug", so the loudest hue on the page was
+       spent on the least important severity. A muted plum-grey is both the
+       right rank for debug and out of every other level's way. */
+    --sev-debug: #8f8099;
 
     /* density multiplier — consumed by the paddings we touch */
     --density: 1;
@@ -264,8 +268,12 @@ html[data-theme="light"],
     --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.95);
     --hairline: linear-gradient(135deg, rgba(163, 37, 93, 0.45), rgba(121, 67, 111, 0.30) 52%, rgba(143, 83, 16, 0.22));
 
-    --shadow-sm: 0 1px 2px rgba(75, 30, 55, 0.06);
-    --shadow-md: 0 8px 22px rgba(75, 30, 55, 0.10);
+    /* Two layers, not one: a tight contact shadow to seat the panel on the
+       paper plus a soft ambient one to lift it. A single 6%-alpha blur was
+       invisible under a near-white card, leaving the panel edge to do all the
+       separating alone — see the --edge note in the LANTERN token block. */
+    --shadow-sm: 0 1px 1px rgba(75, 30, 55, 0.05), 0 2px 6px rgba(75, 30, 55, 0.06);
+    --shadow-md: 0 2px 4px rgba(75, 30, 55, 0.06), 0 10px 26px rgba(75, 30, 55, 0.11);
     --shadow-lg: 0 22px 50px rgba(75, 30, 55, 0.15);
     --shadow-glow: 0 12px 32px rgba(163, 37, 93, 0.14);
     --focus-ring: 0 0 0 3px rgba(163, 37, 93, 0.38);
@@ -291,7 +299,8 @@ html[data-theme="light"],
     --sev-error: #b3223c;
     --sev-warn:  #8f5310;
     --sev-info:  #0f7a4d;
-    --sev-debug: #a3255d;
+    /* dawn's muted plum-grey — see the dark-theme note on this token */
+    --sev-debug: #6b5a70;
 }
 
 /* ============================================================================
@@ -408,6 +417,32 @@ h1, .page-header h1 {
     line-height: 1.12;
     text-wrap: balance;
 }
+/* ----------------------------------------------------------------------------
+   HEADING CONTRACT — two tiers, and what decides between them.
+
+   A heading either NAMES A THING or LABELS A GROUP, and that is the whole
+   rule. Get it wrong and the page reads as five different products, which is
+   what an audit of this deck found (docs/DASHBOARD_UI_AUDIT.md, M3).
+
+     TITLE     display face, Title Case, weight 700, --step-2
+               The card's subject IS the content. "Discord Bot", "AI
+               Appearance", "Profile", "Danger Zone".
+               · --step-1 is the same tier one step down, for a title inside a
+                 modal — the only place that step is used.
+
+     EYEBROW   mono face, UPPERCASE, .14em, --step--1, --text-secondary
+               A label OVER a list or a grid; the content is the rows, not the
+               heading. "RECENT CHANNELS", "QUICK ACTIONS", "CONVERSATIONS",
+               "MEMORY USAGE", and every modal field caption.
+
+   Page <h1> sits above both (display, UPPERCASE, --step-4) and is the page,
+   not a heading inside it. Body copy is NEVER mono — see the note on
+   `.empty-state`, where inheriting a host <pre> once made it so.
+
+   `.data-section h2` and `.api-failover-card h2` are listed here for the
+   font-weight, then deliberately re-tiered to EYEBROW by the rule further
+   down ("section headings inside cards…"): both name a group of rows.
+   ---------------------------------------------------------------------------- */
 .control-card h2,
 .settings-card h2,
 .api-failover-card h2,
@@ -920,6 +955,19 @@ html[data-theme="light"] .sidebar .status-badge.online {
 .btn-secondary:hover:not(:disabled) { background: rgba(255, 161, 194, 0.14); }
 .btn-icon { background: rgba(255, 161, 194, 0.07); border: 1px solid var(--border-color); }
 .btn-icon:hover:not(:disabled) { background: rgba(255, 161, 194, 0.15); color: var(--text-primary); }
+/* ONE small size, under two historical names. The base sheet grew both:
+   .btn-sm (6px 14px / .85em / 8px radius) and .btn-small (4px 8px / .8rem) —
+   two hand-tuned smalls, 2px and a unit apart, each hardcoded, and one of them
+   asserting a radius the token scale already owns. Two pixels is too close to
+   read as a deliberate second size and too far to be the same one; a Settings
+   row pairs them and they simply looked misaligned. Both names stay — nothing
+   is renamed in this codebase — and they now resolve to the same rung. */
+.btn-sm,
+.btn-small {
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--step--1);
+    border-radius: var(--radius-sm);
+}
 html[data-theme="light"] .btn-primary { color: #fff; }
 html[data-theme="light"] .btn-secondary { background: var(--cyan-50); }
 html[data-theme="light"] .btn-icon { background: var(--cyan-50); }
@@ -974,18 +1022,26 @@ html[data-theme="light"] input:checked + .toggle-slider { background: var(--acce
 .history-filter-input::placeholder { color: var(--text-tertiary); }
 
 /* ============================================================================
-   LOG VIEWER — green-phosphor terminal, framed in plum night
+   LOG VIEWER — a terminal cut from the deck's own material
+   ----------------------------------------------------------------------------
+   This panel used to be painted green-black (rgba(7,13,11)→rgba(5,9,8)) with a
+   spring-green inset hairline: a phosphor CRT sitting inside a sakura-plum
+   deck. It was the single largest "these are two apps" moment in the UI. The
+   scanline texture is the good part of that idea and it stays — it says
+   "terminal" without needing a borrowed palette to say it. The surface
+   underneath is now the same --tile every other panel is cut from, so the
+   character survives and the material stops disagreeing with the room.
    ============================================================================ */
 .log-container {
     position: relative;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius);
     background:
-        /* inner vignette: darken the four edges so the phosphor text floats */
+        /* inner vignette: darken the four edges so the text floats */
         radial-gradient(140% 120% at 50% 50%, transparent 62%, rgba(6, 2, 10, 0.45) 100%),
         repeating-linear-gradient(to bottom, transparent 0, transparent 2px, rgba(0,0,0,0.18) 3px),
-        linear-gradient(180deg, rgba(7, 13, 11, 0.96), rgba(5, 9, 8, 0.98));
-    box-shadow: var(--shadow-md), inset 0 0 0 1px rgba(76, 233, 171, 0.06);
+        var(--tile);
+    box-shadow: var(--shadow-md), inset 0 0 0 1px var(--edge);
 }
 #log-content, .log-container pre { font-family: var(--font-mono); }
 .live-indicator { font-family: var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; font-size: var(--step--1); }
@@ -1018,7 +1074,10 @@ html[data-theme="light"] input:checked + .toggle-slider { background: var(--acce
    clean. `position: sticky`/`top`/`z-index` above are deliberately kept — they
    still apply in both themes. */
 
-/* Severity rails — a left-edge inset bar + faint matching wash. */
+/* Severity rails — a left-edge inset bar + faint matching wash. This is the
+   ONLY severity signal now; the per-line text colour in styles.css was removed
+   (see the note there). The hanging indent for wrapped lines is set later in
+   this file, not here — see the `.log-line` rule in the data-list section. */
 .log-line { position: relative; padding-left: var(--space-3); }
 .log-line.critical { box-shadow: inset 3px 0 0 var(--sev-critical); background: rgba(255, 93, 120, 0.14); }
 .log-line.error   { box-shadow: inset 3px 0 0 var(--sev-error);  background: rgba(255, 93, 120, 0.06); }
@@ -1029,10 +1088,12 @@ html[data-theme="light"] .log-line.critical { background: rgba(143, 11, 38, 0.13
 html[data-theme="light"] .log-line.error   { background: rgba(179, 34, 60, 0.07); }
 html[data-theme="light"] .log-line.warning { background: rgba(143, 83, 16, 0.08); }
 
-/* Dawn: the dark phosphor terminal would be unreadable on paper — give the
-   log surface a warm-parchment gradient instead. */
+/* Dawn: the vignette and scanline are tuned for a dark surface — on paper they
+   read as grime. Drop both and let the panel sit on the theme's own tile. The
+   warm-parchment gradient that used to live here (#f8f4ec→#f2ece2) was a third
+   palette again: cream, in a blush-and-rose theme. */
 html[data-theme="light"] .log-container {
-    background: linear-gradient(180deg, #f8f4ec, #f2ece2);
+    background: var(--tile);
 }
 
 /* ============================================================================
@@ -1049,7 +1110,34 @@ html[data-theme="light"] .log-container {
     gap: var(--space-3);
     padding: var(--space-8) var(--space-4);
     color: var(--text-secondary);
+    /* An empty state is prose, and prose is never mono here. Without this the
+       Logs state inherits the monospace of its host <pre id="log-content">
+       (see the rule near "#log-content, .log-container pre") and its sentence
+       wraps raggedly over two lines, while the identical state on History —
+       whose host is not a <pre> — renders in the UI face. Same component, two
+       typefaces, decided by what happened to contain it. */
+    font-family: var(--font-ui);
+    /* Fill the panel being reported on. justify-content alone only centred the
+       state inside its OWN padding box, so in a host that stretches
+       (.log-container is flex:1 at ~650px) the ~200px box sat at the top with
+       most of the panel empty underneath it. */
+    flex: 1 1 auto;
 }
+/* …and that `flex: 1` only means something if the host is a flex column.
+   The History and Chat panes already stretch their placeholder (there is an
+   invariant on it: "a panel standing empty centres its placeholder"), so the
+   ONE host that needed help is the log panel: #log-content is a <pre>, i.e. a
+   block child of a block .log-container, and neither was a flex context.
+   Scoped with :has() so a panel holding real log lines is untouched.
+
+   Do NOT reach for `min-height: 100%` here. An earlier attempt did, and on the
+   800x600 History page it resolved against an auto-height ancestor, grew the
+   scroll height, and pushed the Undo button past the bottom of a fully
+   scrolled viewport — caught by "history: content is fully reachable at the
+   800x600 window minimum". Growth belongs to the flex parent, not a
+   percentage against a parent that has no height of its own. */
+.log-container:has(.empty-state) { display: flex; flex-direction: column; }
+#log-content:has(> .empty-state) { display: flex; flex-direction: column; flex: 1; }
 /* blossom chip: a bracketed frame + faint wash behind the zero-data glyph */
 .empty-state .ic {
     color: var(--accent-cyan);
@@ -1144,7 +1232,11 @@ html[data-theme="light"] .danger-zone {
     background: linear-gradient(160deg, rgba(179, 34, 60, 0.06), rgba(179, 34, 60, 0.03));
     border-color: rgba(179, 34, 60, 0.35);
 }
-.danger-zone h2 { color: var(--accent-red); font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.05em; }
+/* Card-title tier, in red. The caps were a fifth heading style for exactly one
+   heading in the app; the colour and the red-bordered panel already carry the
+   warning, and shouting in a second way did not make the section any more
+   dangerous. See HEADING CONTRACT above. */
+.danger-zone h2 { color: var(--accent-red); font-family: var(--font-display); font-size: var(--step-2); font-weight: 700; letter-spacing: 0.01em; }
 
 /* API endpoint rows — repaint the styles.css literal cyan (#22d3ee) states
    onto the sakura tokens (same specificity, later source order). */
@@ -1406,24 +1498,29 @@ html[data-theme="light"] .chat-message.user .message-avatar .ic { color: #fff; }
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg), var(--glass-hi);
 }
-.modal-header h2 { font-family: var(--font-display); font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+/* A modal is a card, and its title names a thing ("Rename Conversation"),
+   so it takes the CARD TITLE treatment one step down — not a fourth style of
+   its own. It used to be display/UPPERCASE/.03em, which matched neither the
+   card titles (display, Title Case) nor the section eyebrows (mono,
+   UPPERCASE, .14em), and uppercasing a two-word title bought nothing the
+   modal's own frame was not already saying. `--step-1` was defined but mapped
+   to no role in the app; this is the role. See HEADING CONTRACT above. */
+.modal-header h2 { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.01em; }
+/* The role card was the one place FRAME DISCIPLINE (see that section below)
+   missed. It carried a bracket pair in every state, brightening on hover and
+   on .selected — but the selected card's own glow and focus border wash its
+   brackets out, so on screen the UNSELECTED card is the one visibly wearing
+   them. The tick device therefore read as "not chosen" here and as "this is
+   the page's instrument" everywhere else. Selection is border + glow; the
+   brackets go. */
 .role-card {
     border-radius: var(--radius);
-    /* single bracket pair (top-left + bottom-right) matching the data-item motif */
-    --hud-tick: var(--cyan-300);
-    background-image:
-        linear-gradient(var(--hud-tick), var(--hud-tick)), linear-gradient(var(--hud-tick), var(--hud-tick)),
-        linear-gradient(var(--hud-tick), var(--hud-tick)), linear-gradient(var(--hud-tick), var(--hud-tick)),
-        var(--card-bg);
-    background-repeat: no-repeat;
-    background-size: 12px 2px, 2px 12px, 12px 2px, 2px 12px, auto;
-    background-position:
-        7px 7px, 7px 7px,
-        calc(100% - 7px) calc(100% - 7px), calc(100% - 7px) calc(100% - 7px),
-        center;
+    background: var(--card-bg);
 }
-.role-card:hover { --hud-tick: var(--accent-cyan); }
-.role-card.selected { border-color: var(--border-focus); --hud-tick: var(--accent-cyan); box-shadow: 0 0 0 1px var(--border-focus), 0 0 22px var(--glow-sakura); }
+/* Hover used to be "brighten the brackets"; with those gone it is the border
+   that answers the pointer. Selection stays a step above it — ring + bloom. */
+.role-card:hover { border-color: var(--border-strong); }
+.role-card.selected { border-color: var(--border-focus); box-shadow: 0 0 0 1px var(--border-focus), 0 0 22px var(--glow-sakura); }
 
 /* flat bloom-in (the .active lands on the .modal wrapper) */
 @media (prefers-reduced-motion: no-preference) {
@@ -2452,19 +2549,24 @@ html[data-theme="light"] .btn-warning:hover:not(:disabled) {
    which distinguishes "this list is empty" from "this panel failed to load"
    without borrowing the full-page .empty-state illustration.
    ============================================================================ */
+/* One language, two scales. The dashed frame + tinted fill made this a
+   different DEVICE from .empty-state rather than a smaller version of it —
+   and on the chat page both are on screen at once (rail vs main pane), which
+   is where that reads as two products. It was also a box inside a box: every
+   host here already carries a card border. The petal, the centring and the
+   title/description hierarchy are the shared language; the icon chip is what
+   marks the panel-scale state. Compact keeps the petal, drops the chip. */
 .no-data,
 .no-conversations {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: var(--space-1);
+    gap: var(--space-2);
     margin: var(--space-2) 0;
-    padding: var(--space-5) var(--space-4);
-    border: 1px dashed var(--border-color);
-    border-radius: var(--radius);
-    background: var(--cyan-50);
+    padding: var(--space-6) var(--space-4);
     color: var(--text-tertiary);
+    font-family: var(--font-ui);
     font-style: normal;
     font-size: var(--step-0);
     text-align: center;
@@ -2487,10 +2589,14 @@ html[data-theme="light"] .btn-warning:hover:not(:disabled) {
     mask-size: contain;
 }
 .no-conversations p { margin: 0; }
+/* The compact state's title echoes .empty-state h3 one step down — same face,
+   same weight, so the two scales read as one component. */
 .no-conversations p:first-of-type {
-    color: var(--text-secondary);
-    font-weight: 600;
-    font-size: var(--step-0);
+    color: var(--text-primary);
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: var(--step-1);
+    letter-spacing: 0.01em;
     margin-bottom: 2px;
 }
 
@@ -2534,7 +2640,13 @@ html[data-theme="light"] .btn-warning:hover:not(:disabled) {
        hairline that barely read as an input at all.
    ============================================================================ */
 .modal-body .form-group { text-align: left; }
-.modal-body label {
+/* #role-select-label is the New Conversation radiogroup's caption. It is a <p>,
+   not a <label>, so it fell outside this rule and rendered sans/sentence-case
+   with a trailing colon directly above "AI PROVIDER" in mono caps — two label
+   styles on two adjacent fields of one dialog. A field caption is the EYEBROW
+   tier (see HEADING CONTRACT); the colon goes with the sentence. */
+.modal-body label,
+.modal-body > #role-select-label {
     font-family: var(--font-mono);
     text-transform: uppercase;
     letter-spacing: 0.14em;
@@ -2897,8 +3009,16 @@ a:focus:not(:focus-visible), button:focus:not(:focus-visible),
 }
 html[data-theme="light"],
 :root[data-theme="light"] {
-    --edge: rgba(74, 30, 58, 0.14);
-    --edge-strong: rgba(74, 30, 58, 0.24);
+    /* Dawn needs a heavier edge than midnight does, and this is not a
+       preference — it is what the two grounds allow. On #0c0812 a panel is
+       separated by its own lift: --shadow-md reads, and the border only has to
+       finish the shape. On #f7eff0 a near-white panel casts almost nothing
+       (--shadow-sm is 6% alpha over paper), so the border IS the separation.
+       At 0.14 it was a hairline holding up the whole card, and the deck read
+       as text floating on a wash. These are the light-theme equivalents of
+       what --edge/--edge-strong buy in the dark, not brighter versions of it. */
+    --edge: rgba(74, 30, 58, 0.22);
+    --edge-strong: rgba(74, 30, 58, 0.34);
     --tile: #fffdfe;
     --tile-hi: #fdf5f8;
 }
@@ -3132,7 +3252,16 @@ html[data-theme="light"] #bot-status-text.is-online { color: var(--accent-green)
    numeral size, and the hero is told apart by its lit tile, its sakura glyph and
    its bottom edge. */
 .stat-card--hero .stat-label { color: var(--text-secondary); }
-.stat-card--hero::after { transform: scaleX(1); height: 2px; opacity: 1; }
+/* The bottom bar is gone. `.stat-card::after` is the HOVER sweep — every tile
+   grows one under the pointer — so pinning it open on the hero meant the hero
+   permanently wore another tile's hover state. Sitting under a lit background
+   in a row of flat ones, that is the exact grammar of a selected tab, and both
+   metric strips read as tab bars because of it. Emphasis now comes from the
+   lit tile, the sakura glyph, and the accent on the numeral itself: three
+   signals that all say "this is the number to look at" and none that say
+   "this one is currently chosen". */
+.stat-card--hero::after { transform: scaleX(0); }
+.stat-card--hero .stat-value { color: var(--accent-cyan); }
 
 /* ============================================================================
    CHARTS — one panel, two cells.
@@ -3238,7 +3367,14 @@ html[data-theme="light"] .nav-item .shortcut {
 html[data-theme="light"] .nav-item.active .shortcut { color: var(--text-tertiary); }
 html[data-theme="light"] .sidebar .logo { background: none; border: 0; border-bottom: 1px solid var(--edge); }
 
-/* the sprig becomes texture: bigger, fainter, bleeding off the rail's edge */
+/* The sprig becomes texture: bigger and much fainter (0.15 → 0.09).
+   NOT bleeding off the rail's edge, despite what this comment used to claim —
+   a 178px mask at `60% bottom` inside a 220px content box sits fully within
+   the rail with ~25px to spare, and it has to: the invariant in
+   tests-e2e/ui-invariants.spec.ts ("the sidebar watermark is not cropped by
+   the collapsed rail") requires mask-size ≤ rail width so the 64px icon strip
+   never shows a severed branch. A deliberate crop and an accidental one look
+   identical from inside a computed style, so the rule takes the safe side. */
 .nav-items::after {
     height: 190px;
     opacity: 0.09;
@@ -4428,15 +4564,21 @@ html[data-theme] .btn.btn[disabled] .ic { color: var(--text-muted); }
    a 1px rule. They share `padding: 12px 16px`, but the left one wraps a 30px
    Refresh button and the right one only a 19.4px <h2> — so the rules landed at
    169.9px and 159.3px, a visible 10.6px step across a seam the eye follows.
-   A shared min-height sized to the taller of the two (12 padding + 30 button +
-   12 padding + 1 rule = 55) lines them up and survives either pane gaining or
-   losing a control. `box-sizing` is border-box app-wide, so this is the outer
-   height including the rule. If the button's own metrics ever change, the
-   ui-invariants "close their headers on one line" test is what says so.
+   A shared min-height sized to the taller of the two lines them up and
+   survives either pane gaining or losing a control. `box-sizing` is
+   border-box app-wide, so this is the outer height including the rule. If the
+   button's own metrics ever change, the ui-invariants "close their headers on
+   one line" test is what says so.
+
+   It did say so. The Refresh button was 30px when `.btn-sm` carried its own
+   hand-tuned `6px 14px`; folding `.btn-sm`/`.btn-small` onto one rung of the
+   spacing ramp (--space-2 has no 6px, and 8px is the nearest rung) took it to
+   34px, the left header to 12 + 34 + 12 + 1 = 59, and parted the rules by 4px.
+   The number below follows the button, as it was always meant to.
    --------------------------------------------------------------------------- */
 .history-sidebar-header,
 #ai-history-header {
-    min-height: 55px;
+    min-height: 59px;
 }
 
 /* ---------------------------------------------------------------------------
