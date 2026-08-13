@@ -22,6 +22,27 @@ What a spec in `build.mjs` actually owns is the **markup** a component is made
 of, plus a sentence about why it is shaped that way. Both are short, and the
 markup is the one thing a preview genuinely has to assert.
 
+## What this does and does not let you do
+
+The rule above has a consequence worth stating outright, because it is the
+first thing anyone expects to be able to do here and it is the one thing this
+setup cannot: **you cannot design a proposal in the Design project and then
+port it to the app.** A card has no CSS of its own — it renders whatever
+`orbital.css` currently says — so a component cannot look different there than
+it does in the dashboard, by construction. Giving a card its own stylesheet to
+preview an unshipped idea would reintroduce exactly the drift this is built to
+prevent.
+
+Nor does claude.ai/design generate designs. `DesignSync` reads and writes files
+in a design-system project; it is a place to *hold and review* a system, not a
+tool that returns design work.
+
+So the working order is: **change the component, change its card, publish
+both in the same step.** The Design project is then the specification and the
+review surface — the place to look at one component on its own, in both themes,
+without booting the app and navigating to the screen it lives on. That is worth
+having. It is just not a sketchpad.
+
 ## Build
 
 ```powershell
