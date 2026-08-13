@@ -39,6 +39,41 @@ The stat tiles are fixed: Status shows **Uptime / Mode / Memory / Messages
 (hero) / Channels**; Database shows **Total Messages (hero) / Active Channels /
 Entities / RAG Memories**. There is no latency metric anywhere.
 
+## Layers that are not in the CSS or the markup
+
+This is the part a stylesheet cannot tell you, and the part most likely to make
+a proposal wrong. Several of the things you actually see on this dashboard are
+drawn by JavaScript and appear in no rule and no tag.
+
+- **Sakura petals drift behind the whole app.** `#sakura-container` is a WebGL
+  field driven by `app/src/sakura-model.ts` (~780 lines of petal physics), sitting
+  under every screen and toggleable in Settings. It is the app's signature
+  element, and the reason the surfaces above it are opaque tiles rather than
+  glass: content has to stay readable over moving petals. **Anything proposed
+  here is proposed on top of a live, animated background.**
+- **The performance charts are canvas, not SVG or DOM.** `drawChart` in
+  `app/src/app.ts` paints them, and it reads `--chart-line`, `--chart-line-2`,
+  `--chart-grid`, `--chart-fill-top`, `--chart-fill-bot` and the tooltip tokens
+  from the computed style **at draw time** — a deliberate CSS→JS contract, which
+  is why `applyTheme()` repaints the charts when the theme flips. Consequence
+  worth knowing: chart text is not in the DOM, so axe and every contrast tool
+  score it `incomplete` and no automated guard covers it.
+- **Toasts, skeletons and the confirm dialog are built at runtime**, not present
+  in `index.html` — `showToast()`, `setSkeleton()` and `showConfirmDialog()` in
+  `app/src/shared.ts`.
+- **Stat numerals count up.** `animateNumber()` in `shared.ts` tweens them on an
+  ease-out-expo curve deliberately matched to the CSS easing token.
+- **Chat content is rendered markdown**, not plain text: `app/src/chat/formatter.ts`
+  plus KaTeX for equations and Prism for code, sanitised through DOMPurify. The
+  vendor stylesheets for those load *after* `orbital.css` and do affect the
+  render — Prism's `#2d2d2d` code background outranked the theme until it was
+  pinned. Both are in `app/vendor/`.
+- **The icon set is a `<symbol>` sprite** inlined at the top of `index.html`, 58
+  glyphs, used as `<svg class="ic"><use href="#i-…"/></svg>`. Inner shapes carry
+  no stroke or fill so the page CSS owns them. Those 58 are all there is.
+- **Atmosphere in CSS**, for completeness, is `--aurora` (two radial washes) and
+  `--grain` (a static fractal-noise data-URI), painted under the body washes.
+
 ## Hard constraints — these fail the build, not a review
 
 - **No inline styles. At all.** The CSP is `style-src 'self'` with no
@@ -106,10 +141,14 @@ away.
 
 ## Where to look
 
-- `app/index.html` — every screen, verbatim
-- `app/chat/message-template.ts`, `app/chat/conversation-list.ts` — the two
-  places dynamic markup is generated, if you need to know what a chat message or
-  a conversation row is actually made of
+- `app/index.html` — every screen, verbatim, plus the icon sprite
+- `app/src/` — **the entire TypeScript source**, not a selection. Start with
+  `app.ts` (bootstrap, page switching, theme, canvas charts), `shared.ts`
+  (toasts, skeletons, icons, number tweening), `sakura-model.ts` (the petal
+  field), and `chat/message-template.ts` + `chat/conversation-list.ts` for the
+  two places dynamic markup is generated
+- `app/vendor/` — the KaTeX and Prism sheets that load after the theme
+- `app/assets/faust_avatar.jpg` — the default AI avatar
 - `assets/orbital.css` — tokens and the current skin; its top comment is the
   brand statement and its `HEADING CONTRACT` comment is the type rule
 - `assets/styles.css` — the older base sheet that `orbital.css` overrides by

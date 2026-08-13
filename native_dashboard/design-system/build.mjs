@@ -16,7 +16,7 @@
  * Output lands in design-system/out/ (gitignored — this file is the source).
  * The upload map lives in out/_upload.json for the DesignSync step.
  */
-import { readFileSync, writeFileSync, mkdirSync, rmSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync, copyFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -585,13 +585,27 @@ for (const f of FONTS) {
 // earlier pass produce a careful five-screen dashboard for an app that has six:
 // tokens and class names are recoverable from CSS, but screen inventory, page
 // titles, real content and the constraints that fail the build are not.
+// EVERY source file, not a selection. Several of the dashboard's most visible
+// layers exist in neither the CSS nor the markup: the sakura petal field is a
+// WebGL simulation (sakura-model.ts), the performance charts are drawn onto a
+// canvas by app.ts, and toasts and skeletons are built at runtime by shared.ts.
+// Read only the stylesheets and none of that is there to find — which is how a
+// pass over this project ended up designing an app with no petals behind it.
+const walk = (dir) => readdirSync(join(ROOT, dir), { withFileTypes: true })
+    .flatMap((e) => (e.isDirectory()
+        ? walk(`${dir}/${e.name}`)
+        : (e.name.endsWith('.ts') && !e.name.endsWith('.test.ts') ? [`${dir}/${e.name}`] : [])));
+
 const APP = [
     ['ui/index.html', 'app/index.html'],
-    ['src-ts/chat/message-template.ts', 'app/chat/message-template.ts'],
-    ['src-ts/chat/conversation-list.ts', 'app/chat/conversation-list.ts'],
-    ['src-ts/types.ts', 'app/types.ts'],
+    // vendor sheets load AFTER orbital.css and do change the render — prism's
+    // #2d2d2d code background outranked the theme until it was pinned.
+    ['ui/vendor/katex/katex.min.css', 'app/vendor/katex.min.css'],
+    ['ui/vendor/prism/prism-tomorrow.min.css', 'app/vendor/prism-tomorrow.min.css'],
+    ['ui/assets/faust_avatar.jpg', 'app/assets/faust_avatar.jpg'],
+    ...walk('src-ts').map((f) => [f, f.replace(/^src-ts/, 'app/src')]),
 ];
-mkdirSync(join(OUT, 'app/chat'), { recursive: true });
+for (const [, to] of APP) mkdirSync(dirname(join(OUT, to)), { recursive: true });
 for (const [from, to] of APP) copyFileSync(join(ROOT, from), join(OUT, to));
 copyFileSync(join(HERE, 'app-context.md'), join(OUT, 'app/CONTEXT.md'));
 
