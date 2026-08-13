@@ -512,6 +512,100 @@ for (const src of LIGHT_OF) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// PROPOSALS — the one place a card is allowed its own stylesheet.
+//
+// Every card above links the app's real CSS and nothing else, which is what
+// stops the system drifting from the app. The cost of that rule is that a spec
+// card can only ever show what already ships, so there is nowhere to look at an
+// idea before committing to it.
+//
+// A proposal card links the real CSS AND one override file, and every override
+// is scoped under `.p-<variant>` so the SAME page can show what ships directly
+// above what is being suggested. The override file is therefore not a mockup —
+// it is the patch. Approve a variant and its rules move into orbital.css
+// unchanged; reject it and one file is deleted and nothing else was touched.
+//
+// These live in their own `Proposals` group so nobody mistakes one for the spec.
+// ---------------------------------------------------------------------------
+const dataRows = (cls) => {
+    const row = (id, n, unit) => `
+    <div class="data-item">
+      <div class="data-item-left">
+        <input type="checkbox" class="data-item-checkbox" aria-label="Select channel ${id}">
+        <span class="data-item-id">${id}</span>
+      </div>
+      <span class="data-item-value"><span class="data-item-count">${n}</span> <span class="data-item-unit">${unit}</span></span>
+    </div>`;
+    return `<div class="data-section ${cls}"><div class="data-list">${[
+        ['aVeryLongUnbrokenChannelIdentifier1234567890aVeryLongUnbroken', '1', 'message'],
+        ['123456789012345671', '42', 'messages'],
+        ['123456789012345672', '99,999', 'messages'],
+        ['123456789012345673', '1,234,567', 'messages'],
+    ].map((r) => row(...r)).join('')}</div></div>`;
+};
+
+const PROPOSALS = [
+    {
+        path: 'proposals/data-table.html', group: 'Proposals', name: 'Data rows → a real table',
+        subtitle: 'Two ways out of the card-stack, side by side with what ships',
+        title: 'Data rows as a table',
+        blurb: 'The audit closed this one as <i>not proportionate</i>, and that judgement is worth re-taking with the options actually on screen. What ships is a <b>stack of bordered cards pretending to be a table</b>: every row carries its own border, radius and fill, so eight channels read as eight objects rather than one list — and the columns are aligned by reserving fixed <code>ch</code> measures, which works only because the unit happens to be &ldquo;message(s)&rdquo;. Both variants below share tracks with <code>subgrid</code> instead, so alignment stops depending on how long the words are. <b>Both also cost the same thing</b>, and it is the reason this was deferred: <code>subgrid</code> needs <code>.data-item-value</code> to be <code>display: contents</code>, which removes its box — and <code>ui-invariants.spec.ts</code> measures the gap between that box and <code>.data-item-id</code> to prove a long id never crushes the count. Taking either variant means rewriting that assertion to measure <code>.data-item-count</code> instead. That is a real edit to a real guard, not a formality.',
+        css: `/* PROPOSAL — Database rows. Scoped so one page can show both against what
+   ships. These rules are the patch: approve a variant and they move into
+   orbital.css unchanged. */
+
+/* Shared: the LIST owns the columns, every ROW borrows them. This is the whole
+   idea — four tracks defined once, so a cell in row 8 lines up with the same
+   cell in row 1 no matter how long either one's text is. */
+.p-a .data-list,
+.p-b .data-list {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr) max-content max-content;
+}
+.p-a .data-item,
+.p-b .data-item {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: center;
+    column-gap: var(--space-4);
+}
+/* The two wrappers step out of the way so their children become row cells. */
+.p-a .data-item-left, .p-a .data-item-value,
+.p-b .data-item-left, .p-b .data-item-value { display: contents; }
+/* With shared tracks the reserved measures are dead weight — drop them. */
+.p-a .data-item-count, .p-b .data-item-count { min-width: 0; text-align: right; }
+.p-a .data-item-unit,  .p-b .data-item-unit  { min-width: 0; }
+
+/* ---- A — hairline table -----------------------------------------------
+   Rows give up their card chrome. One panel, ruled; the eye tracks down a
+   column instead of across eight separate objects. */
+.p-a .data-list { gap: 0; }
+.p-a .data-item {
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--edge);
+    border-radius: 0;
+    padding: var(--space-3) var(--space-2);
+}
+.p-a .data-item:last-child { border-bottom: 0; }
+.p-a .data-item:hover { background: var(--cyan-50); }
+
+/* ---- B — keep the row cards, fix only the alignment -------------------
+   The conservative half of A: identical chrome to what ships, subgrid doing
+   the column work the fixed ch measures were faking. */
+.p-b .data-list { gap: 10px; }
+`,
+        body: `
+<div class="ds-set">
+  <div><p class="ds-note">Now — a stack of cards, columns held by fixed ch measures</p>${dataRows('p-now')}</div>
+  <div><p class="ds-note">A — hairline table: rows give up their card chrome, list owns the columns</p>${dataRows('p-a')}</div>
+  <div><p class="ds-note">B — same chrome as today, subgrid instead of reserved measures</p>${dataRows('p-b')}</div>
+</div>`,
+    },
+];
+
 const page = (card) => `<!-- @dsCard group="${card.group}" -->
 <!doctype html>
 <html lang="en" data-theme="${card.theme || 'dark'}">
@@ -520,7 +614,8 @@ const page = (card) => `<!-- @dsCard group="${card.group}" -->
 <title>${card.title}</title>
 <link rel="stylesheet" href="../assets/styles.css">
 <link rel="stylesheet" href="../assets/orbital.css">
-<link rel="stylesheet" href="../assets/preview.css">
+<link rel="stylesheet" href="../assets/preview.css">${card.css ? `
+<link rel="stylesheet" href="${card.path.replace(/^proposals\/(.+)\.html$/, '$1.css')}">` : ''}
 </head>
 <body>
 ${SPRITE}
@@ -534,10 +629,17 @@ rmSync(OUT, { recursive: true, force: true });
 mkdirSync(join(OUT, 'components'), { recursive: true });
 mkdirSync(join(OUT, 'foundations'), { recursive: true });
 mkdirSync(join(OUT, 'assets/vendor/fonts'), { recursive: true });
+mkdirSync(join(OUT, 'proposals'), { recursive: true });
 writeFileSync(join(OUT, 'assets/preview.css'), PREVIEW_CSS, 'utf8');
 
+CARDS.push(...PROPOSALS);
 for (const card of CARDS) {
     writeFileSync(join(OUT, card.path), page(card), 'utf8');
+    // A proposal's stylesheet IS the patch it is proposing — written beside the
+    // page it demonstrates, so approving one is a copy-paste into orbital.css.
+    if (card.css) {
+        writeFileSync(join(OUT, card.path.replace(/\.html$/, '.css')), card.css, 'utf8');
+    }
 }
 
 // Stage the app's own CSS and typefaces next to the previews. Copies, not
@@ -561,6 +663,10 @@ const upload = [
     { path: 'assets/preview.css', localPath: 'assets/preview.css' },
     ...FONTS.map((f) => ({ path: `assets/vendor/fonts/${f}.woff2`, localPath: `assets/vendor/fonts/${f}.woff2` })),
     ...CARDS.map((c) => ({ path: c.path, localPath: c.path })),
+    ...CARDS.filter((c) => c.css).map((c) => {
+        const p = c.path.replace(/\.html$/, '.css');
+        return { path: p, localPath: p };
+    }),
 ];
 writeFileSync(join(OUT, '_upload.json'), JSON.stringify({ upload, cards: CARDS.map(({ path, group, name, subtitle }) => ({ path, group, name, subtitle })) }, null, 2), 'utf8');
 

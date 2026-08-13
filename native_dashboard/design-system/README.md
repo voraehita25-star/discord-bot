@@ -22,26 +22,32 @@ What a spec in `build.mjs` actually owns is the **markup** a component is made
 of, plus a sentence about why it is shaped that way. Both are short, and the
 markup is the one thing a preview genuinely has to assert.
 
-## What this does and does not let you do
+## Proposals — the one exception, and why it is safe
 
-The rule above has a consequence worth stating outright, because it is the
-first thing anyone expects to be able to do here and it is the one thing this
-setup cannot: **you cannot design a proposal in the Design project and then
-port it to the app.** A card has no CSS of its own — it renders whatever
-`orbital.css` currently says — so a component cannot look different there than
-it does in the dashboard, by construction. Giving a card its own stylesheet to
-preview an unshipped idea would reintroduce exactly the drift this is built to
-prevent.
+A spec card has no CSS of its own, so it can only ever show what already ships.
+That is the point, and it costs you the ability to look at an idea before
+committing to it. **Proposal cards are the exception**, and they are narrow
+enough not to reopen the drift problem:
 
-Nor does claude.ai/design generate designs. `DesignSync` reads and writes files
-in a design-system project; it is a place to *hold and review* a system, not a
-tool that returns design work.
+- A proposal links the real CSS **and** one override file of its own.
+- Every rule in that override is scoped under `.p-<variant>`, so the **same
+  page shows what ships directly above what is being suggested** — and can show
+  two competing variants against it at once.
+- The override file is therefore **not a mockup: it is the patch**. Approve a
+  variant and its rules move into `orbital.css` unchanged; reject it and one
+  file is deleted and nothing else was ever touched.
+- They live in their own `Proposals` group so nobody mistakes one for the spec.
 
-So the working order is: **change the component, change its card, publish
-both in the same step.** The Design project is then the specification and the
-review surface — the place to look at one component on its own, in both themes,
-without booting the app and navigating to the screen it lives on. That is worth
-having. It is just not a sketchpad.
+Add one by giving a `PROPOSALS` entry a `css` field in `build.mjs`; the
+generator writes the stylesheet beside the page and links it last.
+
+What claude.ai/design does **not** do is generate designs. `DesignSync` reads
+and writes files in a design-system project — it holds and reviews a system, it
+does not return design work. The design still gets made here.
+
+So the working order for anything that ships is: **change the component, change
+its card, publish both in one step.** For anything still being decided, put it
+in `Proposals` first and look at it next to what it would replace.
 
 ## Build
 
