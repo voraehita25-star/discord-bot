@@ -108,8 +108,8 @@ Six first-pass findings did not survive checking. Recorded because the traps are
 
 - **The cascade is positional, not specific.** `orbital.css` wins over `styles.css` by link order alone. Comments in the file document repeated cascade bugs caused by exactly this. A dead rule added during this audit (a hanging indent already set 2,400 lines further down) was removed rather than left to become the tenth era.
 - **Token names lie by design and must stay that way.** `--accent-cyan` holds sakura pink, `--accent-azure` holds wisteria; `orbital.css` states the rule — values change, names never do. `tests-e2e/non-text-contrast.spec.ts` couples to real class names on purpose.
-- **93 tokens defined, 94 referenced** — one `var()` has no root definition.
-- **`--space-7` is missing** from the ramp (4/8/12/16/24/32/—/48), which is why there is no 6px rung for a small button to land on.
+- **103 tokens defined, 94 referenced — and every reference resolves.** An earlier draft of this audit reported the opposite (one `var()` with no definition), which came from a regex that only saw the first declaration on a line; the token block packs several per line. The real surplus is the other way round: **9 tokens are defined and never used.** Worth a sweep, not urgent.
+- **The space ramp has no rung between 4px and 8px** (4/8/12/16/24/32/48; `--space-7` at 40px is also absent but nothing asks for it). That gap is what the two hand-tuned 6px/4px button paddings were filling, and why folding them onto 8px moved a header by 4px.
 - **Prism loads after `orbital.css`**, so `pre[class*=language-]{background:#2d2d2d}` outranks the theme's code surface. Already patched; still structurally fragile.
 - **No component layer exists.** Components are class strings plus template-literal functions, so adding one means editing `index.html`, both stylesheets, and a TS template.
 
