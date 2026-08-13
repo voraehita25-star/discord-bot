@@ -580,6 +580,21 @@ for (const f of FONTS) {
     copyFileSync(join(ROOT, `ui/vendor/fonts/${f}.woff2`), join(OUT, `assets/vendor/fonts/${f}.woff2`));
 }
 
+// The app itself, so anyone designing against this has the real thing rather
+// than an inference from the CSS. Shipping only the stylesheets is what let an
+// earlier pass produce a careful five-screen dashboard for an app that has six:
+// tokens and class names are recoverable from CSS, but screen inventory, page
+// titles, real content and the constraints that fail the build are not.
+const APP = [
+    ['ui/index.html', 'app/index.html'],
+    ['src-ts/chat/message-template.ts', 'app/chat/message-template.ts'],
+    ['src-ts/chat/conversation-list.ts', 'app/chat/conversation-list.ts'],
+    ['src-ts/types.ts', 'app/types.ts'],
+];
+mkdirSync(join(OUT, 'app/chat'), { recursive: true });
+for (const [from, to] of APP) copyFileSync(join(ROOT, from), join(OUT, to));
+copyFileSync(join(HERE, 'app-context.md'), join(OUT, 'app/CONTEXT.md'));
+
 // The DesignSync step reads this: project path -> path on disk, relative to
 // design-system/out (the localDir the plan is finalized against).
 const upload = [
@@ -587,6 +602,8 @@ const upload = [
     { path: 'assets/orbital.css', localPath: 'assets/orbital.css' },
     { path: 'assets/preview.css', localPath: 'assets/preview.css' },
     ...FONTS.map((f) => ({ path: `assets/vendor/fonts/${f}.woff2`, localPath: `assets/vendor/fonts/${f}.woff2` })),
+    { path: 'app/CONTEXT.md', localPath: 'app/CONTEXT.md' },
+    ...APP.map(([, to]) => ({ path: to, localPath: to })),
     ...CARDS.map((c) => ({ path: c.path, localPath: c.path })),
     ...CARDS.filter((c) => c.css).map((c) => {
         const p = c.path.replace(/\.html$/, '.css');
