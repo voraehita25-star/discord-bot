@@ -236,7 +236,8 @@ const CARDS = [
         path: 'components/data-row.html', group: 'Panels', name: 'Data rows',
         subtitle: 'Section eyebrow + id/count rows, with the long-id case',
         title: 'Data rows',
-        blurb: 'The count is <b>two</b> elements, not one string. Rendered as &ldquo;1&nbsp;message&rdquo; beside &ldquo;1,234,567&nbsp;messages&rdquo; and right-aligned as a whole, the unit&rsquo;s own length decided where each row&rsquo;s digits landed — the one thing a numeric column exists to prevent. The digits now hold a right-aligned sub-column and the unit a left-aligned one at lower emphasis, so the figures read straight down the list. The id ellipsizes rather than pushing the count off the row; an invariant measures the gap between them with an adversarially long identifier, and a second checks the pluralization is real (&ldquo;1 message&rdquo;, never &ldquo;1 messages&rdquo;).',
+        blurb: 'One ruled list, not eight cards in a box. Rows carried their own border, fill and radius inside an already-bordered section — a box in a box, and the last place that pattern survived here after the charts section gave it up. Rows are rules now; the section stays the panel, and ~9% more of a channel list fits (54px → 49px). Selection had to be re-said when the border went: it leaned on <code>border-color</code>, and a 1px bottom rule cannot carry &ldquo;this row is armed for deletion&rdquo;, so the fill stays and a left rail does the work — the same device the log viewer uses to rank a line. The count is <b>two</b> elements, not one string: rendered as &ldquo;1&nbsp;message&rdquo; beside &ldquo;1,234,567&nbsp;messages&rdquo; and right-aligned whole, the unit&rsquo;s own length decided where each row&rsquo;s digits landed. Reserved measures put every row&rsquo;s right edge within 1px of every other; <code>subgrid</code> was measured against this and rejected, because it needs <code>display: contents</code> on the value, which removes the box <code>ui-invariants</code> reads to prove a long id never crushes the count.',
+
         body: `
 <div class="data-section">
   <h2>Recent Channels</h2>
@@ -528,104 +529,7 @@ for (const src of LIGHT_OF) {
 //
 // These live in their own `Proposals` group so nobody mistakes one for the spec.
 // ---------------------------------------------------------------------------
-const dataRows = (cls) => {
-    const row = (id, n, unit) => `
-    <div class="data-item">
-      <div class="data-item-left">
-        <input type="checkbox" class="data-item-checkbox" aria-label="Select channel ${id}">
-        <span class="data-item-id">${id}</span>
-      </div>
-      <span class="data-item-value"><span class="data-item-count">${n}</span> <span class="data-item-unit">${unit}</span></span>
-    </div>`;
-    return `<div class="data-section ${cls}"><div class="data-list">${[
-        ['aVeryLongUnbrokenChannelIdentifier1234567890aVeryLongUnbroken', '1', 'message'],
-        ['123456789012345671', '42', 'messages'],
-        ['123456789012345672', '99,999', 'messages'],
-        ['123456789012345673', '1,234,567', 'messages'],
-    ].map((r) => row(...r)).join('')}</div></div>`;
-};
-
-const PROPOSALS = [
-    {
-        path: 'proposals/data-table.html', group: 'Proposals', name: 'Data rows → a real table',
-        subtitle: 'Two ways out of the card-stack, side by side with what ships',
-        title: 'Data rows as a table',
-        blurb: 'The audit closed this one as <i>not proportionate</i>, and re-taking that judgement with the options on screen produced a fourth. <b>Measured, the alignment argument collapses:</b> the digits already line up in what ships — the reserved <code>ch</code> measures put every row&rsquo;s right edge within 1px of every other — so <code>subgrid</code> buys no alignment that is not already there, only robustness if a unit ever grows past 8ch or a count past 10ch. And its price is real and measurable: <code>subgrid</code> needs <code>.data-item-value</code> to be <code>display: contents</code>, which removes its box, and the id&rarr;count gap the invariant reads goes from a sane <code>20px</code> to <code>−387</code>. That guard exists to prove a long id never crushes the count; both A and B would need it rewritten. <b>C is the recommendation.</b> The change worth having was never the alignment — it was the chrome: eight bordered cards inside a bordered section is a box in a box, and it is the last place the nested-panel pattern survives in this app (the charts section gave it up two eras ago). C takes exactly that, keeps today&rsquo;s alignment, and touches no guard. Rows go 54px&rarr;49px, so ~9% more of them fit. It also keeps the count and its unit together, which A and B pull into separate columns — &ldquo;1&nbsp;&nbsp;&nbsp;&nbsp;message&rdquo; reads worse than &ldquo;1 message&rdquo; for the sake of a column nobody scans.',
-
-        css: `/* PROPOSAL — Database rows. Scoped so one page can show both against what
-   ships. These rules are the patch: approve a variant and they move into
-   orbital.css unchanged. */
-
-/* Shared: the LIST owns the columns, every ROW borrows them. This is the whole
-   idea — four tracks defined once, so a cell in row 8 lines up with the same
-   cell in row 1 no matter how long either one's text is. */
-.p-a .data-list,
-.p-b .data-list {
-    display: grid;
-    grid-template-columns: max-content minmax(0, 1fr) max-content max-content;
-}
-.p-a .data-item,
-.p-b .data-item {
-    display: grid;
-    grid-column: 1 / -1;
-    grid-template-columns: subgrid;
-    align-items: center;
-    column-gap: var(--space-4);
-}
-/* The two wrappers step out of the way so their children become row cells. */
-.p-a .data-item-left, .p-a .data-item-value,
-.p-b .data-item-left, .p-b .data-item-value { display: contents; }
-/* With shared tracks the reserved measures are dead weight — drop them. */
-.p-a .data-item-count, .p-b .data-item-count { min-width: 0; text-align: right; }
-.p-a .data-item-unit,  .p-b .data-item-unit  { min-width: 0; }
-
-/* ---- A — hairline table -----------------------------------------------
-   Rows give up their card chrome. One panel, ruled; the eye tracks down a
-   column instead of across eight separate objects. */
-.p-a .data-list { gap: 0; }
-.p-a .data-item {
-    background: none;
-    border: 0;
-    border-bottom: 1px solid var(--edge);
-    border-radius: 0;
-    padding: var(--space-3) var(--space-2);
-}
-.p-a .data-item:last-child { border-bottom: 0; }
-.p-a .data-item:hover { background: var(--cyan-50); }
-
-/* ---- C — A's chrome, WITHOUT the subgrid ------------------------------
-   Measuring A and B is what produced this one. The digits already line up in
-   what ships: the reserved ch measures put every row's right edge within 1px
-   of every other, so subgrid buys no alignment that is not already there —
-   only robustness if a unit ever grows past 8ch or a count past 10ch. That is
-   a hypothetical, and its price is real: rewriting the invariant that proves a
-   long id never crushes the count. C takes the half that is actually visible
-   (the row chrome) and leaves the guard alone. */
-.p-c .data-list { gap: 0; }
-.p-c .data-item {
-    background: none;
-    border: 0;
-    border-bottom: 1px solid var(--edge);
-    border-radius: 0;
-    padding: var(--space-3) var(--space-2);
-}
-.p-c .data-item:last-child { border-bottom: 0; }
-.p-c .data-item:hover { background: var(--cyan-50); }
-
-/* ---- B — keep the row cards, fix only the alignment -------------------
-   The conservative half of A: identical chrome to what ships, subgrid doing
-   the column work the fixed ch measures were faking. */
-.p-b .data-list { gap: 10px; }
-`,
-        body: `
-<div class="ds-set">
-  <div><p class="ds-note">Now — a stack of cards, columns held by fixed ch measures</p>${dataRows('p-now')}</div>
-  <div><p class="ds-note">A — hairline table: rows give up their card chrome, list owns the columns</p>${dataRows('p-a')}</div>
-  <div><p class="ds-note">B — same chrome as today, subgrid instead of reserved measures</p>${dataRows('p-b')}</div>
-  <div><p class="ds-note">C — A's chrome, today's alignment: the visible half, none of the guard cost</p>${dataRows('p-c')}</div>
-</div>`,
-    },
-];
+const PROPOSALS = [];
 
 const page = (card) => `<!-- @dsCard group="${card.group}" -->
 <!doctype html>

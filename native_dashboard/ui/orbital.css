@@ -4774,3 +4774,48 @@ html[data-theme="light"] .sidebar .theme-toggle:hover {
     /* the rules above pin this to column 2, which does not exist here */
     .setting-row > .btn:only-child { grid-column: 1; justify-self: end; }
 }
+
+/* ---------------------------------------------------------------------------
+   DATA ROWS — one ruled list, not eight cards in a box.
+   Merged from the `data-table` proposal, variant C (the Proposals group in the
+   Claude Design project; the card carried four options and the measurements
+   that chose between them).
+
+   The change is the CHROME, and only the chrome. Eight bordered, filled,
+   rounded rows inside an already-bordered .data-section is a box in a box —
+   the last place the nested-panel pattern survived here, after the charts
+   section gave it up. Rows become rules; the section stays the panel.
+
+   What this deliberately does NOT do is touch the alignment. The competing
+   proposals moved the columns onto `subgrid`, which reads well until you
+   measure it: the digits already land within 1px of each other from the
+   reserved ch measures on .data-item-count/-unit, so subgrid bought no
+   alignment that was not already there — and it needs .data-item-value to be
+   `display: contents`, which removes its box and takes the id→count gap that
+   ui-invariants reads from 20px to -387. That guard proves a long id never
+   crushes the count. Not worth rewriting for a hypothesis about longer units.
+
+   Rows go 54px → 49px, so ~9% more of a channel list fits on screen.
+   --------------------------------------------------------------------------- */
+.data-list { gap: 0; }
+.data-item {
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--edge);
+    border-radius: 0;
+    padding: var(--space-3) var(--space-2);
+}
+.data-item:last-child { border-bottom: 0; }
+/* The border carried hover before, and there is no border now. */
+.data-item:hover { background: var(--cyan-100); border-color: var(--edge); }
+
+/* Selection has to be re-said for the same reason: `.data-item.selected` in the
+   base sheet leans on `border-color`, and a 1px bottom rule is not enough to
+   carry "this row is armed for deletion". The fill stays and a left rail does
+   the work — the same device the log viewer uses to rank a line, which is
+   exactly the job here. */
+.data-item.selected {
+    background: var(--cyan-200);
+    box-shadow: inset 3px 0 0 var(--accent-cyan);
+}
+.data-item.selected:hover { background: var(--cyan-300); }
