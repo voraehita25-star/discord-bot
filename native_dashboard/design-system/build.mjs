@@ -550,7 +550,8 @@ const PROPOSALS = [
         path: 'proposals/data-table.html', group: 'Proposals', name: 'Data rows → a real table',
         subtitle: 'Two ways out of the card-stack, side by side with what ships',
         title: 'Data rows as a table',
-        blurb: 'The audit closed this one as <i>not proportionate</i>, and that judgement is worth re-taking with the options actually on screen. What ships is a <b>stack of bordered cards pretending to be a table</b>: every row carries its own border, radius and fill, so eight channels read as eight objects rather than one list — and the columns are aligned by reserving fixed <code>ch</code> measures, which works only because the unit happens to be &ldquo;message(s)&rdquo;. Both variants below share tracks with <code>subgrid</code> instead, so alignment stops depending on how long the words are. <b>Both also cost the same thing</b>, and it is the reason this was deferred: <code>subgrid</code> needs <code>.data-item-value</code> to be <code>display: contents</code>, which removes its box — and <code>ui-invariants.spec.ts</code> measures the gap between that box and <code>.data-item-id</code> to prove a long id never crushes the count. Taking either variant means rewriting that assertion to measure <code>.data-item-count</code> instead. That is a real edit to a real guard, not a formality.',
+        blurb: 'The audit closed this one as <i>not proportionate</i>, and re-taking that judgement with the options on screen produced a fourth. <b>Measured, the alignment argument collapses:</b> the digits already line up in what ships — the reserved <code>ch</code> measures put every row&rsquo;s right edge within 1px of every other — so <code>subgrid</code> buys no alignment that is not already there, only robustness if a unit ever grows past 8ch or a count past 10ch. And its price is real and measurable: <code>subgrid</code> needs <code>.data-item-value</code> to be <code>display: contents</code>, which removes its box, and the id&rarr;count gap the invariant reads goes from a sane <code>20px</code> to <code>−387</code>. That guard exists to prove a long id never crushes the count; both A and B would need it rewritten. <b>C is the recommendation.</b> The change worth having was never the alignment — it was the chrome: eight bordered cards inside a bordered section is a box in a box, and it is the last place the nested-panel pattern survives in this app (the charts section gave it up two eras ago). C takes exactly that, keeps today&rsquo;s alignment, and touches no guard. Rows go 54px&rarr;49px, so ~9% more of them fit. It also keeps the count and its unit together, which A and B pull into separate columns — &ldquo;1&nbsp;&nbsp;&nbsp;&nbsp;message&rdquo; reads worse than &ldquo;1 message&rdquo; for the sake of a column nobody scans.',
+
         css: `/* PROPOSAL — Database rows. Scoped so one page can show both against what
    ships. These rules are the patch: approve a variant and they move into
    orbital.css unchanged. */
@@ -592,6 +593,25 @@ const PROPOSALS = [
 .p-a .data-item:last-child { border-bottom: 0; }
 .p-a .data-item:hover { background: var(--cyan-50); }
 
+/* ---- C — A's chrome, WITHOUT the subgrid ------------------------------
+   Measuring A and B is what produced this one. The digits already line up in
+   what ships: the reserved ch measures put every row's right edge within 1px
+   of every other, so subgrid buys no alignment that is not already there —
+   only robustness if a unit ever grows past 8ch or a count past 10ch. That is
+   a hypothetical, and its price is real: rewriting the invariant that proves a
+   long id never crushes the count. C takes the half that is actually visible
+   (the row chrome) and leaves the guard alone. */
+.p-c .data-list { gap: 0; }
+.p-c .data-item {
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--edge);
+    border-radius: 0;
+    padding: var(--space-3) var(--space-2);
+}
+.p-c .data-item:last-child { border-bottom: 0; }
+.p-c .data-item:hover { background: var(--cyan-50); }
+
 /* ---- B — keep the row cards, fix only the alignment -------------------
    The conservative half of A: identical chrome to what ships, subgrid doing
    the column work the fixed ch measures were faking. */
@@ -602,6 +622,7 @@ const PROPOSALS = [
   <div><p class="ds-note">Now — a stack of cards, columns held by fixed ch measures</p>${dataRows('p-now')}</div>
   <div><p class="ds-note">A — hairline table: rows give up their card chrome, list owns the columns</p>${dataRows('p-a')}</div>
   <div><p class="ds-note">B — same chrome as today, subgrid instead of reserved measures</p>${dataRows('p-b')}</div>
+  <div><p class="ds-note">C — A's chrome, today's alignment: the visible half, none of the guard cost</p>${dataRows('p-c')}</div>
 </div>`,
     },
 ];
