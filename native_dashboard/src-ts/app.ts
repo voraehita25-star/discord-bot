@@ -23,6 +23,7 @@ import {
     showConfirmDialog,
     icon,
     countLabel,
+    countParts,
     prefersReducedMotion,
 } from './shared.js';
 import {
@@ -3191,6 +3192,28 @@ async function loadDbStats(): Promise<void> {
         const channels = channelsRaw ?? [];
         const users = usersRaw ?? [];
 
+        /**
+         * The count cell for a data row, built in two parts so the digits can
+         * hold their own sub-column and line up down the list (see
+         * `.data-item-count` / `.data-item-unit` in orbital.css). The literal
+         * space between them is load-bearing: `.data-item-value.textContent`
+         * has to stay "1 message", which is what the ui-invariants check for
+         * hardcoded plurals reads.
+         */
+        const countCell = (n: number): HTMLSpanElement => {
+            const { value, unit } = countParts(n, 'message');
+            const cell = document.createElement('span');
+            cell.className = 'data-item-value';
+            const num = document.createElement('span');
+            num.className = 'data-item-count';
+            num.textContent = value;
+            const noun = document.createElement('span');
+            noun.className = 'data-item-unit';
+            noun.textContent = unit;
+            cell.append(num, ' ', noun);
+            return cell;
+        };
+
         const channelsList = document.getElementById('channels-list');
         if (channelsList) {
             if (channels.length === 0) {
@@ -3234,9 +3257,7 @@ async function loadDbStats(): Promise<void> {
                     leftDiv.appendChild(checkbox);
                     leftDiv.appendChild(idSpan);
 
-                    const valSpan = document.createElement('span');
-                    valSpan.className = 'data-item-value';
-                    valSpan.textContent = countLabel(ch.message_count, 'message');
+                    const valSpan = countCell(ch.message_count);
 
                     item.appendChild(leftDiv);
                     item.appendChild(valSpan);
@@ -3269,9 +3290,7 @@ async function loadDbStats(): Promise<void> {
                     idSpan.className = 'data-item-id';
                     idSpan.textContent = String(u.user_id);
                     idSpan.title = String(u.user_id); // ellipsized when long
-                    const valSpan = document.createElement('span');
-                    valSpan.className = 'data-item-value';
-                    valSpan.textContent = countLabel(u.message_count, 'message');
+                    const valSpan = countCell(u.message_count);
                     item.appendChild(idSpan);
                     item.appendChild(valSpan);
                     usersList.appendChild(item);

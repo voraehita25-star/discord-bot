@@ -236,14 +236,15 @@ const CARDS = [
         path: 'components/data-row.html', group: 'Panels', name: 'Data rows',
         subtitle: 'Section eyebrow + id/count rows, with the long-id case',
         title: 'Data rows',
-        blurb: 'The id column ellipsizes rather than pushing the count off the row — an invariant measures the gap between them with an adversarially long identifier. Counts carry tabular numerals and real pluralization (&ldquo;1 message&rdquo;, not &ldquo;1 messages&rdquo;), which is also asserted.',
+        blurb: 'The count is <b>two</b> elements, not one string. Rendered as &ldquo;1&nbsp;message&rdquo; beside &ldquo;1,234,567&nbsp;messages&rdquo; and right-aligned as a whole, the unit&rsquo;s own length decided where each row&rsquo;s digits landed — the one thing a numeric column exists to prevent. The digits now hold a right-aligned sub-column and the unit a left-aligned one at lower emphasis, so the figures read straight down the list. The id ellipsizes rather than pushing the count off the row; an invariant measures the gap between them with an adversarially long identifier, and a second checks the pluralization is real (&ldquo;1 message&rdquo;, never &ldquo;1 messages&rdquo;).',
         body: `
 <div class="data-section">
   <h2>Recent Channels</h2>
   <div class="data-list">
-    <div class="data-item"><span class="data-item-id">aVeryLongUnbrokenChannelIdentifier1234567890aVeryLongUnbroken</span><span class="data-item-value">1 message</span></div>
-    <div class="data-item"><span class="data-item-id">123456789012345671</span><span class="data-item-value">42 messages</span></div>
-    <div class="data-item"><span class="data-item-id">123456789012345672</span><span class="data-item-value">1,234,567 messages</span></div>
+    <div class="data-item"><span class="data-item-id">aVeryLongUnbrokenChannelIdentifier1234567890aVeryLongUnbroken</span><span class="data-item-value"><span class="data-item-count">1</span> <span class="data-item-unit">message</span></span></div>
+    <div class="data-item"><span class="data-item-id">123456789012345671</span><span class="data-item-value"><span class="data-item-count">42</span> <span class="data-item-unit">messages</span></span></div>
+    <div class="data-item"><span class="data-item-id">123456789012345672</span><span class="data-item-value"><span class="data-item-count">99,999</span> <span class="data-item-unit">messages</span></span></div>
+    <div class="data-item"><span class="data-item-id">123456789012345673</span><span class="data-item-value"><span class="data-item-count">1,234,567</span> <span class="data-item-unit">messages</span></span></div>
   </div>
 </div>`,
     },
@@ -299,7 +300,7 @@ const CARDS = [
         path: 'components/inputs.html', group: 'Forms', name: 'Inputs',
         subtitle: 'Text, textarea, select, checkbox, toggle switch, range',
         title: 'Inputs',
-        blurb: 'Every control computes <code>appearance: none</code> — an invariant sweeps the app for any that slipped back to OS chrome, and a second one checks each select kept a drawn chevron after giving up the native one. Focus is a visible ring in both themes and under forced-colors.',
+        blurb: 'Every control computes <code>appearance: none</code> — an invariant sweeps the app for any that slipped back to OS chrome, and a second checks each select kept a drawn chevron after giving up the native one. The textarea was the last holdout: a resizable field keeps the platform&rsquo;s grabber whatever the stylesheet says, so the drag stays (these are long-form fields and people do pull them open) and the handle is redrawn as a grip in the app&rsquo;s own idiom — painted with a background gradient, the same technique the corner ticks use. Focus is a visible ring in both themes and under forced-colors.',
         body: `
 <div class="ds-set">
   <div class="ds-stage ds-col">
@@ -311,6 +312,20 @@ const CARDS = [
     <label class="option-row"><span><svg class="ic" aria-hidden="true"><use href="#i-bolt"/></svg> Enable thinking mode</span><input type="checkbox" checked></label>
     <label class="option-row"><span>Compact density</span><span class="toggle-switch"><input type="checkbox" checked><span class="toggle-slider"></span></span></label>
   </div>
+</div>`,
+    },
+    {
+        path: 'components/settings-row.html', group: 'Forms', name: 'Settings row',
+        subtitle: 'Caption beside field, until the measure runs out',
+        title: 'Settings row',
+        blurb: 'A caption column beside its field is a good shape while there is room for both. Below ~860px it stops paying for itself: at the 800&times;600 window minimum a fixed 200px caption is most of a 660px measure spent on a word, and &ldquo;Display Name&rdquo; was the label being squeezed by it. The row stacks there instead — what every form does when the measure runs out — and hands the 224px back to the control. The commit button sits at the fields&rsquo; right edge, which is where a form&rsquo;s commit belongs.',
+        body: `
+<div class="settings-card">
+  <h2>Profile</h2>
+  <div class="setting-row"><label class="setting-label" for="ds-dn">Display Name</label><input id="ds-dn" class="setting-input" type="text" value="TestUser"></div>
+  <div class="setting-row"><label class="setting-label" for="ds-ab">About You</label><textarea id="ds-ab" class="setting-textarea" rows="3" placeholder="Tell AI about yourself (hobbies, work, interests…)"></textarea></div>
+  <div class="setting-row"><label class="setting-label" for="ds-rf">Auto-refresh</label><select id="ds-rf" class="setting-select"><option>Every 5 seconds</option><option>Off</option></select></div>
+  <div class="setting-row"><button class="btn btn-primary">Save Profile</button></div>
 </div>`,
     },
     {
@@ -377,7 +392,7 @@ const CARDS = [
     </div>
   </div></div>
   <div><p class="ds-note">In-list scale</p><div class="ds-stage" style="max-width: 280px">
-    <div class="no-conversations"><p>No conversations yet</p><p>Start a new chat to see it here.</p></div>
+    <div class="no-conversations"><p>No conversations yet</p><p>Use New above to start one.</p></div>
   </div></div>
 </div>`,
     },

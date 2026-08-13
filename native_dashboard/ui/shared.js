@@ -67,7 +67,23 @@ export function normalizeSqliteUtc(iso) {
  * -s plurals are covered — pass `plural` explicitly for anything else.
  */
 export function countLabel(n, singular, plural = `${singular}s`) {
-    return `${n.toLocaleString()} ${n === 1 ? singular : plural}`;
+    const p = countParts(n, singular, plural);
+    return `${p.value} ${p.unit}`;
+}
+/**
+ * The same count, split so a numeric column can align its digits.
+ *
+ * A data row renders "1 message" next to "1,234,567 messages"; right-aligning
+ * that as one string lets the unit's own length decide where each row's digits
+ * land, which is the one thing a numeric column exists to prevent. The two
+ * parts go into their own sub-columns (see `.data-item-count` /
+ * `.data-item-unit`).
+ *
+ * `countLabel` is built ON this rather than beside it, so the pluralisation
+ * rule cannot come to differ between the joined and split forms.
+ */
+export function countParts(n, singular, plural = `${singular}s`) {
+    return { value: n.toLocaleString(), unit: n === 1 ? singular : plural };
 }
 // ============================================================================
 // Motion preferences

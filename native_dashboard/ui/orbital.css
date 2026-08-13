@@ -4695,3 +4695,82 @@ html[data-theme="light"] .sidebar .theme-toggle:hover {
     clip-path: inset(50%);
     white-space: nowrap;
 }
+
+/* ============================================================================
+   AUDIT FOLLOW-THROUGH — the four findings docs/DASHBOARD_UI_AUDIT.md left
+   open, closed.
+   ----------------------------------------------------------------------------
+   This block sits at the end of the file rather than beside each subject
+   because two of the four have to outrank rules declared above them: the
+   settings grid is set at ".setting-row { grid-template-columns: minmax(0,
+   260px) … }" and re-set 700 lines later at 200px, and .setting-row > .btn
+   pins itself to column 2 in both places. A media query adds no specificity,
+   so a stacking rule anywhere earlier would lose. The other two would sit
+   happily next to their subjects; keeping the set together is worth more than
+   moving two of them.
+   ============================================================================ */
+
+/* M10 — a numeric column that actually reads as one.
+   Counts render as "1 message" … "1,234,567 messages": number and unit in one
+   right-aligned string, so the unit's own length pushed every row's digits to
+   a different offset — the one thing a numeric column exists to prevent. The
+   two parts now hold their own sub-columns, digits right and unit left, so the
+   figures line up down the list. Fixed measures rather than subgrid on
+   purpose: .data-item-value has to keep a box, because ui-invariants measures
+   the gap between it and .data-item-id directly, and `display: contents`
+   would hand that test a zero rect. */
+.data-item-value {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.5ch;
+}
+.data-item-count {
+    min-width: 10ch;          /* 1,234,567 is 9 — one spare column of headroom */
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+.data-item-unit {
+    min-width: 8ch;
+    text-align: left;
+    color: var(--text-tertiary);
+}
+
+/* L3 — paired role cards, one description a line long and the other two, so
+   the two text blocks sat at different rhythms inside otherwise equal cards.
+   Reserve the taller measure for both. */
+.role-card-desc {
+    line-height: 1.35;
+    min-height: 2.7em;
+}
+
+/* L4 — the one control still drawing OS chrome. Everything else in this app
+   computes `appearance: none` (there is an invariant sweeping for stragglers),
+   but a resizable textarea keeps the platform's grabber, which no stylesheet
+   here has any say over. The drag stays — these two fields are long-form and
+   people do want to pull them open — and the handle becomes a drawn grip in
+   the app's own idiom: painted with a background gradient, the same technique
+   the corner ticks use. */
+.setting-textarea::-webkit-resizer { background: transparent; }
+.setting-textarea {
+    background-image: repeating-linear-gradient(315deg,
+        var(--edge-strong) 0 1.5px, transparent 1.5px 4px);
+    background-repeat: no-repeat;
+    background-size: 10px 10px;
+    background-position: calc(100% - 5px) calc(100% - 5px);
+}
+
+/* M11 — below ~860px the label column stops paying for itself. A fixed 200px
+   caption beside a field is a good shape while there is room for both; at the
+   800x600 window minimum it is 200px of the ~660px available spent on a word,
+   and "Display Name" was the thing being squeezed. Stack instead, which is
+   what every form does when the measure runs out, and hand the 224px back to
+   the control. */
+@media (max-width: 860px) {
+    .setting-row {
+        grid-template-columns: minmax(0, 1fr);
+        align-items: start;
+        row-gap: var(--space-2);
+    }
+    /* the rules above pin this to column 2, which does not exist here */
+    .setting-row > .btn:only-child { grid-column: 1; justify-self: end; }
+}

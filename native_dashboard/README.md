@@ -310,9 +310,27 @@ target/release/bundle/nsis/디스코드 봇 대시보드_3.5.0_x64-setup.exe  # 
 
 ## 🎨 UI
 
-- Modern dark theme (Fluent Design inspired)
-- Korean title: 디스코드 봇 대시보드
-- Custom anime-style icon
+**Sakura Midnight (밤벚꽃)** — a plum-midnight canvas with luminous sakura pink
+as the primary accent and wisteria as the secondary, on ORBITAL "command deck"
+bones: mono eyebrows, corner ticks reserved for the panel each page is *about*,
+and tabular telemetry. The light theme is **새벽 (dawn)** — the same garden at
+sunrise, on warm blush paper with rose ink. It is a separate design, not a hue
+flip: on midnight a panel separates by its own lift, on paper the border has to
+do it, so light carries a heavier edge and a two-layer shadow.
+
+- Type: Bricolage Grotesque (display) · Chakra Petch (UI) · JetBrains Mono
+  (telemetry). Self-hosted — the CSP is `font-src 'self'`. Korean falls back to
+  Malgun Gothic / Noto Sans KR.
+- Headings follow one rule: a heading either **names a thing** (display face,
+  Title Case) or **labels a group** (mono, uppercase). Body copy is never mono.
+- Korean product name: 디스코드 봇 대시보드. UI copy is English, with `lang="ko"`
+  on each Korean string.
+- Custom monoline SVG icon sprite, ~45 glyphs, inlined in `index.html`.
+
+The design system is published to Claude Design and generated from the real
+stylesheets, so it cannot drift from the app — see
+[`design-system/README.md`](design-system/README.md). The most recent audit and
+what it changed is in [`docs/DASHBOARD_UI_AUDIT.md`](../docs/DASHBOARD_UI_AUDIT.md).
 
 ## 📝 Commands
 

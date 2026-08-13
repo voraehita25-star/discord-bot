@@ -91,7 +91,7 @@ export class ConversationList {
             container.innerHTML = `
                 <div class="no-conversations">
                     <p>No conversations yet</p>
-                    <p>Start a new chat!</p>
+                    <p>Use New above to start one.</p>
                 </div>
             `;
             this.detachRowHandlers(container);

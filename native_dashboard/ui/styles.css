@@ -243,7 +243,7 @@ html[data-theme="light"] kbd {
 .toast {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-3);
     padding: 14px 18px;
     border-radius: 12px;
     background: var(--bg-secondary);
@@ -251,7 +251,7 @@ html[data-theme="light"] kbd {
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     backdrop-filter: blur(10px);
     transform: translateX(110%);
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: all var(--dur-base) cubic-bezier(0.4, 0, 0.2, 1);
     opacity: 0;
 }
 
@@ -295,9 +295,9 @@ html[data-theme="light"] kbd {
     color: var(--text-secondary);
     font-size: 20px;
     cursor: pointer;
-    padding: 0 4px;
+    padding: 0 var(--space-1);
     line-height: 1;
-    transition: color 0.2s;
+    transition: color var(--dur-base);
 }
 
 .toast-close:hover {
@@ -343,7 +343,7 @@ body {
     color: var(--text-primary);
     height: 100vh;
     overflow: hidden;
-    transition: background 0.3s ease, color 0.3s ease;
+    transition: background var(--dur-base) ease, color var(--dur-base) ease;
 }
 
 /* Accessibility: keyboard skip-link — visually hidden until focused, then
@@ -353,7 +353,7 @@ body {
     left: 8px;
     top: -48px;
     z-index: 1000;
-    padding: 8px 16px;
+    padding: var(--space-2) var(--space-4);
     /* Cyan accent + page-bg ink reads AA in BOTH themes (dark: #060910 on
        #3df5ff ≈ 15:1; light: #e9f1f7 on #075f73 ≈ 7:1). The previous white-on-
        --accent-purple was 2.47:1 in dark theme (azure #6aa6ff) — a WCAG 1.4.3
@@ -363,7 +363,7 @@ body {
     border-radius: 8px;
     text-decoration: none;
     font-weight: 600;
-    transition: top 0.2s ease;
+    transition: top var(--dur-base) ease;
 }
 .skip-link:focus {
     top: 8px;
@@ -385,7 +385,7 @@ body {
     flex-direction: column;
     padding: 20px;
     box-shadow: 4px 0 24px rgba(0, 0, 0, 0.3);
-    transition: background 0.3s ease;
+    transition: background var(--dur-base) ease;
 }
 
 /* Theme Toggle Button */
@@ -393,14 +393,14 @@ body {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 12px 16px;
-    margin-bottom: 12px;
+    padding: var(--space-3) var(--space-4);
+    margin-bottom: var(--space-3);
     background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
     border-radius: 12px;
     color: var(--text-secondary);
     cursor: pointer;
-    transition: all 0.25s ease;
+    transition: all var(--dur-base) ease;
 }
 
 .theme-toggle:hover {
@@ -424,7 +424,7 @@ body {
     display: flex;
     align-items: center;
     gap: 14px;
-    padding: 16px;
+    padding: var(--space-4);
     margin-bottom: 28px;
     background: linear-gradient(135deg, var(--glow-pink), var(--glow-purple));
     border-radius: 16px;
@@ -463,7 +463,7 @@ body {
     font-size: 15px;
     cursor: pointer;
     border-radius: 12px;
-    transition: all 0.25s ease;
+    transition: all var(--dur-base) ease;
     text-align: left;
 }
 
@@ -615,7 +615,7 @@ h1 {
 
 h2 {
     font-size: 18px;
-    margin-bottom: 16px;
+    margin-bottom: var(--space-4);
     color: var(--text-secondary);
 }
 
@@ -631,12 +631,12 @@ h2 {
     margin-bottom: 28px;
     backdrop-filter: blur(10px);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    transition: background 0.3s ease;
+    transition: background var(--dur-base) ease;
 }
 
 .control-info h2 {
     color: var(--text-primary);
-    margin-bottom: 8px;
+    margin-bottom: var(--space-2);
     font-size: 22px;
 }
 
@@ -651,7 +651,7 @@ h2 {
 
 /* Anime Buttons */
 .btn {
-    padding: 12px 24px;
+    padding: var(--space-3) var(--space-5);
     border: 1px solid var(--border-color);
     border-radius: 12px;
     background: rgba(50, 25, 80, 0.6);
@@ -659,7 +659,7 @@ h2 {
     font-size: 14px;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.25s ease;
+    transition: all var(--dur-base) ease;
     position: relative;
     overflow: hidden;
 }
@@ -672,7 +672,7 @@ h2 {
     width: 100%;
     height: 100%;
     background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
-    transition: left 0.5s ease;
+    transition: left var(--dur-slow) ease;
 }
 
 .btn:hover::before {
@@ -775,7 +775,7 @@ h2 {
     border-radius: 20px;
     padding: 28px;
     backdrop-filter: blur(10px);
-    margin-top: 24px;
+    margin-top: var(--space-5);
 }
 
 .api-failover-card h2 {
@@ -784,7 +784,7 @@ h2 {
 
 .api-endpoints {
     display: flex;
-    gap: 16px;
+    gap: var(--space-4);
     margin-bottom: 18px;
     flex-wrap: wrap;
 }
@@ -797,7 +797,7 @@ h2 {
     border-radius: 14px;
     padding: 18px;
     cursor: pointer;
-    transition: all 0.25s ease;
+    transition: all var(--dur-base) ease;
     position: relative;
 }
 
@@ -819,7 +819,7 @@ h2 {
 .api-endpoint-item .ep-label {
     font-weight: 600;
     font-size: 15px;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-2);
 }
 
 .api-endpoint-item .ep-status {
@@ -868,12 +868,12 @@ h2 {
 
 .api-failover-actions {
     display: flex;
-    gap: 12px;
+    gap: var(--space-3);
 }
 
 .api-health-result {
-    margin-top: 12px;
-    padding: 12px 16px;
+    margin-top: var(--space-3);
+    padding: var(--space-3) var(--space-4);
     background: rgba(20, 10, 40, 0.6);
     border-radius: 10px;
     font-size: 13px;
@@ -959,7 +959,7 @@ html[data-theme="light"] .api-health-result {
 .log-line {
     padding: 3px 8px;
     border-radius: 4px;
-    transition: background 0.2s;
+    transition: background var(--dur-base);
     line-height: 24px;
 }
 
@@ -990,8 +990,8 @@ html[data-theme="light"] .log-line.info {
 .live-indicator {
     display: inline-block;
     font-size: 14px;
-    padding: 4px 12px;
-    margin-left: 12px;
+    padding: var(--space-1) var(--space-3);
+    margin-left: var(--space-3);
     background: linear-gradient(135deg, rgba(248, 113, 113, 0.3), rgba(255, 107, 157, 0.2));
     border: 1px solid var(--accent-red);
     border-radius: 20px;
@@ -1029,7 +1029,7 @@ html[data-theme="light"] .log-line.info {
     border: 1px solid var(--border-color);
     border-radius: 20px;
     padding: 28px;
-    margin-bottom: 24px;
+    margin-bottom: var(--space-5);
     backdrop-filter: blur(10px);
 }
 
@@ -1037,7 +1037,7 @@ html[data-theme="light"] .log-line.info {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-2);
 }
 
 .data-section-header h2 {
@@ -1047,7 +1047,7 @@ html[data-theme="light"] .log-line.info {
 .selection-controls {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-3);
 }
 
 .selection-count {
@@ -1082,7 +1082,7 @@ html[data-theme="light"] .log-line.info {
     background: rgba(50, 25, 80, 0.4);
     border-radius: 12px;
     border: 1px solid transparent;
-    transition: all 0.2s ease;
+    transition: all var(--dur-base) ease;
     cursor: pointer;
     user-select: none;
 }
@@ -1112,7 +1112,7 @@ html[data-theme="light"] .log-line.info {
 .data-item-left {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-3);
     min-width: 0;
 }
 
@@ -1254,7 +1254,7 @@ html[data-theme="light"] .log-line.info {
 .chart-card h3 {
     font-size: 14px;
     color: var(--text-secondary);
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
 }
 
 .chart-card canvas {
@@ -1279,7 +1279,7 @@ html[data-theme="light"] .log-line.info {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 16px 0;
+    padding: var(--space-4) 0;
     border-bottom: 1px solid var(--border-color);
 }
 
@@ -1320,7 +1320,7 @@ html[data-theme="light"] .log-line.info {
     color: var(--text-primary);
     font-size: 14px;
     width: 200px;
-    transition: border-color 0.2s;
+    transition: border-color var(--dur-base);
 }
 
 .setting-textarea {
@@ -1334,7 +1334,7 @@ html[data-theme="light"] .log-line.info {
     max-width: 400px;
     resize: vertical;
     font-family: inherit;
-    transition: border-color 0.2s;
+    transition: border-color var(--dur-base);
 }
 
 .setting-input:focus,
@@ -1360,14 +1360,14 @@ html[data-theme="light"] .log-line.info {
 .settings-hint {
     font-size: 0.85rem;
     color: var(--text-secondary);
-    margin-bottom: 16px;
+    margin-bottom: var(--space-4);
 }
 
 /* Avatar Upload Styles */
 .avatar-control {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-3);
 }
 
 .avatar-preview {
@@ -1409,7 +1409,7 @@ html[data-theme="light"] .log-line.info {
 }
 
 .btn-small {
-    padding: 4px 8px;
+    padding: var(--space-1) var(--space-2);
     font-size: 0.8rem;
 }
 
@@ -1423,7 +1423,7 @@ html[data-theme="light"] .log-line.info {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 16px;
+    gap: var(--space-4);
     padding: 20px;
 }
 
@@ -1462,7 +1462,7 @@ html[data-theme="light"] .log-line.info {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
 }
 
 .crop-controls label {
@@ -1505,7 +1505,7 @@ html[data-theme="light"] .log-line.info {
     background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
     border-radius: 28px;
-    transition: all 0.3s ease;
+    transition: all var(--dur-base) ease;
 }
 
 .toggle-slider::before {
@@ -1517,7 +1517,7 @@ html[data-theme="light"] .log-line.info {
     bottom: 3px;
     background: var(--text-secondary);
     border-radius: 50%;
-    transition: all 0.3s ease;
+    transition: all var(--dur-base) ease;
 }
 
 .toggle-switch input:checked + .toggle-slider {
@@ -1534,13 +1534,13 @@ html[data-theme="light"] .log-line.info {
 .shortcuts-list {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-3);
 }
 
 .shortcut-item {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: var(--space-4);
     padding: 10px 0;
 }
 
@@ -1564,8 +1564,8 @@ html[data-theme="light"] .log-line.info {
 
 /* Features List */
 .features-list {
-    margin-top: 16px;
-    padding-top: 16px;
+    margin-top: var(--space-4);
+    padding-top: var(--space-4);
     border-top: 1px solid var(--border-color);
 }
 
@@ -1574,14 +1574,14 @@ html[data-theme="light"] .log-line.info {
 .features-list h3 {
     color: var(--text-secondary);
     font-size: 14px;
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
 }
 
 .features-list ul {
     list-style: none;
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 8px;
+    gap: var(--space-2);
 }
 
 .features-list li {
@@ -1593,7 +1593,7 @@ html[data-theme="light"] .log-line.info {
 .no-data {
     color: var(--text-secondary);
     font-style: italic;
-    padding: 12px;
+    padding: var(--space-3);
     text-align: center;
 }
 
@@ -1639,7 +1639,7 @@ html[data-theme="light"] .log-line.info {
     }
     .chat-header-actions {
         flex-wrap: wrap;
-        gap: 4px;
+        gap: var(--space-1);
     }
     .modal-content {
         width: 95vw !important;
@@ -1745,25 +1745,25 @@ html[data-theme="light"] .log-line.info {
 }
 
 .btn-new-chat {
-    padding: 8px 16px;
+    padding: var(--space-2) var(--space-4);
     font-size: 14px;
 }
 
 .conversation-list {
     flex: 1;
     overflow-y: auto;
-    padding: 12px;
+    padding: var(--space-3);
 }
 
 .conversation-item {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 12px;
+    gap: var(--space-3);
+    padding: var(--space-3);
     border-radius: 12px;
     cursor: pointer;
-    transition: all 0.2s ease;
-    margin-bottom: 8px;
+    transition: all var(--dur-base) ease;
+    margin-bottom: var(--space-2);
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid transparent;
 }
@@ -1828,11 +1828,11 @@ html[data-theme="light"] .log-line.info {
 
 .no-conversations p:first-child {
     font-size: 16px;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-2);
 }
 
 .chat-sidebar-footer {
-    padding: 16px;
+    padding: var(--space-4);
     border-top: 1px solid var(--border-color);
 }
 
@@ -1862,13 +1862,13 @@ html[data-theme="light"] .log-line.info {
 
 .chat-empty-content h2 {
     font-size: 32px;
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
     color: var(--text-primary);
 }
 
 .chat-empty-content p {
     color: var(--text-secondary);
-    margin-bottom: 24px;
+    margin-bottom: var(--space-5);
 }
 
 .btn-large {
@@ -1889,7 +1889,7 @@ html[data-theme="light"] .log-line.info {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 16px 24px;
+    padding: var(--space-4) var(--space-5);
     background: var(--card-bg);
     border-bottom: 1px solid var(--border-color);
 }
@@ -1897,7 +1897,7 @@ html[data-theme="light"] .log-line.info {
 .chat-header-info {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-3);
     min-width: 0;
     flex: 1;
 }
@@ -1916,7 +1916,7 @@ html[data-theme="light"] .log-line.info {
     border-radius: 50%;
     object-fit: cover;
     vertical-align: middle;
-    margin-right: 12px;
+    margin-right: var(--space-3);
     border: 2px solid var(--accent-purple);
 }
 
@@ -1950,8 +1950,8 @@ html[data-theme="light"] .log-line.info {
 .context-window-indicator {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 4px 12px;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-3);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.06);
@@ -1972,7 +1972,7 @@ html[data-theme="light"] .log-line.info {
     height: 100%;
     border-radius: 3px;
     background: var(--accent-green);
-    transition: width 0.4s ease, background 0.4s ease;
+    transition: width var(--dur-slow) ease, background var(--dur-slow) ease;
     width: 0%;
 }
 
@@ -1994,7 +1994,7 @@ html[data-theme="light"] .log-line.info {
 .chat-header-actions {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-3);
     flex-wrap: wrap;
     row-gap: var(--space-2);
 }
@@ -2012,7 +2012,7 @@ html[data-theme="light"] .log-line.info {
     font-size: 13px;
     cursor: pointer;
     outline: none;
-    transition: all 0.2s ease;
+    transition: all var(--dur-base) ease;
 }
 
 .select-provider-inline:hover,
@@ -2035,13 +2035,13 @@ html[data-theme="light"] .log-line.info {
 .thinking-toggle {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     cursor: pointer;
-    padding: 8px 12px;
+    padding: var(--space-2) var(--space-3);
     border-radius: 8px;
     /* Token surface (was raw white-alpha — invisible on the light theme). */
     background: var(--surface-2);
-    transition: all 0.2s ease;
+    transition: all var(--dur-base) ease;
 }
 
 .thinking-toggle:hover {
@@ -2099,10 +2099,10 @@ html[data-theme="light"] .log-line.info {
 .chat-messages {
     flex: 1;
     overflow-y: auto;
-    padding: 24px;
+    padding: var(--space-5);
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: var(--space-4);
 }
 
 .chat-welcome {
@@ -2117,7 +2117,7 @@ html[data-theme="light"] .log-line.info {
 
 .welcome-emoji {
     font-size: 64px;
-    margin-bottom: 16px;
+    margin-bottom: var(--space-4);
 }
 
 .welcome-avatar {
@@ -2125,14 +2125,14 @@ html[data-theme="light"] .log-line.info {
     height: 80px;
     border-radius: 50%;
     object-fit: cover;
-    margin-bottom: 16px;
+    margin-bottom: var(--space-4);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .chat-welcome h3 {
     color: var(--text-primary);
     font-size: 24px;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-2);
 }
 
 /* Loading spinner (history-manager's loading pane). @keyframes spin is ALSO
@@ -2155,7 +2155,7 @@ html[data-theme="light"] .log-line.info {
 /* Message Bubbles */
 .chat-message {
     display: flex;
-    gap: 12px;
+    gap: var(--space-3);
     /* `max-width: 85%` alone overflows on narrow windows because the parent
      * `.chat-messages` adds 24px padding on both sides. The min() picks
      * whichever bound is tighter so the bubble never reaches into the
@@ -2223,9 +2223,9 @@ html[data-theme="light"] .log-line.info {
 .message-header {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 4px;
-    padding-left: 4px;
+    gap: var(--space-2);
+    margin-bottom: var(--space-1);
+    padding-left: var(--space-1);
 }
 
 .message-name {
@@ -2251,11 +2251,11 @@ html[data-theme="light"] .log-line.info {
 .message-actions {
     display: flex;
     justify-content: flex-end;
-    margin-top: 8px;
-    padding-top: 8px;
+    margin-top: var(--space-2);
+    padding-top: var(--space-2);
     border-top: 1px solid var(--border-color);
     opacity: 0.6;
-    transition: opacity 0.2s ease;
+    transition: opacity var(--dur-base) ease;
 }
 
 .message-wrapper:hover .message-actions,
@@ -2274,7 +2274,7 @@ html[data-theme="light"] .log-line.info {
     padding: 4px 10px;
     border-radius: 6px;
     color: var(--text-secondary);
-    transition: all 0.2s ease;
+    transition: all var(--dur-base) ease;
 }
 
 .copy-message-btn:hover,
@@ -2301,8 +2301,8 @@ font-size: 12px;
 padding: 4px 10px;
 border-radius: 6px;
 color: var(--text-secondary);
-transition: all 0.2s ease;
-margin-left: 4px;
+transition: all var(--dur-base) ease;
+margin-left: var(--space-1);
 }
 
 /* Inline edit textarea */
@@ -2329,8 +2329,8 @@ margin-left: 4px;
 
 .edit-actions {
     display: flex;
-    gap: 8px;
-    margin-top: 8px;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
     justify-content: flex-end;
 }
 
@@ -2342,7 +2342,7 @@ margin-left: 4px;
     border: 1px solid var(--border-color);
     cursor: pointer;
     font-size: 13px;
-    transition: all 0.2s ease;
+    transition: all var(--dur-base) ease;
 }
 
 .edit-save-btn {
@@ -2385,8 +2385,8 @@ margin-left: 4px;
     padding: 4px 10px;
     border-radius: 6px;
     color: var(--text-secondary);
-    transition: all 0.2s ease;
-    margin-left: 4px;
+    transition: all var(--dur-base) ease;
+    margin-left: var(--space-1);
 }
 
 .ai-edit-message-btn:hover {
@@ -2413,13 +2413,13 @@ margin-left: 4px;
 
 .ai-edit-input-row {
     display: flex;
-    gap: 8px;
+    gap: var(--space-2);
     align-items: flex-end;
 }
 
 .ai-edit-input {
     flex: 1;
-    padding: 8px 12px;
+    padding: var(--space-2) var(--space-3);
     border: 1px solid var(--border-color);
     border-radius: 8px;
     background: var(--card-bg);
@@ -2427,7 +2427,7 @@ margin-left: 4px;
     font-size: 13px;
     font-family: inherit;
     outline: none;
-    transition: border-color 0.2s;
+    transition: border-color var(--dur-base);
     resize: none;
     min-height: 36px;
     max-height: 120px;
@@ -2445,7 +2445,7 @@ margin-left: 4px;
 }
 
 .ai-edit-submit-btn {
-    padding: 8px 16px;
+    padding: var(--space-2) var(--space-4);
     border-radius: 8px;
     border: none;
     background: var(--accent-purple);
@@ -2453,7 +2453,7 @@ margin-left: 4px;
     cursor: pointer;
     font-size: 13px;
     font-weight: 500;
-    transition: opacity 0.2s;
+    transition: opacity var(--dur-base);
     white-space: nowrap;
 }
 
@@ -2462,14 +2462,14 @@ margin-left: 4px;
 }
 
 .ai-edit-cancel-btn {
-    padding: 8px 12px;
+    padding: var(--space-2) var(--space-3);
     border-radius: 8px;
     border: 1px solid var(--border-color);
     background: var(--card-bg);
     color: var(--text-secondary);
     cursor: pointer;
     font-size: 13px;
-    transition: all 0.2s;
+    transition: all var(--dur-base);
     white-space: nowrap;
 }
 
@@ -2481,8 +2481,8 @@ margin-left: 4px;
 .message-images {
 display: flex;
 flex-wrap: wrap;
-gap: 8px;
-margin-bottom: 8px;
+gap: var(--space-2);
+margin-bottom: var(--space-2);
 }
 
 .message-image {
@@ -2491,7 +2491,7 @@ margin-bottom: 8px;
     border-radius: 12px;
     object-fit: cover;
     cursor: pointer;
-    transition: transform 0.2s ease;
+    transition: transform var(--dur-base) ease;
     border: 1px solid var(--border-color);
 }
 
@@ -2500,7 +2500,7 @@ margin-bottom: 8px;
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-2);
 }
 /* `display: block`, NOT inline-flex. `text-overflow: ellipsis` applies to block
    containers only — on a flex box the filename is an anonymous flex item and the
@@ -2538,7 +2538,7 @@ margin-bottom: 8px;
     background: var(--card-bg);
     border: 1px solid var(--border-color);
     border-radius: 16px;
-    padding: 12px 16px;
+    padding: var(--space-3) var(--space-4);
     color: var(--text-primary);
     line-height: 1.6;
     font-size: 15px;
@@ -2582,7 +2582,7 @@ margin-bottom: 8px;
 .message-content pre {
     background: rgba(0, 0, 0, 0.3);
     border-radius: 0 0 8px 8px;
-    padding: 12px;
+    padding: var(--space-3);
     margin: 0;
     overflow-x: auto;
 }
@@ -2607,7 +2607,7 @@ margin-bottom: 8px;
     font-size: 12px;
     padding: 2px 8px;
     border-radius: 4px;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast);
 }
 
 .pin-message-btn:hover {
@@ -2659,7 +2659,7 @@ margin-bottom: 8px;
 .tag-chip {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--space-1);
     padding: 2px 8px;
     border-radius: 12px;
     background: var(--cyan-200);
@@ -2692,7 +2692,7 @@ margin-bottom: 8px;
     font-size: 12px;
     width: 90px;
     outline: none;
-    transition: border-color 0.15s, width 0.15s;
+    transition: border-color var(--dur-fast), width var(--dur-fast);
 }
 
 .tag-add-input:focus {
@@ -2710,7 +2710,7 @@ margin-bottom: 8px;
     font-size: 13px;
     padding: 2px 8px;
     border-radius: 4px;
-    transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
+    transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast), transform var(--dur-fast);
 }
 
 .like-message-btn:hover {
@@ -2739,7 +2739,7 @@ margin-bottom: 8px;
     cursor: pointer;
     font-size: 13px;
     text-align: center;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast);
 }
 
 .show-earlier-btn:hover {
@@ -2762,7 +2762,7 @@ margin-bottom: 8px;
 
 /* Conversation filter input in chat sidebar */
 .conversation-filter {
-    padding: 8px 12px;
+    padding: var(--space-2) var(--space-3);
     border-bottom: 1px solid var(--border-color);
 }
 
@@ -2787,7 +2787,7 @@ margin-bottom: 8px;
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 8px 12px;
+    padding: var(--space-2) var(--space-3);
     background: var(--bg-tertiary);
     border-bottom: 1px solid var(--border-color);
     flex-wrap: nowrap;
@@ -2818,7 +2818,7 @@ margin-bottom: 8px;
 }
 
 .chat-search-bar .btn-icon {
-    padding: 4px 8px;
+    padding: var(--space-1) var(--space-2);
     min-width: auto;
 }
 
@@ -2831,7 +2831,7 @@ margin-bottom: 8px;
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 8px 12px;
+    padding: var(--space-2) var(--space-3);
     background: var(--bg-tertiary);
     border-bottom: 1px solid var(--border-color);
     flex-wrap: nowrap;
@@ -2853,7 +2853,7 @@ margin-bottom: 8px;
 }
 
 .history-search-bar .btn-icon {
-    padding: 4px 8px;
+    padding: var(--space-1) var(--space-2);
     min-width: auto;
 }
 
@@ -2886,7 +2886,7 @@ mark.chat-search-hit.active {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
-    margin-top: 12px;
+    margin-top: var(--space-3);
 }
 
 .export-format-btn {
@@ -2894,13 +2894,13 @@ mark.chat-search-hit.active {
     flex-direction: column;
     align-items: flex-start;
     text-align: left;
-    padding: 12px;
-    gap: 4px;
+    padding: var(--space-3);
+    gap: var(--space-1);
     border: 1px solid var(--border-color);
     border-radius: 8px;
     background: var(--bg-tertiary);
     cursor: pointer;
-    transition: transform 0.1s, border-color 0.15s, background 0.15s;
+    transition: transform var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
 }
 
 .export-format-btn:hover {
@@ -2926,8 +2926,8 @@ mark.chat-search-hit.active {
 /* Loading skeletons for chat messages */
 .chat-message-skeleton {
     display: flex;
-    gap: 12px;
-    padding: 12px 16px;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
     opacity: 0.7;
 }
 
@@ -2974,7 +2974,7 @@ mark.chat-search-hit.active {
 /* Animated "AI is typing" indicator (3 bouncing dots) */
 .typing-indicator-dots {
     display: inline-flex;
-    gap: 4px;
+    gap: var(--space-1);
     margin-left: 6px;
     vertical-align: middle;
 }
@@ -3001,7 +3001,7 @@ mark.chat-search-hit.active {
     outline: 2px dashed var(--accent-purple);
     outline-offset: -4px;
     background: var(--cyan-100);
-    transition: outline-color 0.15s, background 0.15s;
+    transition: outline-color var(--dur-fast), background var(--dur-fast);
 }
 
 /* Wrapper around chat-messages so the FAB can be absolutely positioned. */
@@ -3074,7 +3074,7 @@ mark.chat-search-hit.active {
 
 /* Code block wrapper with header (lang label + copy button) */
 .message-content .code-block-wrapper {
-    margin: 8px 0;
+    margin: var(--space-2) 0;
     border-radius: 8px;
     overflow: hidden;
     border: 1px solid var(--border-color);
@@ -3105,7 +3105,7 @@ mark.chat-search-hit.active {
     font-size: 14px;
     padding: 2px 6px;
     border-radius: 4px;
-    transition: background 0.15s, color 0.15s;
+    transition: background var(--dur-fast), color var(--dur-fast);
 }
 
 .message-content .code-copy-btn:hover {
@@ -3122,7 +3122,7 @@ mark.chat-search-hit.active {
 .message-content ol {
     /* 8px matches code blocks, quotes and tables. Was 4px, from when a stray
        <br> either side of every list padded the gap out to a full line. */
-    margin: 8px 0;
+    margin: var(--space-2) 0;
     padding-left: 22px;
 }
 
@@ -3142,8 +3142,8 @@ mark.chat-search-hit.active {
 .math-block {
     display: block;
     overflow-x: auto;
-    padding: 16px;
-    margin: 12px 0;
+    padding: var(--space-4);
+    margin: var(--space-3) 0;
     background: var(--cyan-100);
     border-radius: 8px;
     text-align: center;
@@ -3151,7 +3151,7 @@ mark.chat-search-hit.active {
 
 .math-inline {
     display: inline;
-    padding: 0 4px;
+    padding: 0 var(--space-1);
 }
 
 .message-content .katex {
@@ -3166,14 +3166,14 @@ mark.chat-search-hit.active {
 
 /* Chat Input Area */
 .chat-input-area {
-    padding: 16px 24px 24px;
+    padding: var(--space-4) var(--space-5) var(--space-5);
     background: var(--card-bg);
     border-top: 1px solid var(--border-color);
 }
 
 .chat-input-container {
     display: flex;
-    gap: 12px;
+    gap: var(--space-3);
     align-items: flex-end;
 }
 
@@ -3189,7 +3189,7 @@ mark.chat-search-hit.active {
     resize: none;
     max-height: 150px;
     line-height: 1.5;
-    transition: all 0.2s ease;
+    transition: all var(--dur-base) ease;
 }
 
 #chat-input:focus {
@@ -3212,7 +3212,7 @@ mark.chat-search-hit.active {
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: all var(--dur-base) ease;
 }
 
 .btn-send:hover:not(:disabled) {
@@ -3246,7 +3246,7 @@ mark.chat-search-hit.active {
     justify-content: center;
     cursor: pointer;
     color: var(--text-primary);
-    transition: all 0.2s ease;
+    transition: all var(--dur-base) ease;
 }
 
 /* Glyph size is left to the shared `.send-icon .ic` rule so the two buttons
@@ -3274,7 +3274,7 @@ mark.chat-search-hit.active {
 
 .chat-input-hint {
     text-align: center;
-    margin-top: 8px;
+    margin-top: var(--space-2);
     color: var(--text-secondary);
     font-size: 12px;
 }
@@ -3339,7 +3339,7 @@ mark.chat-search-hit.active {
 }
 
 .modal-content.modal-small .modal-body {
-    padding: 24px;
+    padding: var(--space-5);
 }
 
 .modal-content.modal-small .modal-body p {
@@ -3383,7 +3383,7 @@ mark.chat-search-hit.active {
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s ease;
+    transition: all var(--dur-base) ease;
 }
 
 .modal-close:hover {
@@ -3392,20 +3392,20 @@ mark.chat-search-hit.active {
 }
 
 .modal-body {
-    padding: 24px;
+    padding: var(--space-5);
 }
 
 .modal-body p {
     color: var(--text-secondary);
-    margin-bottom: 16px;
+    margin-bottom: var(--space-4);
 }
 
 /* Role Selection Cards */
 .role-cards {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 16px;
-    margin-bottom: 24px;
+    gap: var(--space-4);
+    margin-bottom: var(--space-5);
 }
 
 .role-card {
@@ -3415,7 +3415,7 @@ mark.chat-search-hit.active {
     border: 2px solid var(--border-color);
     cursor: pointer;
     text-align: center;
-    transition: all 0.2s ease;
+    transition: all var(--dur-base) ease;
 }
 
 .role-card:hover {
@@ -3431,14 +3431,14 @@ mark.chat-search-hit.active {
 
 .role-card-emoji {
     font-size: 40px;
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
 }
 
 .role-card-name {
     color: var(--text-primary);
     font-size: 16px;
     font-weight: 600;
-    margin-bottom: 4px;
+    margin-bottom: var(--space-1);
 }
 
 .role-card-desc {
@@ -3454,17 +3454,17 @@ mark.chat-search-hit.active {
 }
 
 .modal-options {
-    padding-top: 16px;
+    padding-top: var(--space-4);
     border-top: 1px solid var(--border-color);
 }
 
 .option-row {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-3);
     color: var(--text-secondary);
     cursor: pointer;
-    padding: 8px 0;
+    padding: var(--space-2) 0;
 }
 
 .option-row input {
@@ -3476,8 +3476,8 @@ mark.chat-search-hit.active {
 .modal-footer {
     display: flex;
     justify-content: flex-end;
-    gap: 12px;
-    padding: 16px 24px;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5);
     border-top: 1px solid var(--border-color);
 }
 
@@ -3487,8 +3487,8 @@ mark.chat-search-hit.active {
 .modal-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 12px;
-    padding: 16px 24px;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5);
     border-top: 1px solid var(--border-color);
 }
 
@@ -3547,8 +3547,8 @@ html[data-theme="light"] .role-card:hover {
 .chat-input-options {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 8px 16px;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-4);
     border-bottom: 1px solid var(--border-color);
 }
 
@@ -3559,9 +3559,9 @@ html[data-theme="light"] .role-card:hover {
     cursor: pointer;
     font-size: 0.85rem;
     color: var(--text-secondary);
-    padding: 4px 8px;
+    padding: var(--space-1) var(--space-2);
     border-radius: 6px;
-    transition: all 0.2s;
+    transition: all var(--dur-base);
 }
 
 .chat-input-options .checkbox-label:hover {
@@ -3602,12 +3602,12 @@ html[data-theme="light"] .role-card:hover {
 
 .btn-attach {
     font-size: 1.2rem;
-    padding: 4px 8px;
+    padding: var(--space-1) var(--space-2);
     background: transparent;
     border: 1px solid var(--border-color);
     border-radius: 6px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all var(--dur-base);
 }
 
 .btn-attach:hover {
@@ -3637,7 +3637,7 @@ html[data-theme="light"] .role-card:hover {
    flex` from first paint until the first renderPreview() wiped their innerHTML. */
 .attached-images {
     display: flex;
-    gap: 8px;
+    gap: var(--space-2);
     flex-wrap: wrap;
     flex: 1 0 100%;
 }
@@ -3699,7 +3699,7 @@ html[data-theme="light"] .role-card:hover {
    flex-basis squeezed this strip into the toggles' leftover width. */
 .attached-docs {
     display: flex;
-    gap: 8px;
+    gap: var(--space-2);
     flex-wrap: wrap;
     flex: 1 0 100%;
     margin-top: 6px;
@@ -3713,7 +3713,7 @@ html[data-theme="light"] .role-card:hover {
     position: relative;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     padding: 6px 28px 6px 10px;
     border: 1px solid var(--border-color);
     border-radius: 10px;
@@ -3822,10 +3822,10 @@ html[data-theme="light"] .chat-files-badge {
 .chat-files-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--space-2);
     max-height: 55vh;
     overflow-y: auto;
-    padding-right: 4px;
+    padding-right: var(--space-1);
 }
 
 .chat-files-list:empty {
@@ -3835,12 +3835,12 @@ html[data-theme="light"] .chat-files-badge {
 .chat-file-row {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-3);
     padding: 10px 12px;
     border: 1px solid var(--border-color);
     border-radius: 10px;
     background: var(--bg-tertiary);
-    transition: background 0.2s var(--ease-smooth), border-color 0.2s var(--ease-smooth);
+    transition: background var(--dur-base) var(--ease-smooth), border-color var(--dur-base) var(--ease-smooth);
 }
 
 .chat-file-row:hover {
@@ -3884,7 +3884,7 @@ html[data-theme="light"] .chat-files-badge {
     padding: 6px 10px;
     font-size: 12px;
     cursor: pointer;
-    transition: all 0.2s var(--ease-smooth);
+    transition: all var(--dur-base) var(--ease-smooth);
 }
 
 .chat-file-row .file-delete:hover {
@@ -3894,19 +3894,19 @@ html[data-theme="light"] .chat-files-badge {
 
 .chat-files-empty {
     text-align: center;
-    padding: 32px 16px;
+    padding: var(--space-6) var(--space-4);
     color: var(--text-secondary);
 }
 
 .chat-files-empty-icon {
     font-size: 38px;
     display: block;
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
     opacity: 0.6;
 }
 
 .chat-files-empty p {
-    margin: 4px 0;
+    margin: var(--space-1) 0;
 }
 
 .chat-files-empty .hint {
@@ -3926,7 +3926,7 @@ html[data-theme="light"] .chat-files-badge {
     max-height: 88vh;
     display: flex;
     flex-direction: column;
-    transition: max-width 0.3s var(--ease-out-expo), max-height 0.3s var(--ease-out-expo);
+    transition: max-width var(--dur-base) var(--ease-out-expo), max-height var(--dur-base) var(--ease-out-expo);
 }
 
 .chat-files-modal-content.editing {
@@ -4024,7 +4024,7 @@ html[data-theme="light"] .chat-files-badge {
 }
 
 .chat-files-back {
-    margin-right: 8px;
+    margin-right: var(--space-2);
     font-size: 13px;
     padding: 4px 10px;
     width: auto;
@@ -4039,7 +4039,7 @@ html[data-theme="light"] .chat-files-badge {
     padding: 6px 10px;
     font-size: 12px;
     cursor: pointer;
-    transition: all 0.2s var(--ease-smooth);
+    transition: all var(--dur-base) var(--ease-smooth);
     margin-right: 6px;
 }
 
@@ -4068,7 +4068,7 @@ html[data-theme="light"] .chat-files-badge {
 .chat-files-edit-hint {
     color: var(--text-secondary);
     font-size: 11px;
-    margin-top: 4px;
+    margin-top: var(--space-1);
     opacity: 0.8;
 }
 
@@ -4083,12 +4083,12 @@ html[data-theme="light"] .chat-files-badge {
  * line instead of stacked above it. Promoting these rules from the
  * add-memory-only scope fixes that across the board. */
 .modal-body .form-group {
-    margin-bottom: 16px;
+    margin-bottom: var(--space-4);
 }
 
 .modal-body label {
     display: block;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-2);
     color: var(--text-primary);
     font-weight: 500;
 }
@@ -4109,8 +4109,8 @@ html[data-theme="light"] .chat-files-badge {
 .message-content blockquote,
 .thinking-content blockquote {
     border-left: 3px solid var(--accent-purple);
-    margin: 8px 0;
-    padding: 8px 16px;
+    margin: var(--space-2) 0;
+    padding: var(--space-2) var(--space-4);
     background: var(--cyan-100);
     border-radius: 0 8px 8px 0;
     color: var(--text-secondary);
@@ -4125,7 +4125,7 @@ html[data-theme="light"] .thinking-content blockquote {
 /* Markdown table styling */
 .md-table-wrap {
     overflow-x: auto;
-    margin: 8px 0;
+    margin: var(--space-2) 0;
     border-radius: 8px;
 }
 
@@ -4138,7 +4138,7 @@ html[data-theme="light"] .thinking-content blockquote {
 
 .md-table th,
 .md-table td {
-    padding: 8px 12px;
+    padding: var(--space-2) var(--space-3);
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
@@ -4205,7 +4205,7 @@ html[data-theme="light"] .md-table tbody tr:hover td {
 .thinking-content .md-hr {
     border: none;
     border-top: 1px solid rgba(255, 255, 255, 0.15);
-    margin: 12px 0;
+    margin: var(--space-3) 0;
 }
 
 html[data-theme="light"] .message-content .md-hr,
@@ -4219,7 +4219,7 @@ html[data-theme="light"] .thinking-content .md-hr {
     border-radius: 10px;
     background: var(--brand-soft);
     color: var(--accent-purple);
-    margin-left: 8px;
+    margin-left: var(--space-2);
     white-space: nowrap;
 }
 
@@ -4236,7 +4236,7 @@ html[data-theme="light"] .thinking-content .md-hr {
        could never see or click. The streaming skeleton keeps the old
        hidden-until-revealed behaviour via the #streaming-message rule below. */
     display: block;
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
     border: 1px solid var(--cyan-300);
     border-radius: 8px;
     overflow: hidden;
@@ -4251,7 +4251,7 @@ html[data-theme="light"] .thinking-content .md-hr {
 #streaming-message .thinking-container { display: none; }
 
 .thinking-header {
-    padding: 8px 12px;
+    padding: var(--space-2) var(--space-3);
     font-size: 0.85rem;
     color: var(--accent-purple);
     background: var(--cyan-100);
@@ -4280,7 +4280,7 @@ html[data-theme="light"] .thinking-content .md-hr {
     content: '▼';
     font-size: 0.7rem;
     margin-left: auto;
-    transition: transform 0.2s;
+    transition: transform var(--dur-base);
 }
 
 .thinking-header.collapsible.collapsed::after {
@@ -4288,19 +4288,19 @@ html[data-theme="light"] .thinking-content .md-hr {
 }
 
 .thinking-content {
-    padding: 12px;
+    padding: var(--space-3);
     font-size: 0.85rem;
     color: var(--text-secondary);
     white-space: pre-wrap;
     line-height: 1.5;
     max-height: 300px;
     overflow-y: auto;
-    transition: max-height 0.3s ease;
+    transition: max-height var(--dur-base) ease;
 }
 
 .thinking-content.collapsed {
     max-height: 0;
-    padding: 0 12px;
+    padding: 0 var(--space-3);
     overflow: hidden;
 }
 
@@ -4415,7 +4415,7 @@ select:focus,
         var(--focus-ring),
         0 0 16px var(--cyan-300);
     border-color: var(--border-focus);
-    transition: box-shadow 0.25s var(--ease-smooth), border-color 0.25s var(--ease-smooth);
+    transition: box-shadow var(--dur-base) var(--ease-smooth), border-color var(--dur-base) var(--ease-smooth);
 }
 
 /* Restore outline for keyboard focus so high-contrast / forced-colors users
@@ -4530,11 +4530,10 @@ html[data-theme="light"] h3 {
  * Conversation list items — flat hover lift (3D translateZ removed)
  * ---------------------------------------------------------------------*/
 .conversation-item {
-    transition:
-        transform 0.2s var(--ease),
-        box-shadow 0.2s var(--ease),
-        background 0.2s var(--ease),
-        border-color 0.2s var(--ease);
+    transition: transform var(--dur-base) var(--ease),
+        box-shadow var(--dur-base) var(--ease),
+        background var(--dur-base) var(--ease),
+        border-color var(--dur-base) var(--ease);
 }
 
 .conversation-item:hover {
@@ -4551,10 +4550,9 @@ html[data-theme="light"] h3 {
  * the bracket + selected ring treatment)
  * ---------------------------------------------------------------------*/
 .role-card {
-    transition:
-        transform 0.2s var(--ease),
-        box-shadow 0.25s var(--ease),
-        border-color 0.2s var(--ease);
+    transition: transform var(--dur-base) var(--ease),
+        box-shadow var(--dur-base) var(--ease),
+        border-color var(--dur-base) var(--ease);
 }
 
 .role-card:hover {
@@ -4620,7 +4618,7 @@ html[data-theme="light"] h3 {
  * Check window indicator (context bar) — smooth fill
  * ---------------------------------------------------------------------*/
 .context-bar-fill {
-    transition: width 0.6s var(--ease-out-expo), background 0.4s ease;
+    transition: width var(--dur-slow) var(--ease-out-expo), background var(--dur-slow) ease;
     box-shadow: 0 0 8px currentColor;
 }
 
@@ -4772,9 +4770,8 @@ html[data-theme="light"] .toast::before {
 .chart-card canvas {
     opacity: 0;
     transform: translateY(16px);
-    transition:
-        opacity 0.7s var(--ease-out-expo),
-        transform 0.7s var(--ease-out-expo);
+    transition: opacity var(--dur-slow) var(--ease-out-expo),
+        transform var(--dur-slow) var(--ease-out-expo);
 }
 
 .chart-card canvas.chart-ready {
@@ -4812,7 +4809,7 @@ html[data-theme="light"] .toast::before {
 .history-layout {
     flex: 1;
     display: flex;
-    gap: 16px;
+    gap: var(--space-4);
     min-height: 0;
 }
 
@@ -4833,7 +4830,7 @@ html[data-theme="light"] .toast::before {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 16px;
+    padding: var(--space-4);
     border-bottom: 1px solid var(--border-color);
 }
 
@@ -4846,7 +4843,7 @@ html[data-theme="light"] .toast::before {
 .history-channel-list {
     flex: 1;
     overflow-y: auto;
-    padding: 8px;
+    padding: var(--space-2);
 }
 
 .history-channel-item {
@@ -4854,7 +4851,7 @@ html[data-theme="light"] .toast::before {
     border-radius: 10px;
     cursor: pointer;
     border: 1px solid transparent;
-    transition: background 0.15s ease, border-color 0.15s ease;
+    transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease;
 }
 
 .history-channel-item:hover {
@@ -4878,8 +4875,8 @@ html[data-theme="light"] .toast::before {
 .history-channel-meta {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-top: 4px;
+    gap: var(--space-2);
+    margin-top: var(--space-1);
     font-size: 12px;
     color: var(--text-secondary);
 }
@@ -4914,10 +4911,10 @@ html[data-theme="light"] .toast::before {
 .history-header {
     display: flex;
     align-items: baseline;
-    gap: 12px;
-    padding-bottom: 12px;
+    gap: var(--space-3);
+    padding-bottom: var(--space-3);
     border-bottom: 1px solid var(--border-color);
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
 }
 
 .history-header h2 {
@@ -4942,7 +4939,7 @@ html[data-theme="light"] .toast::before {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding-right: 4px;
+    padding-right: var(--space-1);
 }
 
 /* In-flight load placeholder: centre the spinner over its caption.
@@ -5010,7 +5007,7 @@ html[data-theme="light"] .toast::before {
 .history-msg-actions {
     margin-left: auto;
     opacity: 0.6;
-    transition: opacity 0.2s ease;
+    transition: opacity var(--dur-base) ease;
 }
 
 .history-msg:hover .history-msg-actions,
@@ -5027,7 +5024,7 @@ html[data-theme="light"] .toast::before {
     padding: 2px 8px;
     border-radius: 6px;
     color: var(--text-secondary);
-    transition: all 0.2s ease;
+    transition: all var(--dur-base) ease;
 }
 
 .history-edit-btn:hover {
@@ -5145,7 +5142,7 @@ h2 { color: var(--text-primary); font-weight: 700; letter-spacing: -0.01em; }
 .nav-item {
     border-radius: 12px;
     color: var(--text-secondary);
-    transition: background .2s var(--ease), color .2s var(--ease), transform .15s var(--ease);
+    transition: background var(--dur-base) var(--ease), color var(--dur-base) var(--ease), transform var(--dur-fast) var(--ease);
 }
 
 .nav-item:hover { background: rgba(178, 150, 255, 0.08); color: var(--text-primary); }
@@ -5173,7 +5170,7 @@ h2 { color: var(--text-primary); font-weight: 700; letter-spacing: -0.01em; }
     border: 1px solid var(--border-color);
     color: var(--text-secondary);
     border-radius: 12px;
-    transition: background .2s var(--ease), transform .15s var(--ease), color .2s var(--ease);
+    transition: background var(--dur-base) var(--ease), transform var(--dur-fast) var(--ease), color var(--dur-base) var(--ease);
 }
 
 .theme-toggle:hover { transform: translateY(-1px); color: var(--text-primary); }
@@ -5236,7 +5233,7 @@ h2 { color: var(--text-primary); font-weight: 700; letter-spacing: -0.01em; }
     border-radius: var(--r-pill);
     font-weight: 700;
     letter-spacing: 0.01em;
-    transition: transform .15s var(--ease), box-shadow .2s var(--ease), filter .2s var(--ease), background .2s var(--ease);
+    transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-base) var(--ease), filter var(--dur-base) var(--ease), background var(--dur-base) var(--ease);
 }
 
 .btn:hover:not(:disabled) { transform: translateY(-1px); }
@@ -5291,7 +5288,7 @@ input[type="text"], input[type="search"], input[type="number"], textarea, select
     border: 1px solid var(--border-color);
     color: var(--text-primary);
     border-radius: var(--radius-sm);
-    transition: border-color .18s var(--ease), box-shadow .18s var(--ease), background .18s var(--ease);
+    transition: border-color var(--dur-base) var(--ease), box-shadow var(--dur-base) var(--ease), background var(--dur-base) var(--ease);
 }
 
 .setting-input::placeholder, #log-filter::placeholder,
@@ -5466,7 +5463,7 @@ html[data-theme="light"] .stat-value { color: var(--text-primary); text-shadow: 
     inset: 0;
     background: linear-gradient(110deg, transparent 32%, rgba(255, 255, 255, 0.18) 50%, transparent 68%);
     transform: translateX(-130%);
-    transition: transform .6s var(--ease);
+    transition: transform var(--dur-slow) var(--ease);
     pointer-events: none;
 }
 
