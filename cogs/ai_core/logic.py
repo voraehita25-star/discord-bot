@@ -137,6 +137,7 @@ from .storage import (
     _parts_to_text,
     delete_message_by_id,
     edit_message_by_id,
+    resolve_history_limit,
     save_history,
     update_message_id,
 )
@@ -306,6 +307,20 @@ PATTERN_ROLE_TAG = re.compile("<@&(?!\u200b)(\\d+)>")
 # a chunk — splitting just before one renders as a stray ◌-form glyph.
 _THAI_COMBINING = set(range(0x0E30, 0x0E3B)) | set(range(0x0E47, 0x0E4F))
 
+# How far a hard cut may rewind looking for the start of a Thai cluster. A real
+# cluster is a base plus at most a handful of marks, so 16 is already generous
+# (it matches the rewind cap in ``sanitization.sanitize_message_content``).
+#
+# The cap is load-bearing, not cosmetic. The rewind walks back over EVERY
+# consecutive mark, so text that is nothing but marks — a "zalgo"/tone-mark
+# flood a user can trivially ask the model to produce — rewound all the way to
+# index 1 and the splitter emitted ONE CHARACTER per chunk: a 5,000-mark reply
+# became 3,001 chunks, i.e. 3,001 separate Discord sends from the loop in
+# ``process_chat`` (measured). Bounding the rewind keeps progress at ~``limit``
+# per chunk; the trade-off is that such degenerate input may orphan a mark at a
+# chunk start, which is unavoidable for a string that contains no base char.
+_MAX_COMBINING_REWIND = 16
+
 
 def _split_for_discord(text: str, limit: int = 2000) -> list[str]:
     """Split ``text`` into ``<=limit``-char chunks at natural boundaries.
@@ -338,6 +353,10 @@ def _split_for_discord(text: str, limit: int = 2000) -> list[str]:
         # only the hard-split case needs the rewind.
         if split_at >= limit:
             rewind = split_at
+            # Never rewind further than one cluster's worth — see
+            # _MAX_COMBINING_REWIND for why an unbounded walk collapses a
+            # mark-only reply into one-character chunks.
+            rewind_floor = max(1, split_at - _MAX_COMBINING_REWIND)
             # Case 1: the cut lands ON a mark (base|first-mark boundary, or
             # inside a multi-mark cluster) — the char AT the cut is combining.
             # Step back to the cluster's base so the whole cluster moves to
@@ -345,16 +364,21 @@ def _split_for_discord(text: str, limit: int = 2000) -> list[str]:
             # remaining[rewind-1] was inspected, so a cut exactly between a
             # base and its FIRST mark orphaned the mark at the next chunk's
             # start (stray dotted-circle glyph).
-            while rewind > 1 and ord(remaining[rewind]) in _THAI_COMBINING:
+            while rewind > rewind_floor and ord(remaining[rewind]) in _THAI_COMBINING:
                 rewind -= 1
             # Case 2 (only when case 1 didn't fire): the cut lands right
             # AFTER trailing marks — walk back past the marks AND their base
             # char (stopping at the base would orphan its marks).
             if rewind == split_at:
-                while rewind > 1 and ord(remaining[rewind - 1]) in _THAI_COMBINING:
+                while rewind > rewind_floor and ord(remaining[rewind - 1]) in _THAI_COMBINING:
                     rewind -= 1
-                if rewind > 1 and rewind < split_at:
+                if rewind > rewind_floor and rewind < split_at:
                     rewind -= 1
+            elif ord(remaining[rewind]) in _THAI_COMBINING:
+                # Hit the rewind cap without reaching a cluster base: the whole
+                # window is marks. Keep the full-width cut — a stray glyph beats
+                # fanning one reply out into thousands of Discord messages.
+                rewind = split_at
             split_at = rewind
         chunks.append(remaining[:split_at])
         if split_on_newline:
@@ -2263,47 +2287,46 @@ class ChatManager(SessionMixin, ResponseMixin):
                         self.bot, context_channel.id, chat_data, new_entries=new_entries
                     )
 
-                    # Auto-trim history when it grows too large
-                    if HISTORY_MANAGER_AVAILABLE and len(chat_data.get("history", [])) > 2000:
-                        try:
-                            original_len = len(chat_data["history"])
-                            trimmed = await history_manager.smart_trim(
-                                chat_data["history"], max_messages=1500
-                            )
-                            if len(trimmed) < original_len:
-                                chat_data["history"] = trimmed
-                                # The length-keyed compress cache would otherwise
-                                # serve a stale compression once history regrows
-                                # to the pre-trim length. Drop it so the next
-                                # turn recomputes — mirrors the edit/patch/delete/
-                                # insert paths.
-                                chat_data.pop("_compress_cache", None)
-                                logger.info(
-                                    "📦 Auto-trimmed history for channel %s: %d -> %d",
-                                    channel_id,
-                                    original_len,
-                                    len(trimmed),
-                                )
-                                # Persist the trimmed view immediately. Without
-                                # this, the in-memory trim is lost on next save
-                                # (which would re-diff against the un-trimmed
-                                # DB and re-append everything).
-                                trim_persisted = await save_history(
-                                    self.bot,
-                                    context_channel.id,
-                                    chat_data,
-                                    force=True,
-                                )
-                                if not trim_persisted:
-                                    logger.warning(
-                                        "Auto-trim for channel %s was NOT persisted "
-                                        "(save refused) — memory and DB now diverge",
-                                        channel_id,
-                                    )
-                        except Exception as e:
-                            # warning, not debug: a silently failing trim-save
-                            # means memory(trimmed)/DB(untrimmed) divergence.
-                            logger.warning("Auto-trim failed: %s", e)
+                    # Bound the in-memory history to the SAME per-guild retention
+                    # cap the DB prune enforces (HISTORY_LIMIT_*), and do it
+                    # WITHOUT writing anything back.
+                    #
+                    # What was here before: a hardcoded "over 2000 -> importance-
+                    # trim to 1500", committed with ``save_history(force=True)``.
+                    # That force-replace is a DELETE-all + re-insert, so every
+                    # crossing PERMANENTLY destroyed the messages it dropped —
+                    # measured at ~500 rows per crossing, repeating forever, which
+                    # pinned every active channel at ~1499 stored messages and put
+                    # the configured caps (HISTORY_LIMIT_RP = 30000,
+                    # MAX_HISTORY_ITEMS = 8000) permanently out of reach. The
+                    # summary that was supposed to stand in for the dropped turns
+                    # only exists when the summarizer has an SDK client, which it
+                    # never does under CLAUDE_BACKEND=cli (the default), so in
+                    # practice the turns were dropped with nothing replacing them.
+                    #
+                    # A memory-only bound is sufficient: the PROMPT is already
+                    # clamped by MAX_HISTORY_ITEMS above, and storage's prune keeps
+                    # the DB at this same cap — so memory and DB stay congruent
+                    # with no destructive write from the reply path. Deliberate
+                    # tail slice rather than importance scoring: this list mirrors
+                    # a retention window, and reordering/among-equals selection is
+                    # what made the old trim drop mid-recent context.
+                    retention_limit = resolve_history_limit(self.bot, context_channel.id)
+                    if retention_limit > 0 and len(chat_data.get("history", [])) > retention_limit:
+                        original_len = len(chat_data["history"])
+                        chat_data["history"] = chat_data["history"][-retention_limit:]
+                        # The length-keyed compress cache would otherwise serve a
+                        # stale compression once history regrows to the pre-trim
+                        # length. Drop it so the next turn recomputes — mirrors
+                        # the edit/patch/delete/insert paths.
+                        chat_data.pop("_compress_cache", None)
+                        logger.info(
+                            "📦 Bounded in-memory history for channel %s: %d -> %d "
+                            "(retention cap; stored rows are pruned to the same cap)",
+                            channel_id,
+                            original_len,
+                            len(chat_data["history"]),
+                        )
 
                     # --- Memory Enhancement: Update state tracker and consolidator ---
                     if guild_id == GUILD_ID_RP and model_text:

@@ -331,8 +331,33 @@ _MEMORY_FORBIDDEN_NORMALIZED = (
     "system:",
     "override",
     "jailbreak",
+    # Two-token spelling of the "jailbreak" needle. A bare single word can't go
+    # in the despaced pass (see below), but the SPACED form can — and it is the
+    # spelling that actually evaded the screen ("Jail break the model now"
+    # reached storage). Adding it here makes the separator-folded pass catch
+    # "jail-break"/"jail.break" too, and the despaced pass catch "jailbreak"
+    # written with any run of whitespace/control chars between the halves.
+    "jail break",
     "disregard",
 )
+
+# Leet/symbol substitutions folded into ONE extra normalised form. Purely
+# additive: the folded string is checked against the SAME needles, so it can
+# only ever add a detection. Motivation: "0v3rr1d3 the rules" cleared every
+# other pass (verified by probe) because none of them touch digit-for-letter
+# spellings. Deliberately narrow — only the substitutions that actually spell
+# out the needles above — so ordinary text carrying digits ("user is 25",
+# "earns $500") cannot fold into one of them.
+_MEMORY_LEET_MAP = {
+    "0": "o",
+    "1": "i",
+    "3": "e",
+    "4": "a",
+    "5": "s",
+    "7": "t",
+    "@": "a",
+    "$": "s",
+}
 
 # A denylist that recognises only ONE spelling of the gap between two words is
 # trivially evaded: "ignore\nprevious", "ignore\tprevious", "ignore  previous"
@@ -348,11 +373,20 @@ _MEMORY_FORBIDDEN_NORMALIZED = (
 #     which additionally catches letter-spaced payloads
 #     ("i g n o r e   p r e v i o u s").
 #
-# The whitespace-stripped pass is deliberately restricted to the MULTI-TOKEN and
-# bracketed entries. Running it over the bare single words would manufacture
-# matches out of adjacent ones — "handed over ride quality" strips to
-# "…overridequality", which contains "override" — so those keep to the passes
-# that preserve word boundaries.
+# The whitespace-stripped pass is deliberately restricted to the MULTI-TOKEN,
+# bracketed and COLON-bearing entries. Running it over the bare single words
+# would manufacture matches out of adjacent ones — "handed over ride quality"
+# strips to "…overridequality", which contains "override" — so those keep to the
+# passes that preserve word boundaries.
+#
+# ``system:`` earns its place in that set because the colon is itself a strong
+# boundary marker, not an accident of adjacency. Without it that needle was
+# reachable ONLY by the exact pass: the separator-folded pass erases the colon
+# (so the needle can never match there) and the despaced filter excluded it for
+# want of a space/bracket — leaving "SYSTEM : do this" to sail through every
+# pass and reach storage (verified by probe). Including it adds no new
+# false-positive CLASS: any text the despaced pass now catches ("subsystem: x")
+# already matched the exact pass in its unspaced spelling.
 _MEMORY_SEPARATOR_RUN = re.compile(r"[^a-z0-9]+")
 # Stripped for the whitespace-stripped pass: real whitespace plus the C0/DEL
 # control range. ``str.split()`` alone removed only whitespace, so a control
@@ -364,7 +398,9 @@ _MEMORY_SEPARATOR_RUN = re.compile(r"[^a-z0-9]+")
 # ("[system]", "<inst>").
 _MEMORY_INVISIBLE_RUN = re.compile(r"[\s\x00-\x1f\x7f]+")
 _MEMORY_FORBIDDEN_DESPACED = tuple(
-    f.replace(" ", "") for f in _MEMORY_FORBIDDEN_NORMALIZED if " " in f or "[" in f or "<" in f
+    f.replace(" ", "")
+    for f in _MEMORY_FORBIDDEN_NORMALIZED
+    if " " in f or "[" in f or "<" in f or ":" in f
 )
 
 
@@ -374,9 +410,10 @@ def memory_content_has_injection(content: str) -> bool:
     Plain lowercased pass for the suspicious markers, then a de-confused +
     NFKD-decomposed + ASCII pass for the broader forbidden set so confusable
     spellings can't evade detection, then the two separator-insensitive passes
-    described above. Pure predicate (no clamping/attribution) so callers that
-    only need the boolean (e.g. the ``!remember`` command) can reuse the SAME
-    denylists as the AI-tool/IPC sinks.
+    described above, and finally the same three passes over a leet-folded copy.
+    Pure predicate (no clamping/attribution) so callers that only need the
+    boolean (e.g. the ``!remember`` command) can reuse the SAME denylists as the
+    AI-tool/IPC sinks.
     """
     lowered = content.lower()
     if any(marker in lowered for marker in _MEMORY_SUSPICIOUS_MARKERS):
@@ -385,19 +422,33 @@ def memory_content_has_injection(content: str) -> bool:
     normalized = (
         unicodedata.normalize("NFKD", de_confused).encode("ascii", "ignore").decode("ascii").lower()
     )
-    if any(f in normalized for f in _MEMORY_FORBIDDEN_NORMALIZED):
+    # Leet-folded twin of ``normalized`` (see _MEMORY_LEET_MAP). Checked through
+    # the SAME three passes below so a digit-substituted spelling can't dodge
+    # one pass by hiding in another; identical to ``normalized`` for text with
+    # no leet characters, in which case the extra checks are pure no-ops.
+    leet = "".join(_MEMORY_LEET_MAP.get(c, c) for c in normalized)
+    forms = (normalized,) if leet == normalized else (normalized, leet)
+
+    if any(f in form for form in forms for f in _MEMORY_FORBIDDEN_NORMALIZED):
         return True
     # Separator-folded pass — catches "ignore.previous", "ignore\nprevious",
     # "ignore__previous", "ignore  previous". The bracketed entries can't match
     # here (their brackets fold away too); the exact pass above owns those.
-    collapsed = _MEMORY_SEPARATOR_RUN.sub(" ", normalized)
-    if any(f in collapsed for f in _MEMORY_FORBIDDEN_NORMALIZED):
+    if any(
+        f in _MEMORY_SEPARATOR_RUN.sub(" ", form)
+        for form in forms
+        for f in _MEMORY_FORBIDDEN_NORMALIZED
+    ):
         return True
     # Whitespace-stripped pass — catches letter-spaced payloads, split tags
-    # ("[ system ]", "<sys tem>"), and control-character-separated spellings
-    # ("ig\x00nore previous"). Multi-token/bracketed entries only.
-    despaced = _MEMORY_INVISIBLE_RUN.sub("", normalized)
-    return any(f in despaced for f in _MEMORY_FORBIDDEN_DESPACED)
+    # ("[ system ]", "<sys tem>"), control-character-separated spellings
+    # ("ig\x00nore previous"), and spaced-out colon markers ("SYSTEM : do
+    # this"). Multi-token / bracketed / colon-bearing entries only.
+    return any(
+        f in _MEMORY_INVISIBLE_RUN.sub("", form)
+        for form in forms
+        for f in _MEMORY_FORBIDDEN_DESPACED
+    )
 
 
 def screen_memory_content(content: object) -> tuple[bool, str]:

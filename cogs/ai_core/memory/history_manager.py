@@ -45,6 +45,26 @@ except ImportError:
     _TIKTOKEN_ENCODER = None  # type: ignore[assignment]
 
 
+# Prefix on the synthetic history row that stands in for messages a trim
+# discarded. Exposed (with :func:`is_summary_entry`) so callers can tell
+# "trimmed AND summarised" apart from "trimmed, old turns are simply gone" and
+# say which one happened — the over-limit prompt and ``!auto_summarize`` both
+# used to promise a summary unconditionally while the summarizer is disabled on
+# the default CLI backend, so the honest answer was usually the second one.
+SUMMARY_ENTRY_PREFIX = "[📝 สรุปบทสนทนาก่อนหน้า"
+
+
+def is_summary_entry(item: Any) -> bool:
+    """True when ``item`` is a trim-generated summary row."""
+    if not isinstance(item, dict):
+        return False
+    parts = item.get("parts") or []
+    first = parts[0] if parts else ""
+    if isinstance(first, dict):
+        first = first.get("text", "")
+    return isinstance(first, str) and first.startswith(SUMMARY_ENTRY_PREFIX)
+
+
 class HistoryManager:
     """
     Manages conversation history with intelligent trimming.
@@ -316,34 +336,7 @@ class HistoryManager:
         # 6. Summarize discarded messages if possible
         discarded = [msg for i, msg in enumerate(older) if i not in important_indices]
 
-        summary_entry = None
-        if summary_slots and len(discarded) >= 10:
-            try:
-                # max_messages must cover the WHOLE discarded set: summarize()
-                # slices history[-max_messages:], so the old max_messages=50
-                # silently summarized only the newest 50 discarded messages
-                # while the stored entry below claims coverage of all
-                # len(discarded) — the model then treated lost context as
-                # summarized. compress_history fixed this identical trap the
-                # same way.
-                summary_text = await summarizer.summarize(discarded, max_messages=len(discarded))
-                if summary_text:
-                    summary_entry = {
-                        "role": "user",
-                        "parts": [
-                            f"[📝 สรุปบทสนทนาก่อนหน้า ({len(discarded)} messages)]\n{summary_text}"
-                        ],
-                        # Timestamp matters downstream: storage force-replace
-                        # must not insert NULL (bypasses the column default),
-                        # and the SummaryArchiver's `WHERE timestamp < ?`
-                        # would never see a NULL-timestamp row.
-                        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                    }
-                    self.logger.info(
-                        "📝 Created summary from %d discarded messages", len(discarded)
-                    )
-            except Exception as e:
-                self.logger.warning("Failed to create summary: %s", e)
+        summary_entry = await self._build_summary_entry(discarded) if summary_slots else None
 
         # 7. Combine: summary (if any) + kept older + recent
         result = []
@@ -361,6 +354,45 @@ class HistoryManager:
         )
 
         return result
+
+    async def _build_summary_entry(self, discarded: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """One history row standing in for ``discarded``, or None.
+
+        Returns None when no summary can be produced: the summarizer module is
+        absent, its SDK client is unset (which is the case under
+        CLAUDE_BACKEND=cli — the DEFAULT — so this is the common outcome, not an
+        edge case), the set is too small to be worth summarising, or the API
+        call failed. Callers MUST treat None as "the discarded turns are simply
+        gone" and report it as such rather than claiming a summary was written.
+
+        Shared by :meth:`smart_trim` and :meth:`smart_trim_by_tokens` so the two
+        trims can't drift on how (or whether) they preserve what they drop.
+        """
+        if not SUMMARIZER_AVAILABLE or len(discarded) < 10:
+            return None
+        try:
+            # max_messages must cover the WHOLE discarded set: summarize()
+            # slices history[-max_messages:], so the old max_messages=50
+            # silently summarized only the newest 50 discarded messages while
+            # the stored entry below claims coverage of all len(discarded) —
+            # the model then treated lost context as summarized.
+            # compress_history fixed this identical trap the same way.
+            summary_text = await summarizer.summarize(discarded, max_messages=len(discarded))
+        except Exception as e:
+            self.logger.warning("Failed to create summary: %s", e)
+            return None
+        if not summary_text:
+            return None
+        self.logger.info("📝 Created summary from %d discarded messages", len(discarded))
+        return {
+            "role": "user",
+            "parts": [f"{SUMMARY_ENTRY_PREFIX} ({len(discarded)} messages)]\n{summary_text}"],
+            # Timestamp matters downstream: storage force-replace must not
+            # insert NULL (bypasses the column default), and the
+            # SummaryArchiver's `WHERE timestamp < ?` would never see a
+            # NULL-timestamp row.
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
 
     def quick_trim(
         self, history: list[dict[str, Any]], max_messages: int | None = None
@@ -388,6 +420,7 @@ class HistoryManager:
         history: list[dict[str, Any]],
         max_tokens: int | None = None,
         reserve_tokens: int = 2000,
+        summarize: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Trim history to fit within a token budget.
@@ -399,6 +432,15 @@ class HistoryManager:
             history: Conversation history
             max_tokens: Maximum token budget (default: self.max_tokens)
             reserve_tokens: Tokens to reserve for response (default: 2000)
+            summarize: roll the removed messages into a single leading summary
+                row when one can be produced (see :meth:`_build_summary_entry`).
+                Off by default so the prompt-shaping callers keep their exact
+                previous behaviour; the two USER-FACING callers — the over-limit
+                "condense this chat" button and ``!auto_summarize`` — pass True,
+                because both persist their result with ``force=True`` and the
+                removed rows are gone for good afterwards. Check
+                :func:`is_summary_entry` on the result to find out whether a
+                summary actually materialised.
 
         Returns:
             Trimmed history that fits within token budget
@@ -501,7 +543,18 @@ class HistoryManager:
             )
 
         # Build result excluding removed indices
+        discarded = [msg for i, msg in enumerate(working_history) if i in removed_indices]
         working_history = [msg for i, msg in enumerate(working_history) if i not in removed_indices]
+
+        # Roll the dropped turns into one summary row when asked and possible.
+        # Prepended (not appended) so it reads as the oldest context, matching
+        # smart_trim's layout. The extra row is a few hundred tokens against a
+        # budget measured in hundreds of thousands, so it does not reopen the
+        # over-budget condition in any realistic configuration.
+        if summarize and discarded:
+            summary_entry = await self._build_summary_entry(discarded)
+            if summary_entry is not None:
+                working_history.insert(0, summary_entry)
 
         final_tokens = running_total
         self.logger.info(

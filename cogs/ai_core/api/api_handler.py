@@ -268,27 +268,20 @@ async def _record_token_usage(
 ) -> None:
     """Best-effort token-usage recording — never raises into the response path.
 
-    Feeds the cache-side ``TokenTracker`` (DB-backed, with cost calc), which was
-    previously never called from the live path (the recorder was dead). Skips
-    silently when context/usage is missing or the tracker is unavailable.
+    Thin wrapper over the shared ``record_usage_snapshot`` so the SDK path and
+    the two CLI paths feed the DB-backed ``TokenTracker`` through ONE recorder
+    (they used to disagree: only this path recorded anything, leaving the
+    tracker with no producer on the default ``cli`` backend).
     """
-    if usage_obj is None or channel_id is None:
-        return
     try:
-        from datetime import datetime, timezone
+        from cogs.ai_core.cache.token_tracker import record_usage_snapshot
 
-        from cogs.ai_core.cache.token_tracker import TokenUsage, token_tracker
-
-        await token_tracker.record_usage(
-            TokenUsage(
-                input_tokens=int(getattr(usage_obj, "input_tokens", 0) or 0),
-                output_tokens=int(getattr(usage_obj, "output_tokens", 0) or 0),
-                timestamp=datetime.now(timezone.utc),
-                user_id=int(user_id) if user_id is not None else 0,
-                channel_id=int(channel_id),
-                guild_id=guild_id,
-                model=model,
-            )
+        await record_usage_snapshot(
+            usage_obj,
+            user_id=user_id,
+            channel_id=channel_id,
+            guild_id=guild_id,
+            model=model,
         )
     except Exception:
         logger.debug("token usage recording failed (non-fatal)", exc_info=True)

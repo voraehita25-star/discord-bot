@@ -675,3 +675,63 @@ class TokenTracker:
 
 # Global instance
 token_tracker = TokenTracker()
+
+
+def _usage_field(usage: Any, name: str) -> int:
+    """Read one token count from an SDK usage OBJECT or a CLI usage DICT.
+
+    The two backends report the same numbers in different shapes: the Anthropic
+    SDK returns an object with attributes, ``claude -p``'s stream-json ``result``
+    event returns a plain dict. Either can carry an explicit ``null``, so coerce
+    a missing/None value to 0 rather than letting ``int(None)`` raise.
+    """
+    raw = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, 0)
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def record_usage_snapshot(
+    usage: Any,
+    *,
+    user_id: int | None,
+    channel_id: int | None,
+    guild_id: int | None,
+    model: str,
+) -> None:
+    """Best-effort record of one turn's token usage. Never raises into a reply.
+
+    Shared by BOTH backends. It previously had a single caller on the Anthropic
+    SDK path, which meant that under ``CLAUDE_BACKEND=cli`` — the DEFAULT — the
+    tracker had no producer at all: every CLI turn returned exact usage from the
+    subprocess's ``result`` event and threw it away, so ``!ai_tokens`` reported
+    zero forever while ``!ai_trace`` pointed the operator at it.
+
+    Cache-read and cache-creation tokens are folded into ``input_tokens`` so the
+    figure reflects everything billed as input (matching the dashboard's own
+    token bar). Cache reads bill at a fraction of the fresh-input rate, so the
+    cost estimate errs HIGH — consistent with this module's rule of never
+    silently under-reporting spend.
+    """
+    if usage is None or channel_id is None:
+        return
+    try:
+        input_tokens = (
+            _usage_field(usage, "input_tokens")
+            + _usage_field(usage, "cache_read_input_tokens")
+            + _usage_field(usage, "cache_creation_input_tokens")
+        )
+        await token_tracker.record_usage(
+            TokenUsage(
+                input_tokens=input_tokens,
+                output_tokens=_usage_field(usage, "output_tokens"),
+                timestamp=_aware_now(),
+                user_id=int(user_id) if user_id is not None else 0,
+                channel_id=int(channel_id),
+                guild_id=guild_id,
+                model=model,
+            )
+        )
+    except Exception:
+        logger.debug("token usage recording failed (non-fatal)", exc_info=True)

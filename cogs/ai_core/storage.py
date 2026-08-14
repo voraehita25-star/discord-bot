@@ -402,6 +402,31 @@ def cleanup_cache() -> int:
 # ==================== Database Storage (Primary) ====================
 
 
+def resolve_history_limit(bot: Bot, channel_id: int) -> int:
+    """The per-guild message-retention cap that applies to ``channel_id``.
+
+    Single source of truth for the ``HISTORY_LIMIT_*`` selection. ``save_history``
+    passes the result to the DB prune, and ``logic.process_chat`` uses the SAME
+    number to bound the in-memory history — previously it applied its own
+    hardcoded 1500-message trim, which silently overrode (and force-deleted
+    below) the configured cap.
+
+    Best-effort: channel/guild lookup failures fall back to the default cap
+    rather than failing the caller.
+    """
+    limit = HISTORY_LIMIT_DEFAULT
+    try:
+        channel = bot.get_channel(channel_id)
+        if channel and hasattr(channel, "guild") and channel.guild:
+            if channel.guild.id == GUILD_ID_MAIN:
+                limit = HISTORY_LIMIT_MAIN
+            elif channel.guild.id == GUILD_ID_RP:
+                limit = HISTORY_LIMIT_RP
+    except Exception:
+        logger.debug("Failed to resolve guild for channel %s", channel_id)
+    return limit
+
+
 async def save_history(
     bot: Bot,
     channel_id: int,
@@ -424,19 +449,9 @@ async def save_history(
     if not chat_data:
         return True
 
-    # Determine limit based on Guild (optimized for memory). Bot.get_channel /
-    # channel.guild access is best-effort — failures here don't make the save
-    # fail, we just fall back to the default limit.
-    limit = HISTORY_LIMIT_DEFAULT
-    try:
-        channel = bot.get_channel(channel_id)
-        if channel and hasattr(channel, "guild") and channel.guild:
-            if channel.guild.id == GUILD_ID_MAIN:
-                limit = HISTORY_LIMIT_MAIN
-            elif channel.guild.id == GUILD_ID_RP:
-                limit = HISTORY_LIMIT_RP
-    except Exception:
-        logger.debug("Failed to resolve guild for channel %s", channel_id)
+    # Determine limit based on Guild (optimized for memory) — shared with
+    # logic.process_chat's in-memory bound so the two can't disagree.
+    limit = resolve_history_limit(bot, channel_id)
 
     if DATABASE_AVAILABLE:
         try:

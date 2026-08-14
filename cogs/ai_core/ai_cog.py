@@ -1984,13 +1984,19 @@ class AI(commands.Cog):
             logger.exception("Failed to export audit logs")
             await ctx.send("❌ Failed to export audit logs")
 
-    @commands.command(name="auto_summarize")
+    @commands.command(name="auto_summarize", aliases=["trim_history"])
     @commands.is_owner()
     async def auto_summarize_cmd(self, ctx, max_tokens: int = 500000):
         """
-        Force auto-summarization of current channel history.
+        Condense this channel's history down to a token budget.
 
-        Usage: !auto_summarize [max_tokens]
+        Removes the lowest-importance messages and force-saves the result, so
+        what it drops is DELETED from storage. A summary row replaces the
+        dropped turns only when the summarizer is operational (it is not on the
+        default CLI backend) — the report below says which happened rather than
+        claiming a summary unconditionally, as it used to.
+
+        Usage: !auto_summarize [max_tokens]   (alias: !trim_history)
         Default: 500000 tokens (500K)
         """
         channel_id = ctx.channel.id
@@ -2020,11 +2026,11 @@ class AI(commands.Cog):
 
         status_msg = await ctx.send(
             f"📊 Current: {len(history):,} messages (~{current_tokens:,} tokens)\n"
-            f"⏳ Summarizing to fit {max_tokens:,} tokens..."
+            f"⏳ Condensing to fit {max_tokens:,} tokens..."
         )
 
         try:
-            from cogs.ai_core.memory.history_manager import history_manager
+            from cogs.ai_core.memory.history_manager import history_manager, is_summary_entry
 
             # Avoid constructing a throwaway ``asyncio.Lock()`` on every
             # call — ``setdefault`` evaluates its default eagerly even when
@@ -2051,7 +2057,7 @@ class AI(commands.Cog):
                 # would silently discard those turns.
                 history = chat_data.get("history", [])
                 trimmed = await history_manager.smart_trim_by_tokens(
-                    history, max_tokens=max_tokens, reserve_tokens=2000
+                    history, max_tokens=max_tokens, reserve_tokens=2000, summarize=True
                 )
 
                 chat_data["history"] = trimmed
@@ -2068,17 +2074,28 @@ class AI(commands.Cog):
             if not persisted:
                 await status_msg.edit(
                     content=(
-                        "⚠️ Summarized in memory, but persisting the trimmed history "
+                        "⚠️ Condensed in memory, but persisting the trimmed history "
                         "FAILED (see logs) — the on-disk history is unchanged."
                     )
                 )
                 return
 
             new_tokens = history_manager.estimate_tokens(trimmed)
+            # Say which of the two things actually happened. The force-save is a
+            # delete-and-reinsert, so without a summary row the removed turns are
+            # gone — reporting "Summarization complete" either way is what made
+            # this command look non-destructive when it never was.
+            summarised = bool(trimmed) and is_summary_entry(trimmed[0])
+            dropped = max(0, len(history) - len(trimmed))
+            fate = (
+                "older turns rolled into a summary row"
+                if summarised
+                else f"{dropped:,} older message(s) deleted — no summarizer available"
+            )
 
             await status_msg.edit(
                 content=(
-                    f"✅ Summarization complete!\n"
+                    f"✅ Condense complete ({fate})\n"
                     f"📉 {len(history):,} → {len(trimmed):,} messages\n"
                     f"📉 ~{current_tokens:,} → ~{new_tokens:,} tokens"
                 )

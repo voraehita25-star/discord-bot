@@ -1040,7 +1040,13 @@ class TestAutoSummarizeCmd:
         ):
             await cog.auto_summarize_cmd.callback(cog, ctx, 500000)
         status_msg.edit.assert_awaited()
-        assert "Summarization complete" in status_msg.edit.call_args.kwargs["content"]
+        content = status_msg.edit.call_args.kwargs["content"]
+        assert "Condense complete" in content
+        # No summary row came back, so the report must say the dropped turns
+        # were DELETED rather than claim a summary was written (the force-save
+        # this command performs is a delete-and-reinsert).
+        assert "deleted" in content
+        assert "7" in content  # 10 in, 3 out
 
     @pytest.mark.asyncio
     async def test_summarize_exception(self):

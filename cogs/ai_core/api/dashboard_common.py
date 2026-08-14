@@ -359,10 +359,26 @@ class LeadingTimestampStripper:
     def __init__(self) -> None:
         self._buffer = ""
         self._done = False
+        # Set when the prefix was consumed but the whitespace that follows it
+        # hadn't streamed in yet — see :meth:`feed`.
+        self._strip_leading_ws = False
 
     def feed(self, text: str) -> str:
         """Consume a streaming chunk and return the text safe to emit."""
         if self._done:
+            if self._strip_leading_ws:
+                # The regex consumes the timestamp's TRAILING whitespace, but a
+                # chunked stream can deliver "[…+07:00]" and " hello" as two
+                # separate feeds — the match then ended exactly at the buffer's
+                # end with the space still in flight, and it was emitted
+                # verbatim. The streamed text then began with a space the batch
+                # ``strip_leading_timestamp`` removes, so the live view and the
+                # persisted text disagreed on their first character.
+                stripped = text.lstrip()
+                if not stripped:
+                    return ""  # whitespace-only chunk — keep waiting
+                self._strip_leading_ws = False
+                return stripped
             return text
         self._buffer += text
         # If the non-whitespace content clearly does not start with '[', there
@@ -379,6 +395,9 @@ class LeadingTimestampStripper:
             out = self._buffer[match.end() :]
             self._buffer = ""
             self._done = True
+            # Nothing followed the prefix in this buffer, so any separating
+            # whitespace is still in the next chunk. Defer stripping it there.
+            self._strip_leading_ws = not out
             return out
         # '[' seen but the chars after it can no longer form a timestamp
         # (the year is 4 digits) \u2014 e.g. a reply legitimately starting with
@@ -400,6 +419,7 @@ class LeadingTimestampStripper:
 
     def flush(self) -> str:
         """Return any remaining buffered text at end-of-stream."""
+        self._strip_leading_ws = False
         if self._done:
             return ""
         out = self._buffer
@@ -415,6 +435,7 @@ class LeadingTimestampStripper:
         """
         self._buffer = ""
         self._done = False
+        self._strip_leading_ws = False
 
 
 # NOTE: prompt-injection defang for uploaded documents was intentionally REMOVED

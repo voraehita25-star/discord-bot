@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import base64
+import contextlib
 import io
 import logging
 import re
@@ -304,6 +305,108 @@ class ProcessedVideoPart(TypedDict):
     mime_type: str
 
 
+# Anthropic rejects a single image content block whose base64 payload exceeds
+# 5 MB. Nothing on the Discord path used to enforce that: attachments are only
+# capped by MAX_ATTACHMENT_SIZE (10 MB of *compressed* upload) and were then
+# re-encoded LOSSLESSLY to PNG, which inflates photographic content several
+# times over. Measured on this venv: a 12 MP phone photo uploads as 9.2 MB of
+# JPEG (accepted) and leaves here as a 48.8 MB base64 block — ~10x the limit.
+# The request then 400s, api_handler classifies BadRequestError as
+# non-retryable, and the user gets no reply and no error. The dashboard SDK
+# path has had a compress/downscale ladder for exactly this reason
+# (dashboard_chat_claude._compress_image_for_claude); this is its counterpart
+# for the Discord path.
+_CLAUDE_IMAGE_B64_LIMIT = 5 * 1024 * 1024
+# Encoding attempts allowed while shrinking. Each attempt is a full JPEG encode
+# of a multi-megapixel image and this runs on the event loop (process_chat
+# converts parts inline), so the ladder is short and size-guided rather than a
+# blind quality sweep.
+_IMAGE_SHRINK_ATTEMPTS = 5
+
+
+def _b64_size(raw_len: int) -> int:
+    """Base64 length for ``raw_len`` bytes (4 chars per 3 bytes, padded)."""
+    return ((raw_len + 2) // 3) * 4
+
+
+def _shrink_to_inline_data(img: Image.Image) -> InlineDataPart:
+    """JPEG-encode ``img``, shrinking until the base64 block fits the API limit.
+
+    Raises ``ValueError`` when even the smallest attempt is still too large —
+    ``process_chat`` already catches that per-image and drops just that
+    attachment ("Skipping unconvertible attachment image") instead of failing
+    the whole turn, which is the outcome we want: one missing image beats a
+    silently empty reply.
+    """
+    # JPEG has no alpha channel; flatten onto white like the dashboard twin.
+    # ``owned`` tracks the copies WE created so the finally can close them —
+    # the caller owns ``img`` itself and closes it on its own path.
+    owned: list[Image.Image] = []
+    if img.mode in ("RGBA", "P", "LA"):
+        flattened = Image.new("RGB", img.size, (255, 255, 255))
+        owned.append(flattened)
+        source = img
+        if img.mode == "P":
+            source = img.convert("RGBA")
+            owned.append(source)
+        flattened.paste(source, mask=source.split()[-1] if "A" in source.mode else None)
+        base = flattened
+    elif img.mode != "RGB":
+        base = img.convert("RGB")
+        owned.append(base)
+    else:
+        base = img
+
+    work = base
+    quality = 85
+    smallest: bytes | None = None
+    try:
+        for attempt in range(_IMAGE_SHRINK_ATTEMPTS):
+            with io.BytesIO() as buffer:
+                work.save(buffer, format="JPEG", quality=quality, optimize=True)
+                data = buffer.getvalue()
+            if smallest is None or len(data) < len(smallest):
+                smallest = data
+            if _b64_size(len(data)) <= _CLAUDE_IMAGE_B64_LIMIT:
+                logger.info(
+                    "📷 Shrank attachment for the API: %dx%d q%d -> %d bytes (attempt %d)",
+                    work.width,
+                    work.height,
+                    quality,
+                    len(data),
+                    attempt + 1,
+                )
+                return {
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": base64.b64encode(data).decode("utf-8"),
+                    }
+                }
+            # Size-guided next step instead of a blind quality sweep: JPEG size
+            # scales roughly with pixel count, so aim straight at the budget
+            # (with headroom) rather than paying several full encodes to walk
+            # there. 0.85 caps the per-round shrink so one bad estimate can't
+            # collapse a photo to thumbnail size in a single step.
+            ratio = _CLAUDE_IMAGE_B64_LIMIT / _b64_size(len(data))
+            scale = min(0.85, max(0.3, (ratio**0.5) * 0.9))
+            new_w = max(1, int(work.width * scale))
+            new_h = max(1, int(work.height * scale))
+            resized = work.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            owned.append(resized)
+            work = resized
+            quality = 75
+    finally:
+        for tmp in owned:
+            with contextlib.suppress(Exception):
+                tmp.close()
+
+    raise ValueError(
+        f"image still {len(smallest or b'')} bytes after "
+        f"{_IMAGE_SHRINK_ATTEMPTS} shrink attempts "
+        f"(API limit is {_CLAUDE_IMAGE_B64_LIMIT} base64 bytes)"
+    )
+
+
 def pil_to_inline_data(img: Image.Image) -> InlineDataPart:
     """Convert PIL Image to base64 inline_data dict for API.
 
@@ -311,8 +414,15 @@ def pil_to_inline_data(img: Image.Image) -> InlineDataPart:
         img: PIL Image to convert.
 
     Returns:
-        Dict with inline_data containing base64-encoded PNG.
-        Compatible with both Gemini and Claude format converters.
+        Dict with inline_data containing base64-encoded PNG — or JPEG when the
+        lossless PNG would exceed the provider's per-image size limit (see
+        ``_CLAUDE_IMAGE_B64_LIMIT``). Small images, which is everything on the
+        avatar / emoji / character-reference paths, keep the PNG output
+        byte-for-byte. Compatible with both Gemini and Claude format converters.
+
+    Raises:
+        ValueError: the image cannot be shrunk under the limit (callers already
+        skip the individual attachment on this).
 
     Note:
         Uses context manager for BytesIO to ensure proper cleanup.
@@ -320,6 +430,8 @@ def pil_to_inline_data(img: Image.Image) -> InlineDataPart:
     with io.BytesIO() as buffer:
         img.save(buffer, format="PNG")
         img_bytes = buffer.getvalue()
+    if _b64_size(len(img_bytes)) > _CLAUDE_IMAGE_B64_LIMIT:
+        return _shrink_to_inline_data(img)
     b64_data = base64.b64encode(img_bytes).decode("utf-8")
     return {"inline_data": {"mime_type": "image/png", "data": b64_data}}
 

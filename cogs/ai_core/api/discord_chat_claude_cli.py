@@ -573,13 +573,18 @@ _OVERLIMIT_SUMMARIZE_TARGET_TOKENS = 500_000
 
 class _OverlimitChoiceView(discord.ui.View):
     """อยู่บนข้อความเตือน "แชทเกิน context window" — ให้เลือก:
-    สรุปแชททั้งหมดแล้วคุยต่อ หรือพักแชทนี้ไว้ (ไม่สรุป = คุยต่อไม่ได้)
+    ย่อประวัติแล้วคุยต่อ หรือพักแชทนี้ไว้ (ไม่ย่อ = คุยต่อไม่ได้)
 
     OWNER-ONLY (per operator request): both choices are gated on
-    ``bot.is_owner`` — the same authority as ``!auto_summarize`` — since
-    summarize rewrites persisted history and pause blocks the channel.
-    Summarize runs the identical trim+force-save routine and preserves
-    old context as summaries.
+    ``bot.is_owner`` — the same authority as ``!auto_summarize`` — since the
+    condense path rewrites persisted history and pause blocks the channel.
+
+    The wording deliberately says "ย่อ" (condense), not "สรุป" (summarise). The
+    routine trims by importance and force-saves, which DELETES the dropped rows;
+    a summary row replaces them only when the summarizer is operational, which
+    it is not on the default CLI backend. The old copy promised a summary
+    unconditionally, so the owner was choosing "summarise" and getting
+    "permanently delete".
     """
 
     def __init__(self, channel_id: int) -> None:
@@ -612,34 +617,34 @@ class _OverlimitChoiceView(discord.ui.View):
                 )
         return is_owner
 
-    @discord.ui.button(label="📝 สรุปแชททั้งหมด", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="📝 ย่อประวัติแชท", style=discord.ButtonStyle.primary)
     async def summarize(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self._ensure_owner(interaction):
             return
         for child in self.children:
             child.disabled = True  # type: ignore[attr-defined]
         await interaction.response.edit_message(
-            content="⏳ กำลังสรุปแชททั้งหมด อาจใช้เวลาสักครู่...", view=self
+            content="⏳ กำลังย่อประวัติแชท อาจใช้เวลาสักครู่...", view=self
         )
         ok, detail = await _summarize_channel_history(self.channel_id)
         if ok:
             _OVERLIMIT_LAST_WARN.pop(self.channel_id, None)
             reset_channel_session(self.channel_id)
-            content = f"✅ สรุปแชทเรียบร้อย คุยต่อได้เลย\n{detail}"
+            content = f"✅ ย่อประวัติเรียบร้อย คุยต่อได้เลย\n{detail}"
         else:
-            content = f"❌ สรุปไม่สำเร็จ: {detail}\nลองใหม่อีกครั้ง หรือใช้ `!auto_summarize`"
+            content = f"❌ ย่อไม่สำเร็จ: {detail}\nลองใหม่อีกครั้ง หรือใช้ `!auto_summarize`"
         with contextlib.suppress(Exception):
             await interaction.edit_original_response(content=content, view=None)
         self.stop()
 
-    @discord.ui.button(label="❌ ไม่สรุป (พักแชทนี้ไว้)", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="❌ ไม่ย่อ (พักแชทนี้ไว้)", style=discord.ButtonStyle.secondary)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not await self._ensure_owner(interaction):
             return
         await interaction.response.edit_message(
             content=(
                 "⏸️ พักแชทนี้ไว้ตามที่เลือก — ประวัติเกิน context window "
-                "จะคุยต่อได้เมื่อกด 📝 สรุปจากข้อความเตือนครั้งถัดไป "
+                "จะคุยต่อได้เมื่อกด 📝 ย่อประวัติจากข้อความเตือนครั้งถัดไป "
                 "หรือใช้ `!auto_summarize` / `!reset_ai`"
             ),
             view=None,
@@ -648,11 +653,17 @@ class _OverlimitChoiceView(discord.ui.View):
 
 
 async def _summarize_channel_history(channel_id: int) -> tuple[bool, str]:
-    """Trim+summarize the live channel history — mirrors ``!auto_summarize``.
+    """Trim (and, when possible, summarize) the live history — as ``!auto_summarize``.
 
     Runs under the channel's processing lock so an in-flight turn can't
     interleave, force-saves the trimmed history (the diff path would write
-    nothing — see the owner command), and reports a Thai summary line.
+    nothing — see the owner command), and reports a Thai status line.
+
+    The force-save is a delete-and-reinsert, so whatever the trim drops is gone
+    from storage for good. The reported line therefore states which of the two
+    things actually happened — summarised, or discarded — instead of the old
+    unconditional "summarised" claim, which was wrong whenever the summarizer
+    had no SDK client (i.e. on the default CLI backend, always).
     """
     from .chat_manager_registry import get_chat_manager
 
@@ -663,7 +674,7 @@ async def _summarize_channel_history(channel_id: int) -> tuple[bool, str]:
     if chat_data is None:
         return False, "ไม่พบ session ของแชนเนลนี้ในหน่วยความจำ"
     try:
-        from cogs.ai_core.memory.history_manager import history_manager
+        from cogs.ai_core.memory.history_manager import history_manager, is_summary_entry
         from cogs.ai_core.storage import save_history
 
         locks = cm.processing_locks
@@ -684,12 +695,19 @@ async def _summarize_channel_history(channel_id: int) -> tuple[bool, str]:
                 history,
                 max_tokens=_OVERLIMIT_SUMMARIZE_TARGET_TOKENS,
                 reserve_tokens=2000,
+                summarize=True,
             )
             chat_data["history"] = trimmed
             persisted = await save_history(cm.bot, channel_id, chat_data, force=True)
         if not persisted:
-            return False, "สรุปในหน่วยความจำแล้ว แต่บันทึกลงฐานข้อมูลไม่สำเร็จ (ดู log)"
-        return True, f"📉 {before:,} → {len(trimmed):,} ข้อความ"
+            return False, "ย่อในหน่วยความจำแล้ว แต่บันทึกลงฐานข้อมูลไม่สำเร็จ (ดู log)"
+        detail = f"📉 {before:,} → {len(trimmed):,} ข้อความ"
+        if trimmed and is_summary_entry(trimmed[0]):
+            return True, f"{detail} (ย่อของเก่าเป็นบทสรุปไว้ให้แล้ว)"
+        return (
+            True,
+            f"{detail} — ข้อความเก่า {before - len(trimmed):,} ข้อความถูกลบถาวร (สร้างบทสรุปไม่ได้)",
+        )
     except Exception:
         logger.exception("Over-limit summarize failed for channel %s", channel_id)
         return False, "เกิดข้อผิดพลาดภายใน (ดู log ของบอท)"
@@ -749,8 +767,9 @@ async def _send_overlimit_warning(
                     "⚠️ **ประวัติแชทนี้ยาวเกิน context window ของโมเดลแล้ว** "
                     f"(~{prompt_chars:,} ตัวอักษร > {_DISCORD_PROMPT_MAX_CHARS:,})\n"
                     "เลือกได้ว่าจะทำยังไงต่อ (เฉพาะเจ้าของบอท):\n"
-                    "• 📝 **สรุปแชททั้งหมด** — ย่อประวัติเก่าเป็นบทสรุป แล้วคุยต่อได้ทันที\n"
-                    "• ❌ **ไม่สรุป** — เก็บประวัติเต็มไว้ แต่แชทนี้จะคุยต่อไม่ได้จนกว่าจะสรุปหรือ reset"
+                    "• 📝 **ย่อประวัติแชท** — ตัดข้อความเก่าออกให้พอดี context แล้วคุยต่อได้ทันที\n"
+                    "  ⚠️ ข้อความที่ถูกตัดจะถูก**ลบถาวร** (จะแทนด้วยบทสรุปให้ก็ต่อเมื่อ summarizer ใช้งานได้)\n"
+                    "• ❌ **ไม่ย่อ** — เก็บประวัติเต็มไว้ แต่แชทนี้จะคุยต่อไม่ได้จนกว่าจะย่อหรือ reset"
                 ),
                 view=view,
             )
@@ -761,6 +780,39 @@ async def _send_overlimit_warning(
             if _OVERLIMIT_LAST_WARN.get(key) == now:
                 _OVERLIMIT_LAST_WARN.pop(key, None)
             raise
+
+
+async def _record_cli_usage(
+    usage: dict[str, Any] | None,
+    *,
+    channel_id: int | None,
+    user_id: int | None,
+    guild_id: int | None,
+) -> None:
+    """Feed the turn's exact token usage to the DB-backed tracker.
+
+    ``claude -p`` reports real input/output/cache counts in its terminal
+    ``result`` event and ``_run_claude_subprocess`` hands them back — but both
+    Discord entry points used to bind that to ``_usage`` and drop it. Since
+    ``cli`` is the DEFAULT backend, the tracker therefore had NO producer:
+    ``!ai_tokens`` reported zeros indefinitely even though ``!ai_trace`` tells
+    the operator to look there. Best-effort and non-fatal; the model is pinned
+    to ``_DISCORD_CLI_MODEL``, which is what the argv actually requests.
+    """
+    if not usage:
+        return
+    try:
+        from cogs.ai_core.cache.token_tracker import record_usage_snapshot
+
+        await record_usage_snapshot(
+            usage,
+            user_id=user_id,
+            channel_id=channel_id,
+            guild_id=guild_id,
+            model=_DISCORD_CLI_MODEL,
+        )
+    except Exception:
+        logger.debug("discord-cli token usage recording skipped", exc_info=True)
 
 
 async def call_claude_cli_streaming(
@@ -809,6 +861,11 @@ async def call_claude_cli_streaming(
     # stops and the user chooses (summarize / pause) instead of us silently
     # truncating their RP history.
     overlimit_chars: int | None = None
+    # Exact usage from the subprocess's terminal ``result`` event. Recorded
+    # after the lock is released (see the tail below) — this used to be dropped
+    # on the floor, which left the token tracker with no producer at all on the
+    # default backend.
+    turn_usage: dict[str, Any] | None = None
 
     try:
         placeholder_msg = await send_channel.send("💭 กำลังคิด...")
@@ -1003,7 +1060,7 @@ async def call_claude_cli_streaming(
                 if channel_id is not None and cancel_flags is not None:
                     watcher = asyncio.create_task(_cancel_watcher())
                 try:
-                    new_session_id, _usage = await asyncio.wait_for(
+                    new_session_id, turn_usage = await asyncio.wait_for(
                         runner, timeout=_DISCORD_STREAM_TIMEOUT
                     )
                 except asyncio.CancelledError:
@@ -1160,6 +1217,11 @@ async def call_claude_cli_streaming(
         with contextlib.suppress(Exception):
             await placeholder_msg.delete()
 
+    # Record the turn's tokens (best-effort, outside the channel lock). Also
+    # done on a user-cancelled turn: the subprocess still ran to completion
+    # server-side, so those tokens were genuinely spent.
+    await _record_cli_usage(turn_usage, channel_id=channel_id, user_id=user_id, guild_id=guild_id)
+
     if overlimit_chars is not None:
         # Chat exceeds the context ceiling: warn + offer summarize/pause.
         # Return empty so nothing about this aborted turn is persisted.
@@ -1219,6 +1281,9 @@ async def call_claude_cli(
 
     accumulated_text = ""
     aborted = False
+    # See the streaming sibling: the subprocess's exact usage was discarded here
+    # too, leaving the token tracker without a producer on the default backend.
+    turn_usage: dict[str, Any] | None = None
 
     async def on_text(text: str) -> None:
         nonlocal accumulated_text
@@ -1340,7 +1405,7 @@ async def call_claude_cli(
                 if channel_id is not None and cancel_flags is not None:
                     watcher = asyncio.create_task(_cancel_watcher())
                 try:
-                    new_session_id, _usage = await asyncio.wait_for(
+                    new_session_id, turn_usage = await asyncio.wait_for(
                         runner, timeout=_DISCORD_STREAM_TIMEOUT
                     )
                 except asyncio.CancelledError:
@@ -1454,6 +1519,10 @@ async def call_claude_cli(
                     _CHANNEL_SESSIONS.pop(channel_id, None)
                 accumulated_text = "⚠️ Claude CLI ขัดข้อง กรุณาดู log ของบอท"
                 break
+
+    # Record the turn's tokens before any early return (see the streaming
+    # sibling): a cancelled turn still spent them server-side.
+    await _record_cli_usage(turn_usage, channel_id=channel_id, user_id=user_id, guild_id=guild_id)
 
     if aborted:
         # Cancellation matches the SDK/streaming contract: return empty so

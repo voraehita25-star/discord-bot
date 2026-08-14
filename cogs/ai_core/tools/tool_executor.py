@@ -111,6 +111,11 @@ def _mutation_outcome(tee: _TeeChannel, success_msg: str) -> str:
 # keep the two definitions in sync).
 _THAI_COMBINING = set(range(0x0E30, 0x0E3B)) | set(range(0x0E47, 0x0E4F))
 
+# Cap on how far a hard cut rewinds looking for a cluster base. Mirrors
+# _MAX_COMBINING_REWIND in logic.py — see there for why an unbounded walk
+# degrades a mark-only reply into one-character chunks. Keep the two in sync.
+_MAX_COMBINING_REWIND = 16
+
 
 def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
     """Split a message into chunks without breaking mid-line or mid-Unicode.
@@ -153,18 +158,37 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
             # case 1 didn't fire): the cut lands right AFTER trailing marks —
             # walk back past the marks AND their base char.
             rewind = split_at
-            while rewind > 1 and ord(text[rewind]) in _THAI_COMBINING:
+            rewind_floor = max(1, split_at - _MAX_COMBINING_REWIND)
+            while rewind > rewind_floor and ord(text[rewind]) in _THAI_COMBINING:
                 rewind -= 1
             if rewind == split_at:
-                while rewind > 1 and ord(text[rewind - 1]) in _THAI_COMBINING:
+                while rewind > rewind_floor and ord(text[rewind - 1]) in _THAI_COMBINING:
                     rewind -= 1
-                if rewind > 1 and rewind < split_at:
+                if rewind > rewind_floor and rewind < split_at:
                     rewind -= 1
+            elif ord(text[rewind]) in _THAI_COMBINING:
+                # Rewind cap reached without finding a cluster base — the window
+                # is all marks. Take the full-width cut (see logic.py's twin).
+                rewind = split_at
             split_at = rewind
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
     if text and len(chunks) >= _MAX_CHUNKS:
-        chunks.append(text[:limit])  # Append truncated remainder
+        # Past the chunk ceiling. The remainder is dropped — but say so, in the
+        # log AND to the reader. Silently appending ``text[:limit]`` made the
+        # message look complete while up to tens of KB had been discarded
+        # (measured: a 120 KB reply lost 18 KB with no trace anywhere).
+        dropped = len(text) - limit
+        logger.warning(
+            "Message exceeded the %d-chunk send ceiling; dropping %d trailing chars",
+            _MAX_CHUNKS,
+            max(0, dropped),
+        )
+        tail = text[:limit]
+        if dropped > 0:
+            marker = "\n\n*[ข้อความยาวเกินกำหนด จึงถูกตัดส่วนท้ายออก]*"
+            tail = tail[: max(0, limit - len(marker))] + marker
+        chunks.append(tail)
     return chunks
 
 

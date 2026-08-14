@@ -3669,6 +3669,21 @@ async def handle_chat_message_claude_cli(
         in_tok = max(1, len(full_prompt) // 4)
         out_tok = max(1, len(full_response) // 4)
 
+    # Feed the DB-backed tracker so the dashboard's (subscription-billed but
+    # still quota-consuming) turns show up in !ai_tokens alongside Discord's.
+    # This path has no Discord ids, so it books under the reserved 0/0 bucket —
+    # the dashboard is single-user by design, so one synthetic bucket is an
+    # honest label rather than a fabricated per-user attribution. Only real
+    # ``usage`` is recorded; the 4-chars-per-token fallback above is an estimate
+    # and must not be persisted as if it were measured.
+    if usage:
+        with contextlib.suppress(Exception):
+            from cogs.ai_core.cache.token_tracker import record_usage_snapshot
+
+            await record_usage_snapshot(
+                usage, user_id=0, channel_id=0, guild_id=None, model=CLAUDE_MODEL
+            )
+
     # `chunks_count` mirrors the SDK backend's payload — frontend doesn't
     # currently render it, but emitting it keeps the event shape parity so
     # future UI changes work uniformly across both backends.
