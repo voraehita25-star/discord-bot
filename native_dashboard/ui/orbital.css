@@ -3999,11 +3999,14 @@ html[data-theme="light"] .chat-rail-toggle:hover { background: rgba(163, 37, 93,
     .chat-rail-toggle { display: none; }
     #page-chat .chat-header { padding-left: var(--space-2); }
 }
+/* Colour only. The size used to be half-stated here — `--step--1` type kept
+   inside the standard button's 12px/24px padding, which put it at 42px, two
+   pixels off the 44px standard. It carries `.btn-sm` in the markup now and
+   takes the whole small rung (type AND padding) from one place; see v12·B. */
 #btn-export-all {
     background: none;
     border-color: transparent;
     color: var(--text-tertiary);
-    font-size: var(--step--1);
 }
 #btn-export-all:hover:not(:disabled) {
     background: var(--cyan-50);
@@ -5299,4 +5302,110 @@ html[data-theme="light"] #chat-input:focus-visible {
     background: color-mix(in srgb, var(--accent-red) 12%, transparent);
     border-color: var(--accent-red);
     color: var(--accent-red);
+}
+
+/* ============================================================================
+   v12 — THE THIRD AUDIT LAYER
+
+   A measurement pass over the six screens, both themes, at 1280 and 800, and
+   both densities. Every finding here is a NUMBER that came back different from
+   a number beside it, in a place where the app has already decided the two
+   should agree — so each one is the app's own rule being applied, not a new
+   opinion.
+
+   Two first-pass findings did not survive checking and are recorded in
+   docs/DASHBOARD_UI_AUDIT.md rather than fixed: the 3px header offset on the
+   Status page (the bloom-up reveal caught mid-flight — with motion frozen all
+   six title bars sit at 36..90), and the "nine icon sizes" census (svg.ic is
+   sized in `em` and was correctly tracking nine different parent font sizes).
+   ============================================================================ */
+
+/* ---------------------------------------------------------------------------
+   A · ONE ON-RAMP FROM THE TITLE TO THE PAGE.
+
+   Five screens hang their first panel off `.page-title-bar`'s 24px bottom
+   margin. Logs hangs its log container off `#page-logs .page-header`, which
+   was given `--space-4`, so the panel starts at y=106 there and y=114
+   everywhere else. The header markup genuinely differs — Logs carries the LIVE
+   chip, the level select and three buttons on the title row, which is why it
+   is a `.page-header` at all — but the gap BELOW it is not part of that
+   difference, and Ctrl+3 is a 6-way switch that jumped the deck 8px.
+   --------------------------------------------------------------------------- */
+#page-logs .page-header { margin-bottom: var(--space-5); }
+
+/* ---------------------------------------------------------------------------
+   B · THE TWIN LIST RAILS FINISH THE JOB.
+
+   `ui-invariants.spec.ts` already asserts that the Conversations rail and the
+   Channels rail wear the same panel header, because "two panels of the same
+   species sat side by side in the app wearing different headers". That test
+   reads type only. The BOX was never brought along:
+
+       chat     header 65px   padding 16/16/12   min-height auto   button 36px
+       history  header 59px   padding 12/16      min-height 59px   button 34px
+
+   The button is fixed in the markup (`.btn-sm`, and the bespoke `.btn-new-chat`
+   size is deleted from styles.css). This is the header it sat in — the same
+   padding and the same floor the History rail already pins, so the two rails
+   now close their headers on one line whichever of them you are looking at.
+   --------------------------------------------------------------------------- */
+.chat-sidebar-header {
+    padding: var(--space-3) var(--space-4);
+    min-height: 59px;
+}
+
+/* `#btn-export-all`, the rail's quiet footer action, had the same split: made
+   a ghost (no fill, no border, tertiary ink) and dropped to `--step--1`, but
+   left in the full button's 12px/24px padding — 42px, two off the standard and
+   eight off the rung it had already taken its type from. It carries `.btn-sm`
+   in the markup now, and the half-size declaration is gone from its own rule
+   further up this file rather than being cancelled from here. */
+
+/* ---------------------------------------------------------------------------
+   C · A SETTINGS CARD DRAWS ITS RULES ON ONE LINE.
+
+   The card is 296..1244 with 24px padding. Its `h2` closed on a rule at
+   321..1219 (the content box) while every `.setting-row` below closed on one
+   at 309..1231 — the rows carry `margin-inline: -12px` so the hover band
+   bleeds past the text, and the title never got the same treatment. Two rule
+   widths in one card, 12px apart on each side, stacked directly above each
+   other where the difference is easiest to see.
+
+   The rows are the ones that are right: a rule that stops short of its own
+   card looks like a mistake, and the hover band has to bleed regardless. The
+   title joins them — same overhang, same padding back, so the TEXT does not
+   move (both start at 321) and only the rule grows.
+   --------------------------------------------------------------------------- */
+.settings-card > h2 {
+    margin-inline: calc(var(--space-3) * -1);
+    padding-inline: var(--space-3);
+}
+
+/* ---------------------------------------------------------------------------
+   D · A KEY CHIP IS AS WIDE AS ITS KEY.
+
+   `.shortcut-item` is a grid whose first track is a fixed 86px, which is what
+   makes the twelve descriptions line up. `.shortcut-item kbd { width: 86px }`
+   then stretched every chip to fill that track as well — belt and braces, and
+   the braces cost the component its legibility: `Ctrl+Enter` is 72px of ink in
+   86px and reads correctly, `Esc` is 22px and `?` is SEVEN, floating in the
+   middle of a pill five times its width. A chip that wide around one glyph
+   does not read as a key; it reads as an empty field.
+
+   The track keeps the alignment on its own. The chip goes back to hugging its
+   key and sits at the start of the track, which is where every shortcut list
+   puts it.
+
+   The track then has to be sized to the widest CHIP rather than to the widest
+   chip's old stretched width. Each `.shortcut-item` is its own grid, so rows
+   share no tracks and only a fixed measure can line the descriptions up —
+   which is why 86px was picked in the first place. Freed to hug its key,
+   `Ctrl+Enter` measures 93px and overflowed an 86px track into the 12px gap,
+   leaving 5px of air before its description where every other row has 12.
+   96px clears the longest chord in the list with the gutter intact.
+   --------------------------------------------------------------------------- */
+.shortcut-item { grid-template-columns: 96px minmax(0, 1fr); }
+.shortcut-item kbd {
+    width: auto;
+    justify-self: start;
 }

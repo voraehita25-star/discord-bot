@@ -1764,10 +1764,15 @@ html[data-theme="light"] .api-health-result {
     color: var(--text-primary);
 }
 
-.btn-new-chat {
-    padding: var(--space-2) var(--space-4);
-    font-size: 14px;
-}
+/* (DELETED: `.btn-new-chat { padding: 8px 16px; font-size: 14px }` — a third
+   hand-tuned small button, 36px tall, sitting 2px off the one small rung
+   `.btn-sm`/`.btn-small` were folded onto. It put the Conversations rail's
+   action button at a different size from the Channels rail's Refresh button
+   directly beside it in the reading order, and took the chat header to 65px
+   against the History header's pinned 59px — two panels that
+   `ui-invariants.spec.ts` calls "the same species" and already holds to one
+   heading treatment. The button now carries `.btn-sm` in the markup and takes
+   the rung, which is what it always was.) */
 
 .conversation-list {
     flex: 1;
@@ -5471,7 +5476,27 @@ h1, h2, .page-header h1, .page-header h2, .stat-value, .empty-state h2, .empty-s
     text-shadow: 0 2px 18px rgba(171, 120, 255, 0.28);
 }
 
-html[data-theme="light"] .stat-value { color: var(--text-primary); text-shadow: none; }
+/* (DELETED: `html[data-theme="light"] .stat-value { color: var(--text-primary);
+   text-shadow: none }` — the fourth recurrence of this file's signature cascade
+   bug, and the one the audit doc names: a dawn override written here as
+   `html[data-theme="light"] .x` (0,2,1) silently outranks every later decision
+   in orbital.css, which are plain class rules, and source order never gets
+   consulted.
+
+   It was doing nothing for the ordinary tiles — `.stat-card .stat-value`
+   (orbital, 0,2,0) already paints them `var(--text-primary)` in both themes —
+   and it was actively deleting the hero tile's accent: dark shipped
+   `.stat-card--hero .stat-value { color: var(--accent-cyan) }` (0,2,0) at
+   rgb(255,161,194) while dawn painted the same numeral rgb(35,20,35),
+   identical to the four tiles beside it. The hero's whole emphasis is "lit
+   tile + sakura glyph + accent numeral"; dawn was shipping two of the three.
+   `text-shadow` is unaffected — orbital's `.stat-value { text-shadow: none }`
+   is same-specificity and later, so it wins in both themes either way.
+
+   Removed rather than out-specified, per the rule the audit set after the same
+   defect landed on `.stat-card`, `.chart-card` and `.data-item`. All nine
+   `.stat-value`s in index.html are inside a `.stat-card`, so nothing is left
+   without a colour.) */
 
 /* — Premium buttons: inner highlight + glow + hover shimmer sweep — */
 .btn { position: relative; overflow: hidden; }
