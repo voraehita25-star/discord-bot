@@ -223,6 +223,14 @@ def _format_message_id_prefix(item: dict[str, Any]) -> str:
 # Character tag pattern {{Name}}
 PATTERN_CHARACTER_TAG = re.compile(r"\{\{(.+?)\}\}")
 
+# How many ``{{Name}}`` blocks one turn may send as separate webhook messages.
+# Each block is one Discord send plus a 0.5s spacing sleep, so an adversarial
+# or malformed reply full of tags would otherwise turn a single turn into
+# hundreds of sends. Expressed as a BLOCK count (not an element count) because
+# ``PATTERN_CHARACTER_TAG.split`` returns ``1 + 2 * blocks`` elements — see the
+# cap in ``process_chat`` for why an even element cap silently loses one block.
+MAX_CHARACTER_BLOCKS = 30
+
 # A {{Name}} marker left dangling at the end of a prefix — i.e. immediately
 # before the text being removed. Used to take the speaker label out with the
 # line it labelled.
@@ -2414,15 +2422,29 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # Cap the number of {{Name}} blocks to prevent runaway
                     # webhook spam from a malformed/adversarial response.
-                    # Each block produces 2 elements (name + message) plus
-                    # the leading narrator text, so 60 elements ≈ 30 blocks.
-                    if len(parts) > 60:
+                    #
+                    # ``re.split`` with ONE capture group always returns an ODD
+                    # number of elements — the narrator text, then a (name,
+                    # message) pair per block — so the cap must be odd too. The
+                    # previous even cap (60) ended the list on a NAME whose
+                    # message had just been sliced off, and the send loop's
+                    # ``i + 1 < len(parts)`` guard then skipped it: 29 blocks
+                    # went out where the comment promised 30.
+                    dropped_blocks = 0
+                    _max_parts = 1 + 2 * MAX_CHARACTER_BLOCKS
+                    if len(parts) > _max_parts:
+                        # Round up: a trailing dangling name (no message) still
+                        # counts as a block the reader was meant to see.
+                        dropped_blocks = (len(parts) - _max_parts + 1) // 2
                         logger.warning(
-                            "⚠️ Truncating {{Name}} blocks for channel %s: %d parts -> 60",
+                            "⚠️ Truncating {{Name}} blocks for channel %s: %d parts -> %d "
+                            "(%d block(s) dropped)",
                             channel_id,
                             len(parts),
+                            _max_parts,
+                            dropped_blocks,
                         )
-                        parts = parts[:60]
+                        parts = parts[:_max_parts]
 
                     # If parts has more than 1 element, it means we found {{...}}
                     if len(parts) > 1:
@@ -2473,6 +2495,21 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                                     # Small delay to ensure order and prevent rate limits
                                     await asyncio.sleep(0.5)
+
+                        # Say what the cap swallowed. The FULL reply — every
+                        # dropped block included — is what gets written to
+                        # history above, so a silent truncation leaves Discord
+                        # and the stored turn disagreeing about what was said,
+                        # and the AI will happily reference lines nobody saw.
+                        # Same rule ``_safe_split_message`` already follows for
+                        # its own chunk ceiling: drop if you must, but say so.
+                        if dropped_blocks:
+                            with contextlib.suppress(discord.HTTPException):
+                                await send_channel.send(
+                                    f"*[ตัวละครในข้อความนี้เกิน {MAX_CHARACTER_BLOCKS} ตัว "
+                                    f"จึงไม่ได้ส่งอีก {dropped_blocks} ช่วง]*",
+                                    allowed_mentions=discord.AllowedMentions.none(),
+                                )
 
                         # Stamp the tail model item. ``message_id`` keeps its old
                         # meaning — the FINAL webhook message — because the Discord

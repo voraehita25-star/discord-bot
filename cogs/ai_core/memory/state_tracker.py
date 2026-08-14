@@ -65,9 +65,24 @@ class CharacterState:
         return {k: v for k, v in asdict(self).items() if v is not None and v != []}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> CharacterState:
-        """Create from dictionary."""
+    def from_dict(cls, data: dict[str, Any], default_name: str = "") -> CharacterState:
+        """Create from dictionary.
+
+        ``default_name`` stands in when the payload omits ``name`` — the tracker
+        keys its states BY name, so the mapping key is the authoritative one and
+        the caller passes it here. Without a fallback, ``cls(**fields)`` raised
+        ``TypeError: missing 1 required positional argument: 'name'`` on any
+        hand-edited / partially-written persistence blob and took the whole
+        channel restore down with it.
+        """
+        if not isinstance(data, dict):
+            data = {}
         fields = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        # ``name`` is the one field with no default. Coerce to str as well: the
+        # value is re-injected verbatim into every prompt by to_prompt_text(),
+        # and a non-str would render as its repr.
+        raw_name = fields.get("name")
+        fields["name"] = str(raw_name) if isinstance(raw_name, str | int | float) else default_name
         # Coerce list-typed fields so a persisted/hand-edited scalar (e.g. a bare
         # string for nearby_characters) can't reach to_prompt_text's ", ".join
         # and get joined character-by-character.
@@ -405,13 +420,32 @@ class CharacterStateTracker:
         }
 
     def from_dict(self, channel_id: int, data: dict[str, Any]) -> None:
-        """Import channel states from dictionary."""
+        """Import channel states from dictionary.
+
+        Every container is shape-guarded: this consumes a persistence blob (or a
+        hand-edited one), and a non-dict ``states`` / a non-dict entry inside it
+        used to raise AttributeError straight out of the restore, taking the
+        channel's whole state with it. Malformed entries are skipped
+        individually so one bad row can't discard the good ones — the same
+        per-row tolerance ``entity_memory._row_to_entity`` applies to corrupted
+        facts JSON. The mapping key is passed as the name fallback because the
+        tracker is keyed by name (see :meth:`CharacterState.from_dict`).
+        """
+        if not isinstance(data, dict):
+            return
         with self._lock:
-            if "states" in data:
-                self._states[channel_id] = {
-                    k: CharacterState.from_dict(v) for k, v in data["states"].items()
-                }
-            if "scene" in data:
+            raw_states = data.get("states")
+            if isinstance(raw_states, dict):
+                restored: dict[str, CharacterState] = {}
+                for name, payload in raw_states.items():
+                    if not isinstance(name, str) or not isinstance(payload, dict):
+                        continue
+                    try:
+                        restored[name] = CharacterState.from_dict(payload, default_name=name)
+                    except (TypeError, ValueError):
+                        continue
+                self._states[channel_id] = restored
+            if isinstance(data.get("scene"), str):
                 self._last_scene[channel_id] = data["scene"]
 
 

@@ -246,7 +246,18 @@ class HistoryManager:
 
     def _get_message_content(self, message: dict[str, Any]) -> str:
         """Extract text content from message."""
-        parts = message.get("parts", [])
+        # ``or []`` (not ``.get("parts", [])``): a row that carries the key with
+        # an explicit ``None`` returns None from the two-arg get, and the loop
+        # below then raises ``TypeError: 'NoneType' object is not iterable`` —
+        # out of ``estimate_tokens``, which ``!auto_summarize`` calls OUTSIDE its
+        # try (see ai_cog) and ``debug_commands`` already documents as a runtime
+        # hazard. ``is_summary_entry`` at the top of this module uses the safe
+        # form; this was the one place in the file that didn't. The non-list
+        # guard mirrors ``storage._parts_to_text`` / the JSON loader, which both
+        # normalise the field for exactly this reason.
+        parts = message.get("parts") or []
+        if not isinstance(parts, list):
+            return ""
         text_parts = []
 
         for part in parts:

@@ -187,7 +187,16 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
         tail = text[:limit]
         if dropped > 0:
             marker = "\n\n*[ข้อความยาวเกินกำหนด จึงถูกตัดส่วนท้ายออก]*"
-            tail = tail[: max(0, limit - len(marker))] + marker
+            # Attach the notice only when it FITS. ``limit`` is a caller
+            # parameter, and for any limit below the marker's own length the
+            # old ``tail[: max(0, limit - len(marker))]`` collapsed to an empty
+            # slice — so the emitted chunk was the marker alone, i.e. LONGER
+            # than the limit this function promises every other chunk obeys.
+            # Production callers pass >= 256 so this never bit in practice, but
+            # the bound has to hold for the parameter, not just for today's
+            # call sites.
+            if len(marker) < limit:
+                tail = tail[: limit - len(marker)] + marker
         chunks.append(tail)
     return chunks
 
