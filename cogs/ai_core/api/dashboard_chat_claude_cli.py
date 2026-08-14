@@ -1194,19 +1194,37 @@ def _save_inline_images(
     conversation_id: str,
     images: list[Any],
     max_size_bytes: int,
+    skipped: list[dict[str, Any]] | None = None,
 ) -> list[Path]:
     """Decode dashboard image payloads and write them to a temp dir.
 
     Returns the list of paths written. The dashboard sends each image as a
     ``data:<mime>;base64,<payload>`` URL string; entries that aren't strings,
     aren't a supported image type, or exceed ``max_size_bytes`` after decoding
-    are skipped quietly so a single bad attachment doesn't kill the request.
+    are skipped so a single bad attachment doesn't kill the request.
+
+    ``skipped`` is an optional out-parameter (same shape as
+    ``_send_plain_fallback``'s ``pending``): when a list is passed, one
+    ``{"index", "reason"}`` entry is appended per dropped attachment. Callers
+    MUST surface it. A drop used to be logged server-side and nothing else, so
+    an image the user could see in their own chat bubble was simply invisible
+    to the model — and the frontend's per-image ceiling is 20 MB against this
+    backend's 10 MB, so "attach a photo, get an answer that ignores it" was
+    reachable with no explanation anywhere. The SDK backend has always sent a
+    per-image error frame for exactly this.
     """
+
+    def _skip(index: int, reason: str) -> None:
+        if skipped is not None:
+            skipped.append({"index": index, "reason": reason})
+
     if not images or not conversation_id:
         return []
 
     target_dir = _conversation_temp_dir(_TEMP_IMAGE_ROOT, conversation_id, create=True)
     if target_dir is None:
+        for idx in range(len(images)):
+            _skip(idx, "the attachment folder could not be created")
         return []
 
     written: list[Path] = []
@@ -1221,19 +1239,25 @@ def _save_inline_images(
     rand_suffix = secrets.token_hex(4)
     for idx, raw in enumerate(images):
         if not isinstance(raw, str) or "," not in raw or not raw.startswith("data:"):
+            _skip(idx, "it is not a data: URL")
             continue
         header, _, payload = raw.partition(",")
         # header looks like "data:image/png;base64"
         match = re.match(r"data:([\w/+.\-]+);base64", header)
         if not match:
+            _skip(idx, "its data: URL header is malformed")
             continue
         mime = match.group(1).lower()
         ext = _SUPPORTED_IMAGE_MIME.get(mime)
         if not ext:
+            # Name the type: HEIC/HEIF is the common iPhone case and the user
+            # needs to know to convert rather than blame the AI for not looking.
+            _skip(idx, f"{mime} is not a supported image type — convert to PNG or JPEG")
             continue
         try:
             data = base64.b64decode(payload, validate=True)
         except (ValueError, binascii.Error):
+            _skip(idx, "its image data could not be decoded")
             continue
         # Enforce per-image size cap to mirror the SDK backend's safety net.
         # Without this an attacker (or a misclick) could push a 100 MB image
@@ -1244,6 +1268,11 @@ def _save_inline_images(
                 len(data),
                 max_size_bytes,
             )
+            _skip(
+                idx,
+                f"it is {len(data) // 1024 // 1024} MB — the limit is "
+                f"{max_size_bytes // 1024 // 1024} MB",
+            )
             continue
         path = target_dir / f"{timestamp}_{rand_suffix}_{idx}{ext}"
         # Guard the write so one unwritable file (disk full, permission denied,
@@ -1253,6 +1282,7 @@ def _save_inline_images(
             path.write_bytes(data)
         except OSError:
             logger.warning("Failed to write image attachment %s", path, exc_info=True)
+            _skip(idx, "it could not be written to disk")
             continue
         written.append(path)
     return written
@@ -1301,6 +1331,7 @@ def _save_inline_documents(
     conversation_id: str,
     documents: list[Any],
     max_size_bytes: int,
+    skipped: list[dict[str, Any]] | None = None,
 ) -> list[Path]:
     """Decode dashboard document payloads (PDF / text / code) to a temp dir.
 
@@ -1328,12 +1359,25 @@ def _save_inline_documents(
     path never allow-lists it, with no TTY under ``-p`` to approve it
     interactively. The allowlist's job is to keep opaque binaries and
     credential files out, not to judge whether text is script-shaped.
+
+    ``skipped`` is the same out-parameter :func:`_save_inline_images` takes —
+    one ``{"index", "name", "reason"}`` entry per dropped file, so the caller
+    can tell the user instead of leaving them with an answer that quietly
+    ignored their upload.
     """
+
+    def _skip(index: int, name: str, reason: str) -> None:
+        if skipped is not None:
+            skipped.append({"index": index, "name": name, "reason": reason})
+
     if not documents or not conversation_id:
         return []
 
     target_dir = _conversation_temp_dir(_TEMP_DOCS_ROOT, conversation_id, create=True)
     if target_dir is None:
+        for idx, raw in enumerate(documents):
+            label = str(raw.get("name", "")) if isinstance(raw, dict) else ""
+            _skip(idx, label, "the attachment folder could not be created")
         return []
 
     written: list[Path] = []
@@ -1346,11 +1390,13 @@ def _save_inline_documents(
     rand_suffix = secrets.token_hex(4)
     for idx, raw in enumerate(documents):
         if not isinstance(raw, dict):
+            _skip(idx, "", "the attachment payload is malformed")
             continue
         name = str(raw.get("name", ""))[:200]
         kind = raw.get("kind")
         data_field = raw.get("data")
         if not name or not isinstance(data_field, str):
+            _skip(idx, name, "it arrived with no filename or no readable content")
             continue
 
         # Derive a safe extension from the filename. We do NOT trust the
@@ -1363,6 +1409,7 @@ def _save_inline_documents(
         is_text_ext = ext in _SUPPORTED_DOC_TEXT_EXT
         if not (is_binary_ext or is_text_ext):
             logger.warning("Dropping document with disallowed extension: %s", name)
+            _skip(idx, name, f"'{ext or 'no extension'}' is not an accepted file type")
             continue
 
         # Preserve the user's filename (sanitised) so Claude sees meaningful
@@ -1393,6 +1440,7 @@ def _save_inline_documents(
             try:
                 decoded = base64.b64decode(payload, validate=True)
             except (ValueError, binascii.Error):
+                _skip(idx, name, "its contents could not be decoded")
                 continue
             if len(decoded) > max_size_bytes:
                 logger.warning(
@@ -1400,6 +1448,12 @@ def _save_inline_documents(
                     name,
                     len(decoded),
                     max_size_bytes,
+                )
+                _skip(
+                    idx,
+                    name,
+                    f"it is {len(decoded) // 1024 // 1024} MB — the limit is "
+                    f"{max_size_bytes // 1024 // 1024} MB",
                 )
                 continue
             # Guard the write so one unwritable file (disk full, permission
@@ -1409,6 +1463,7 @@ def _save_inline_documents(
                 path.write_bytes(decoded)
             except OSError:
                 logger.warning("Failed to write document attachment %s", path, exc_info=True)
+                _skip(idx, name, "it could not be written to disk")
                 continue
         else:
             # Text: UTF-8 string. Size check against raw byte length.
@@ -1420,11 +1475,18 @@ def _save_inline_documents(
                     len(encoded),
                     max_size_bytes,
                 )
+                _skip(
+                    idx,
+                    name,
+                    f"it is {len(encoded) // 1024 // 1024} MB — the limit is "
+                    f"{max_size_bytes // 1024 // 1024} MB",
+                )
                 continue
             try:
                 path.write_bytes(encoded)
             except OSError:
                 logger.warning("Failed to write document attachment %s", path, exc_info=True)
+                _skip(idx, name, "it could not be written to disk")
                 continue
         written.append(path)
     return written
@@ -2890,8 +2952,110 @@ async def handle_chat_message_claude_cli(
         min(len(documents_raw), max_documents) if isinstance(documents_raw, list) else 0,
     )
 
-    # Save the user's turn to the DB up front, mirroring the SDK backend so
-    # the conversation log stays consistent across backend toggles.
+    # Decode + persist attachments to disk BEFORE the user row is written, so
+    # the row records only the subset Claude will actually see. The save used to
+    # come first and stored ``capped_images`` verbatim — including the ones the
+    # decode was about to drop — so an oversized photo stayed in the bubble and
+    # was re-served on every reload while the model had never seen it. The SDK
+    # backend's ``_validate_and_decode_images_claude`` docstring names this exact
+    # ordering as the fix; this path had drifted from it.
+    #
+    # Run the sync I/O in a worker thread so a 50 MB image set can't stall the
+    # event loop for hundreds of milliseconds. The ``skipped`` lists are
+    # out-parameters the worker fills in; the await joins the thread, so reading
+    # them below is safe.
+    skipped_images: list[dict[str, Any]] = []
+    image_paths = (
+        await asyncio.to_thread(
+            _save_inline_images,
+            conversation_id or "default",
+            capped_images,
+            max_image_size_bytes,
+            skipped_images,
+        )
+        if capped_images
+        else []
+    )
+
+    # Cap + save document attachments (PDF / text / code) the same way.
+    capped_docs = documents_raw[:max_documents] if isinstance(documents_raw, list) else []
+    skipped_docs: list[dict[str, Any]] = []
+    doc_paths = (
+        await asyncio.to_thread(
+            _save_inline_documents,
+            conversation_id or "default",
+            capped_docs,
+            max_document_size_bytes,
+            skipped_docs,
+        )
+        if capped_docs
+        else []
+    )
+
+    # The count caps are their own kind of silent loss: the frontend allows 5
+    # images but a non-standard client can send more, and slicing them away with
+    # no word left the user believing all of them were read.
+    dropped_by_cap: list[str] = []
+    if isinstance(images_raw, list) and len(images_raw) > max_images:
+        dropped_by_cap.append(f"{len(images_raw) - max_images} image(s) over the {max_images} cap")
+    if isinstance(documents_raw, list) and len(documents_raw) > max_documents:
+        dropped_by_cap.append(
+            f"{len(documents_raw) - max_documents} document(s) over the {max_documents} cap"
+        )
+
+    def _unlink_this_turns_attachments() -> None:
+        # Cancellation-safe cleanup for the window BEFORE the main try/finally
+        # (entered at the ``try:`` before the CLI spawn) takes ownership. A
+        # CancelledError from a client disconnect / shutdown at any await in
+        # between (extract_and_persist, DB history load, build_user_context)
+        # would otherwise orphan these just-written temp files on disk.
+        for _attach in (*image_paths, *(doc_paths or [])):
+            with contextlib.suppress(Exception):
+                _attach.unlink(missing_ok=True)
+
+    # Say what was dropped. A dropped attachment used to reach only bot.log, so
+    # the user got an answer that ignored a file they can still see in their own
+    # message — with no way to tell whether the model looked at it. The SDK
+    # backend sends a per-image error frame for the same conditions; this is the
+    # CLI path's equivalent, batched into one notice.
+    if skipped_images or skipped_docs or dropped_by_cap:
+        _lines = [
+            *(f"image #{s['index'] + 1}: {s['reason']}" for s in skipped_images),
+            *(f"{s['name'] or f'document #{s["index"] + 1}'}: {s['reason']}" for s in skipped_docs),
+            *dropped_by_cap,
+        ]
+        logger.warning("chat-cli dropped %d attachment(s): %s", len(_lines), "; ".join(_lines))
+        with contextlib.suppress(Exception):
+            await ws.send_json(
+                {
+                    "type": "warning",
+                    "message": (
+                        "Some attachments were not sent to the AI — " + "; ".join(_lines[:10])
+                    ),
+                    "conversation_id": conversation_id,
+                }
+            )
+
+    # Re-check emptiness AFTER decoding: the earlier guard only knew the raw
+    # attachment lists were non-empty, but _save_inline_images/_documents can
+    # drop every attachment (decode/size failures), leaving image_paths and
+    # doc_paths empty with no content either. Spawning claude -p on that body
+    # burns a turn for nothing, so bail with the same empty/no-usable frame.
+    # Nothing has been persisted at this point, so there is no phantom row to
+    # clean up — which the old save-first ordering had to do explicitly.
+    if not content and not image_paths and not doc_paths:
+        await ws.send_json(
+            {"type": "error", "message": "Empty message", "conversation_id": conversation_id}
+        )
+        return
+
+    # Only the attachments that survived decoding are worth persisting — the
+    # dropped ones would render in the bubble as if the model had read them.
+    _dropped_idx = {s["index"] for s in skipped_images}
+    accepted_images = [img for i, img in enumerate(capped_images) if i not in _dropped_idx]
+
+    # Save the user's turn to the DB, mirroring the SDK backend so the
+    # conversation log stays consistent across backend toggles.
     # IMPORTANT: store the raw content — the [timestamp] prefix is for the AI
     # only and gets injected into the prompt below. Persisting it would make
     # the dashboard render `[2026-04-23T...] hello` to the user, which is
@@ -2906,64 +3070,10 @@ async def handle_chat_message_claude_cli(
                 conversation_id,
                 "user",
                 content,
-                images=capped_images if capped_images else None,
+                images=accepted_images if accepted_images else None,
             )
         except Exception:
             logger.exception("Failed to save user message (CLI backend)")
-
-    # Decode + persist images to disk so Claude can Read them by path.
-    # Run sync I/O in a worker thread so a 50 MB image set can't stall the
-    # event loop for hundreds of milliseconds.
-    image_paths = (
-        await asyncio.to_thread(
-            _save_inline_images,
-            conversation_id or "default",
-            capped_images,
-            max_image_size_bytes,
-        )
-        if capped_images
-        else []
-    )
-
-    # Cap + save document attachments (PDF / text / code) the same way.
-    capped_docs = documents_raw[:max_documents] if isinstance(documents_raw, list) else []
-    doc_paths = (
-        await asyncio.to_thread(
-            _save_inline_documents,
-            conversation_id or "default",
-            capped_docs,
-            max_document_size_bytes,
-        )
-        if capped_docs
-        else []
-    )
-
-    def _unlink_this_turns_attachments() -> None:
-        # Cancellation-safe cleanup for the window BEFORE the main try/finally
-        # (entered at the ``try:`` before the CLI spawn) takes ownership. A
-        # CancelledError from a client disconnect / shutdown at any await in
-        # between (extract_and_persist, DB history load, build_user_context)
-        # would otherwise orphan these just-written temp files on disk.
-        for _attach in (*image_paths, *(doc_paths or [])):
-            with contextlib.suppress(Exception):
-                _attach.unlink(missing_ok=True)
-
-    # Re-check emptiness AFTER saving: the earlier guard only knew the raw
-    # attachment lists were non-empty, but _save_inline_images/_documents can
-    # drop every attachment (decode/size failures), leaving image_paths and
-    # doc_paths empty with no content either. Spawning claude -p on that body
-    # burns a turn for nothing, so bail with the same empty/no-usable frame.
-    if not content and not image_paths and not doc_paths:
-        # All attachments failed to decode and there is no text — delete the user
-        # row optimistically saved above so the DB doesn't keep a phantom empty
-        # message for a turn that never actually ran.
-        if user_msg_id is not None and DB_AVAILABLE and conversation_id:
-            with contextlib.suppress(Exception):
-                await get_db().delete_dashboard_message(user_msg_id)
-        await ws.send_json(
-            {"type": "error", "message": "Empty message", "conversation_id": conversation_id}
-        )
-        return
 
     # Persistent document memory — extract text from every attached document
     # and save it to the DB so future turns (in any conversation) see the

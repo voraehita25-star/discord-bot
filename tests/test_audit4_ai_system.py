@@ -22,14 +22,20 @@ Findings covered:
      neither its half-chunk boundary floor (an early newline produced a runt
      chunk — a whole extra webhook message on Thai RP text) nor its
      single-newline consumption (``lstrip("\\n")`` ate intentional blank lines).
+  7. The CLI dashboard backend dropped over-size / unsupported attachments with
+     only a server-side log, and persisted the REJECTED payload to the user
+     row — so an image the user could still see in their own bubble had never
+     reached the model, with nothing anywhere saying so.
 """
 
 from __future__ import annotations
 
+import base64
 import inspect
 
 import pytest
 
+import cogs.ai_core.api.dashboard_chat_claude_cli as cli_mod
 import cogs.ai_core.logic as logic_mod
 from cogs.ai_core.logic import MAX_CHARACTER_BLOCKS, PATTERN_CHARACTER_TAG, _split_for_discord
 from cogs.ai_core.memory.history_manager import HistoryManager
@@ -408,3 +414,84 @@ class TestTheTwoSplittersAgree:
         assert chunks[1] == "B" * 1500
         # Exactly one newline lost, and it is the delimiter.
         assert "".join(chunks) == text.replace("\n\n", "\n", 1)
+
+
+def _data_url(mime: str, payload: bytes) -> str:
+    return f"data:{mime};base64,{base64.b64encode(payload).decode()}"
+
+
+class TestDroppedAttachmentsAreReported:
+    """A dropped attachment reached bot.log and nowhere else.
+
+    The frontend's per-image ceiling is 20 MB and this backend's is 10 MB, so
+    "attach a photo, get an answer that ignores it" was reachable with no
+    explanation anywhere — the image still rendered in the user's own bubble
+    because the REJECTED payload was what got persisted to the user row (the
+    save ran before the decode). The SDK backend has always sent a per-image
+    error frame and persisted only the accepted subset.
+    """
+
+    @pytest.fixture(autouse=True)
+    def isolate_roots(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, "_TEMP_IMAGE_ROOT", tmp_path / "img")
+        monkeypatch.setattr(cli_mod, "_TEMP_DOCS_ROOT", tmp_path / "doc")
+
+    def test_oversized_image_reports_its_size_and_the_limit(self) -> None:
+        url = _data_url("image/png", b"x" * 5000)
+        skipped: list[dict] = []
+        written = cli_mod._save_inline_images("conv-1", [url], 1024, skipped)
+        assert written == []
+        assert len(skipped) == 1
+        assert skipped[0]["index"] == 0
+        assert "limit" in skipped[0]["reason"]
+
+    def test_unsupported_type_names_the_type(self) -> None:
+        url = _data_url("image/heic", b"x" * 10)
+        skipped: list[dict] = []
+        assert cli_mod._save_inline_images("conv-1", [url], 1024, skipped) == []
+        assert "image/heic" in skipped[0]["reason"]
+
+    def test_accepted_image_is_not_reported(self) -> None:
+        url = _data_url("image/png", b"x" * 10)
+        skipped: list[dict] = []
+        assert len(cli_mod._save_inline_images("conv-1", [url], 1024, skipped)) == 1
+        assert skipped == []
+
+    def test_index_identifies_which_image_of_a_batch(self) -> None:
+        good = _data_url("image/png", b"x" * 10)
+        bad = _data_url("image/png", b"x" * 5000)
+        skipped: list[dict] = []
+        written = cli_mod._save_inline_images("conv-1", [good, bad, good], 1024, skipped)
+        assert len(written) == 2
+        assert [s["index"] for s in skipped] == [1]
+
+    def test_document_drop_names_the_file(self) -> None:
+        skipped: list[dict] = []
+        docs = [{"name": "secrets.exe", "kind": "text", "data": "x"}]
+        assert cli_mod._save_inline_documents("conv-1", docs, 1024, skipped) == []
+        assert skipped[0]["name"] == "secrets.exe"
+        assert ".exe" in skipped[0]["reason"]
+
+    def test_oversized_document_reports_the_limit(self) -> None:
+        skipped: list[dict] = []
+        docs = [{"name": "big.txt", "kind": "text", "data": "x" * 5000}]
+        assert cli_mod._save_inline_documents("conv-1", docs, 1024, skipped) == []
+        assert "limit" in skipped[0]["reason"]
+
+    def test_out_param_is_optional(self) -> None:
+        """Existing callers pass no list; the signature must stay compatible."""
+        url = _data_url("image/png", b"x" * 5000)
+        assert cli_mod._save_inline_images("conv-1", [url], 1024) == []
+        assert (
+            cli_mod._save_inline_documents("conv-1", [{"name": "a.exe", "data": "x"}], 1024) == []
+        )
+
+    def test_handler_persists_only_accepted_images(self) -> None:
+        """The user row must not carry a payload the model never saw."""
+        source = inspect.getsource(cli_mod.handle_chat_message_claude_cli)
+        assert "images=accepted_images if accepted_images else None" in source, (
+            "the user row is being saved with the raw (pre-decode) image list again"
+        )
+        # …and the decode has to run BEFORE that save, or there is nothing to
+        # filter against.
+        assert source.index("_save_inline_images") < source.index("save_dashboard_message")
