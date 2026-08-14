@@ -237,3 +237,99 @@ without a colour.
 including the geometry invariants, `theme-parity`, `upgrade-guards` and the
 pixel-sampled contrast guards. The visual-regression baselines were re-run and
 did not need rewriting — every delta sits inside their declared 0.5% tolerance.
+
+# Third pass — 2026-08-14 (v13): the Settings page
+
+This pass started as a plan to re-tier the eight Settings card headings from
+TITLE to EYEBROW, on the grounds that they were the app's last disagreement
+about what a panel header looks like. **That premise was wrong**, and checking
+it is what produced the change that shipped instead.
+
+## The premise, and why it did not survive
+
+`orbital.css`'s `HEADING CONTRACT` comment does not merely permit the Settings
+treatment — it names those exact cards as the TITLE tier's examples:
+
+> **TITLE** … The card's subject IS the content. "Discord Bot", **"AI
+> Appearance", "Profile"**, "Danger Zone".
+> **EYEBROW** … A label OVER a list or a grid; **the content is the rows, not
+> the heading**. "RECENT CHANNELS", "QUICK ACTIONS", "CONVERSATIONS".
+
+The discriminator holds up: "Recent Channels" names the *collection* whose
+members are the rows; "Profile" names a *topic* whose rows are controls for it.
+Different relationships, correctly tiered.
+
+And the measurement killed the idea outright. The page is **3,023px — 3.8
+screens** at the 800px design height, with **no sub-navigation**. The eight card
+titles are therefore the page's only wayfinding, and quieting the only wayfinding
+on the app's longest scroll would have made it worse, not more consistent.
+
+## What the measurement actually found
+
+The weakness was never the type tier. It was that **3.8 screens of settings had
+no way in except scrolling** — and the command palette's own docstring had
+already said so, a year of commits earlier, without acting on it:
+
+> "…everything NOT in it is reachable only by navigating to the screen that owns
+> the control and finding it there. **Settings alone is eight stacked cards
+> deep.**"
+
+The palette had promoted the three *controls* worth surfacing (theme, density,
+petals) and left the other five sections unreachable.
+
+## Fixed — the palette becomes the sub-navigation
+
+`Ctrl+K` now offers one command per Settings section. Chosen over a visible
+section index because the app already designated the palette as "a way *in*",
+and a second vertical nav column beside the sidebar rail is a worse shape than
+no index at all — this closes the gap without contradicting the documented
+"no sub-navigation" decision or adding a pixel of new chrome.
+
+Three details carry the design:
+
+- **Derived, not listed.** The commands are read off the DOM each time the
+  palette opens: label from the card's `h2`, glyph from the sprite that `h2`
+  already references, keywords from every control caption in the card plus its
+  hint. A hardcoded list of eight headings would be a second source of truth
+  that goes stale on the first rename — the failure this codebase keeps meeting.
+  The spec asserts the two sets are **equal**, not overlapping, so a hardcoded
+  list cannot creep back in and still pass.
+- **Searchable by the setting, not just the section.** Because the keywords are
+  the card's own captions, `telemetry` finds Privacy and `display name` finds
+  Profile — words that appear in no heading. Safe to make long: keyword matching
+  is a plain substring test (`scoreCommand`), not the subsequence match used on
+  labels, so extra text cannot manufacture hits.
+- **The jump moves the cursor, not just the pixels.** `scrollIntoView` alone
+  leaves the keyboard and screen-reader position behind — the standard skip-link
+  defect — so the card takes `tabindex="-1"` and focus. The focus ring is also
+  what marks the arrival, which matters most for the bottom cards: the last
+  section **cannot** be top-aligned (there is no viewport's worth of page
+  beneath it, so the browser stops at max scroll and it lands mid-screen). The
+  spec asserts top-alignment for a card that can reach the top and
+  full-visibility-plus-focus for the one that cannot.
+
+**Two traps met on the way**, both already on this document's record:
+
+- `.page.active` runs a 300ms `fadeIn` from `translateY(10px)`, so a scroll
+  computed mid-flight measures the shifted box and then drifts. The reveal awaits
+  the page's own `getAnimations()` rather than sleeping for "about 300ms" —
+  which also keeps the duration declared in one place, and yields instantly when
+  reduced motion means there was no animation. This is the same transform that
+  produced the withdrawn "Status header is 3px out" finding in v12.
+- `scroll-margin-top` is `--space-4` (16px), deliberately **smaller** than the
+  20px gap between cards. At 24px the landing cleared the gap and pulled 4px of
+  the previous card back into frame — a hairline slice of a bordered surface
+  pinned to the top edge, which reads as a rendering artifact rather than as
+  "there is more above".
+
+## Also corrected
+
+`design-system/app-context.md` described Settings as "**7** stacked cards". There
+are eight, and there have been for some time.
+
+## Status
+
+**713 vitest cases and all 207 e2e tests pass** (202 before this pass; the five
+new ones cover the derivation, the keyword search, both landing cases and the
+destructive-label guard extended to the derived rows). No CSS was added beyond
+one `scroll-margin-top`; the heading tier is untouched.

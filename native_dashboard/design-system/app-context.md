@@ -26,7 +26,7 @@ class="page">`, toggled with `.active`. Nothing is routed or mounted.
 | `page-logs` | `LOG // STREAM` | Log Viewer | uses `.page-header`, not `.page-title-bar` — it carries the LIVE chip, a level `<select>` and three buttons on the title row |
 | `page-database` | `DATA // STORE` | Database Statistics | 4 stat tiles, Recent Channels, Top Users, Danger Zone |
 | `page-history` | `ARCHIVE // AI HISTORY` | AI History | two panes: channel rail + transcript, with inline message editing |
-| `page-settings` | `CFG // SETTINGS` | Settings | **7 stacked cards**, no sub-navigation |
+| `page-settings` | `CFG // SETTINGS` | Settings | **8 stacked cards**, no sub-navigation — reached from the command palette instead (see below) |
 
 **There are six, not five.** `Ctrl+1…6`. AI History is a real screen and is
 easy to miss because no component card shows it whole.
@@ -38,6 +38,19 @@ button row, pinned to the upper third rather than centred, because it is a way
 *in* rather than a question about the thing you were looking at. It lists every
 non-destructive action in the app, fuzzy-ranked, with each command's existing
 chord beside it.
+
+It is also **the Settings page's missing sub-navigation**. That page is 3,023px
+— 3.8 screens at the design height — so a `Settings: <section>` command is
+generated for each of the eight cards, and running one switches to the page,
+scrolls the card to the top of the reading column and moves focus to it. Two
+things about those rows are worth knowing before proposing anything near them:
+they are **read off the DOM at invocation time**, not listed (label from the
+card's `h2`, glyph from the sprite that `h2` already references, search keywords
+from every control caption in the card plus its hint) — so a card renamed or
+added updates the palette by itself, and `tests-e2e/command-palette.spec.ts`
+asserts the two sets are EQUAL rather than overlapping. Consequently a heading
+change is a palette change, and a heading that named something destructive would
+put it one Enter away.
 
 `#page-chat` has a title bar but hides it *visually* (`position: absolute`, 1px)
 so the transcript can take the full column; the `<h1>` stays in the

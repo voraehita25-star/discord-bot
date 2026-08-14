@@ -439,6 +439,104 @@ let commandPalette = null;
  * value is, and a constant captured at module load would keep toggling against
  * a stale one.
  */
+/**
+ * Scroll a Settings section into view and hand it the cursor.
+ *
+ * Async because the page it lives on may only just have been switched to, and
+ * `.page.active` runs a 300ms `fadeIn` that starts at `translateY(10px)`
+ * (styles.css). A scroll computed while that transform is live measures the
+ * shifted box, lands ~10px off, and then drifts as the transform resolves —
+ * the same trap that made the Status page's header look 3px out in the v12
+ * audit. Waiting on the element's OWN animations rather than sleeping for
+ * "about 300ms" keeps the duration declared in exactly one place, and yields
+ * immediately when reduced motion means there was never an animation to wait
+ * for.
+ *
+ * The focus call is not decoration. A jump that moves only pixels leaves the
+ * keyboard and screen-reader cursor wherever it was, so the next Tab continues
+ * from the top of the page and a screen reader never announces the arrival —
+ * the standard skip-link defect. `tabindex="-1"` makes the card programmatically
+ * focusable WITHOUT putting eight cards into the tab order, and is set here
+ * rather than in the markup so the attribute exists only once the feature is
+ * actually used.
+ */
+async function revealSettingsSection(card) {
+    const page = document.getElementById('page-settings');
+    if (page && typeof page.getAnimations === 'function') {
+        // `finished` REJECTS on a cancelled animation (navigating away again
+        // mid-flight), which would otherwise surface as an unhandled rejection.
+        await Promise.all(page.getAnimations().map((a) => a.finished.catch(() => undefined)));
+    }
+    // The reader may have moved on while we waited.
+    if (currentPage !== 'settings')
+        return;
+    card.scrollIntoView({
+        block: 'start',
+        behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+    });
+    card.setAttribute('tabindex', '-1');
+    // preventScroll: focus() would otherwise jump instantly to the element and
+    // cancel the smooth scroll we just started.
+    card.focus({ preventScroll: true });
+}
+/**
+ * One palette command per Settings section, READ OFF THE PAGE rather than
+ * listed here.
+ *
+ * The palette's own docstring already named this gap — "Settings alone is eight
+ * stacked cards deep" — and then only surfaced the three controls (theme,
+ * density, petals) that happened to be worth promoting. The page measures
+ * 3,023px, is 3.8 screens at the design height, and has no sub-navigation by
+ * design, so every other section is reachable only by scrolling until you
+ * recognise its heading.
+ *
+ * Derived, not duplicated: a hardcoded list of eight headings is a second
+ * source of truth that goes stale the first time a card is renamed, added or
+ * reordered, which is the failure this codebase keeps meeting. Reading the DOM
+ * means the palette cannot disagree with the page. `buildCommands` is already
+ * called per-invocation (so the toggle labels read live state), so there is no
+ * staleness to trade for it either.
+ *
+ * The label is prefixed because groups are only shown while the query is EMPTY
+ * — type anything and the list goes flat — so a bare "Keyboard Shortcuts"
+ * section would be indistinguishable from the existing Help command that opens
+ * the shortcuts MODAL. "Settings: …" also matches the app's existing habit of
+ * naming a destination by where it goes.
+ *
+ * Keywords are every control caption in the card plus its hint, so a section is
+ * findable by the name of the setting inside it — "telemetry" finds Privacy,
+ * "petals" finds Appearance — without inventing a synonym list. Safe to make
+ * long: keyword matching is a plain substring test (`scoreCommand`), not the
+ * subsequence match used on labels, so extra text cannot manufacture hits.
+ */
+function buildSettingsSectionCommands() {
+    const cards = document.querySelectorAll('#page-settings .settings-card');
+    return Array.from(cards).flatMap((card, i) => {
+        const h2 = card.querySelector('h2');
+        const name = (h2?.textContent ?? '').replace(/\s+/g, ' ').trim();
+        if (name === '')
+            return [];
+        // Reuse the glyph the card already wears, so the row and the section it
+        // leads to are recognisably the same thing. Taken from the sprite
+        // reference rather than chosen, which also guarantees it is one of the
+        // 58 symbols that actually exist.
+        const href = h2?.querySelector('use')?.getAttribute('href') ?? '';
+        const glyph = href.startsWith('#i-') ? href.slice(3) : 'settings';
+        const captions = Array.from(card.querySelectorAll('.setting-row label, .setting-row .setting-label')).map((l) => l.textContent ?? '');
+        const hint = card.querySelector('.settings-hint')?.textContent ?? '';
+        return [{
+                id: `settings-section-${i}`,
+                label: `Settings: ${name}`,
+                group: 'Settings',
+                icon: glyph,
+                keywords: [...captions, hint].join(' ').replace(/\s+/g, ' ').trim().toLowerCase(),
+                run: () => {
+                    switchPage('settings');
+                    void revealSettingsSection(card);
+                },
+            }];
+    });
+}
 function buildCommands() {
     const nav = (page, label, icon, hint, keywords) => ({
         id: `nav-${page}`, label, group: 'Navigate', icon, hint, keywords,
@@ -516,6 +614,11 @@ function buildCommands() {
             id: 'data-data-folder', label: 'Open Data Folder', group: 'Data', icon: 'folder',
             keywords: 'explorer directory file path database', run: () => void openFolder('data'),
         },
+        // Last in the resting menu on purpose. These are the long tail — you
+        // reach a settings section by TYPING its name, not by scrolling a menu
+        // to it — and putting eight rows any higher would bury the four Bot
+        // commands, which are the ones worth seeing without a query.
+        ...buildSettingsSectionCommands(),
         {
             id: 'help-shortcuts', label: 'Keyboard Shortcuts', group: 'Help', icon: 'keyboard',
             hint: '?', keywords: 'keys chords bindings help',

@@ -5409,3 +5409,28 @@ html[data-theme="light"] #chat-input:focus-visible {
     width: auto;
     justify-self: start;
 }
+
+/* ---------------------------------------------------------------------------
+   E · A SETTINGS SECTION ARRIVED AT IS FRAMED, NOT FLUSH.
+
+   Ctrl+K now jumps to any of the eight Settings sections (the page is 3,023px
+   — 3.8 screens at the design height — and has no sub-navigation by design, so
+   until now every section but the first was reachable only by scrolling until
+   you recognised its heading). `scrollIntoView({block:'start'})` aligns the
+   card's top edge with the scrollport's, which puts a just-arrived heading
+   hard against the top of the reading column with nothing above it — it reads
+   as a page that has been cut off rather than one that has been scrolled.
+
+   `scroll-margin-top` is the property for exactly this: it pads the box the
+   scroll ANCHORS to without adding any layout, so the card still stacks
+   flush with its neighbours and only the landing position moves.
+
+   The value is deliberately SMALLER than the 20px gap between cards. At
+   --space-5 (24px) the landing cleared the gap and pulled 4px of the previous
+   card back into frame — a hairline slice of a bordered surface pinned to the
+   top edge, which reads as a rendering artifact rather than as "there is more
+   above". Sized to sit inside the gap, the arriving section is framed by
+   nothing but empty column. (If the inter-card margin ever drops below 16px
+   the sliver comes back; the two want to stay on the same side of each other.)
+   --------------------------------------------------------------------------- */
+.settings-card { scroll-margin-top: var(--space-4); }

@@ -154,3 +154,134 @@ test('axe finds no violation in the open palette', async ({ page }) => {
     const results = await new AxeBuilder({ page }).include('#command-palette').analyze();
     expect(results.violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
 });
+
+/**
+ * Settings sections in the palette.
+ *
+ * The Settings page is 3,023px — 3.8 screens at the 800px design height — and
+ * has no sub-navigation by design, so until these commands existed every
+ * section but the first was reachable only by scrolling until you recognised
+ * its heading. The palette's own docstring had already named the gap ("Settings
+ * alone is eight stacked cards deep") without closing it.
+ */
+test('every Settings section is in the palette, and the set is read off the page', async ({
+    page,
+}) => {
+    const onPage = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('#page-settings .settings-card h2')).map((h) =>
+            (h.textContent || '').replace(/\s+/g, ' ').trim(),
+        ),
+    );
+    expect(onPage.length, 'the settings page grew or lost cards').toBeGreaterThan(4);
+
+    await open(page);
+    const inPalette = (await page.locator(rows).allTextContents())
+        .map((t) => t.replace(/\s+/g, ' ').trim())
+        .filter((t) => t.startsWith('Settings:'))
+        .map((t) => t.replace(/^Settings:\s*/, ''));
+
+    // Not "contains" — EQUAL. The commands are derived from the DOM precisely
+    // so the two can never drift; asserting the weaker relation would let a
+    // hardcoded list creep back in and still pass.
+    expect(inPalette, 'the palette and the page disagree about the sections').toEqual(onPage);
+});
+
+test('a Settings section is findable by the name of a setting inside it', async ({ page }) => {
+    // Keywords are the card's own control captions, so you can search for the
+    // thing you want to change rather than the section someone filed it under.
+    await open(page);
+    await page.keyboard.type('display name');
+    await expect(
+        page.locator(rows).first(),
+        '"Display Name" is a caption in the Profile card',
+    ).toContainText('Settings: Profile');
+});
+
+/** Where a section sits relative to the reading column, and whether it all fits. */
+const sectionBox = (page: Page, heading: string): Promise<{ top: number; inView: boolean } | null> =>
+    page.evaluate((h) => {
+        const card = Array.from(
+            document.querySelectorAll<HTMLElement>('#page-settings .settings-card'),
+        ).find((c) => (c.querySelector('h2')?.textContent || '').trim() === h);
+        const content = document.querySelector('.content');
+        if (!card || !content) return null;
+        const c = card.getBoundingClientRect();
+        const v = content.getBoundingClientRect();
+        return {
+            top: Math.round(c.top - v.top),
+            inView: c.top >= v.top - 1 && c.bottom <= v.bottom + 1,
+        };
+    }, heading);
+
+const runCommand = async (page: Page, query: string, label: string): Promise<void> => {
+    await open(page);
+    await page.keyboard.type(query);
+    await expect(page.locator(rows).first()).toContainText(label);
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#page-settings')).toHaveClass(/active/);
+};
+
+const focusedSection = (page: Page): Promise<string | null> =>
+    page.evaluate(() => {
+        const el = document.activeElement as HTMLElement | null;
+        if (!el?.classList.contains('settings-card')) return null;
+        return (el.querySelector('h2')?.textContent || '').trim();
+    });
+
+test('running one scrolls to its section and hands it the cursor', async ({ page }) => {
+    // Instant scroll, so the assertion is not racing an animation.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await runCommand(page, 'display name', 'Settings: Profile');
+
+    // Near the top of the reading column, and NOT flush against it — the card
+    // carries scroll-margin-top so an arrival is framed. `block: 'start'` would
+    // otherwise put the heading hard on the scrollport edge.
+    await expect
+        .poll(async () => (await sectionBox(page, 'Profile'))?.top ?? -1, {
+            message: 'the Profile card never reached the top of the reading column',
+        })
+        .toBeLessThan(80);
+    expect((await sectionBox(page, 'Profile'))!.top, 'flush against the edge').toBeGreaterThan(4);
+
+    // A jump that moves only pixels leaves the keyboard and screen-reader
+    // cursor behind — the standard skip-link defect. Focus follows the scroll.
+    expect(await focusedSection(page), 'focus was not moved to the section').toBe('Profile');
+});
+
+test('the LAST section still arrives fully in view, where no scroll can top-align it', async ({
+    page,
+}) => {
+    // The bottom card cannot reach the scrollport top — there is not a
+    // viewport's worth of page beneath it, so the browser stops at max scroll
+    // and it lands mid-screen. That is unavoidable and is exactly why the
+    // focus move matters: it, not the scroll position, is what marks the
+    // arrival. Assert the contract that DOES hold everywhere — the whole
+    // section is on screen, and the cursor is on it.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    const last = await page.evaluate(() => {
+        const cards = document.querySelectorAll('#page-settings .settings-card h2');
+        return (cards[cards.length - 1]?.textContent || '').replace(/\s+/g, ' ').trim();
+    });
+    await runCommand(page, last.toLowerCase(), `Settings: ${last}`);
+
+    await expect
+        .poll(async () => (await sectionBox(page, last))?.inView ?? false, {
+            message: `the ${last} card did not come fully into view`,
+        })
+        .toBe(true);
+    expect(await focusedSection(page)).toBe(last);
+});
+
+test('the eight section rows put nothing destructive in reach', async ({ page }) => {
+    // The section labels are derived from page headings, so a future card named
+    // e.g. "Reset Everything" would silently arm Enter-on-top-hit. Same guard as
+    // the authored commands, applied to the derived ones.
+    await open(page);
+    const derived = (await page.locator(rows).allTextContents()).filter((t) =>
+        t.includes('Settings:'),
+    );
+    expect(derived.length).toBeGreaterThan(4);
+    for (const word of ['clear', 'delete', 'wipe', 'reset', 'remove']) {
+        expect(derived.join(' ').toLowerCase()).not.toContain(word);
+    }
+});
