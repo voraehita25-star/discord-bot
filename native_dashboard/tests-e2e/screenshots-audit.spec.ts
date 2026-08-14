@@ -33,8 +33,20 @@ async function show(page: Page, name: string): Promise<void> {
     await page.waitForTimeout(250);
 }
 
+/**
+ * Flip the theme through the app's OWN toggle, not by writing data-theme.
+ *
+ * The attribute alone re-colours everything the cascade owns and nothing else —
+ * and the two performance charts are `<canvas>`, painted once from the tokens
+ * that were live at draw time. Setting the attribute left both canvases holding
+ * their dark-theme paint, so every "light" chart shot in this audit showed a
+ * white end-label ("512.8 MB") on white paper and read as a contrast bug that
+ * does not exist in the app. applyTheme() calls updateCharts() precisely so the
+ * real toggle does not have that hole; going through the button exercises it.
+ */
 async function setTheme(page: Page, theme: 'dark' | 'light'): Promise<void> {
-    await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+    const current = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+    if (current !== theme) await page.locator('#theme-toggle').click();
     // Colour tokens transition over --dur-base (.22s); shoot the settled frame,
     // not a half-interpolated one that reads as a contrast bug that isn't there.
     await page.waitForTimeout(400);
@@ -43,38 +55,69 @@ async function setTheme(page: Page, theme: 'dark' | 'light'): Promise<void> {
 /**
  * The AI-History page has no IPC command behind it — history-manager.ts drives
  * it off the WebSocket — so a populated capture means injecting the markup the
- * manager itself emits (src-ts/history-manager.ts:1738-1751).
+ * manager itself emits.
+ *
+ * ⚠️ This markup MUST track the real emitters, or the capture is a picture of a
+ * component that does not exist. It shipped once with a `.ai-channel-item`
+ * channel row — a class name no renderer writes and no stylesheet styles — so
+ * the rail rendered as a run of unstyled inline chips in every audit shot ever
+ * taken, and two design passes read that as the shipped design. The sources of
+ * truth are `renderChannels()` (history-manager.ts, `.history-channel-item`),
+ * `updateHeader()`, and `messageRowHtml()`. `zz` ⇒ if you add a class here,
+ * grep it in src-ts/ first.
  */
 async function fillHistory(page: Page): Promise<void> {
     await page.evaluate(() => {
         const list = document.getElementById('ai-channel-list');
         if (list) {
-            list.innerHTML = Array.from({ length: 6 }, (_, i) => `
-                <button class="ai-channel-item${i === 1 ? ' active' : ''}" type="button">
-                    <span class="ai-channel-name">#general-${i + 1}</span>
-                    <span class="ai-channel-count">${[3, 128, 42, 7, 1904, 61][i]}</span>
-                </button>`).join('');
+            // Mirrors renderChannels(): a listbox of role=option rows, each a
+            // name over a meta line of count badge + relative last-active.
+            list.setAttribute('role', 'listbox');
+            const meta = [
+                { n: 3, t: '2m ago' }, { n: 128, t: '18m ago' }, { n: 42, t: '1h ago' },
+                { n: 7, t: '3h ago' }, { n: 1904, t: 'yesterday' }, { n: 61, t: '4d ago' },
+            ];
+            list.innerHTML = meta.map((m, i) => `
+                <div class="history-channel-item${i === 1 ? ' active' : ''}"
+                     id="ai-channel-opt-${i}" role="option"
+                     aria-selected="${i === 1 ? 'true' : 'false'}"
+                     tabindex="${i === 1 ? '0' : '-1'}"
+                     data-channel-id="${i}">
+                    <div class="history-channel-name">#general-${i + 1}</div>
+                    <div class="history-channel-meta">
+                        <span class="history-count-badge">${m.n}</span>
+                        <span class="history-last-active">${m.t}</span>
+                    </div>
+                </div>`).join('');
         }
         const header = document.getElementById('ai-history-header');
         if (header) {
-            header.innerHTML = '<h2>#general-2</h2><span class="history-header-meta">128 of 128 messages</span>';
+            header.classList.remove('is-placeholder');
+            header.innerHTML = '<h2>#general-2</h2><span class="history-header-meta">4 of 128 messages</span>';
         }
         const host = document.getElementById('ai-history-messages');
         if (host) {
-            const row = (user: boolean, body: string, time: string): string => `
-                <div class="history-msg ${user ? 'history-msg-user' : 'history-msg-model'}">
+            // Mirrors messageRowHtml(), row actions included — they are
+            // opacity:0 until :focus-within, so leaving them out changes the
+            // row's height and the shot lies about the layout.
+            const row = (user: boolean, body: string, time: string, idx: number): string => `
+                <div class="history-msg ${user ? 'history-msg-user' : 'history-msg-model'}" data-idx="${idx}">
                     <div class="history-msg-meta">
                         <span class="history-role-badge ${user ? 'role-user' : 'role-model'}">${user ? 'User' : 'Model'}</span>
                         ${user ? '<span class="history-msg-user-id">987654321098765430</span>' : ''}
                         <span class="history-msg-time">${time}</span>
+                        <span class="history-msg-actions">
+                            <button class="history-edit-btn" data-idx="${idx}">Edit</button>
+                            <button class="history-delete-btn" data-idx="${idx}">Delete</button>
+                        </span>
                     </div>
                     <div class="history-msg-content">${body}</div>
                 </div>`;
             host.innerHTML = [
-                row(true, 'What changed in the deploy last night?', '09:12'),
-                row(false, 'Three things landed: the retry budget moved to the client, the log shipper switched to batched writes, and the health probe now fails closed instead of open.', '09:12'),
-                row(true, 'Does the probe change affect the rolling restart?', '09:14'),
-                row(false, 'Yes — a pod that cannot reach the database is now removed from the pool instead of serving errors, so a restart drains cleanly.', '09:14'),
+                row(true, 'What changed in the deploy last night?', '09:12', 0),
+                row(false, 'Three things landed: the retry budget moved to the client, the log shipper switched to batched writes, and the health probe now fails closed instead of open.', '09:12', 1),
+                row(true, 'Does the probe change affect the rolling restart?', '09:14', 2),
+                row(false, 'Yes — a pod that cannot reach the database is now removed from the pool instead of serving errors, so a restart drains cleanly.', '09:14', 3),
             ].join('');
         }
     });

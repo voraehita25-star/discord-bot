@@ -9,7 +9,12 @@
  * (contrast.spec.ts) because it needs pixel sampling.
  */
 import { test, expect, type Page } from '@playwright/test';
-import { installPopulatedMocks, waitForDashboardReady, sendWsFrame } from './_fixtures/mock-tauri';
+import {
+    installDashboardMocks,
+    installPopulatedMocks,
+    waitForDashboardReady,
+    sendWsFrame,
+} from './_fixtures/mock-tauri';
 
 const PAGES = ['status', 'chat', 'logs', 'database', 'settings', 'history'] as const;
 
@@ -548,6 +553,45 @@ test('the metric strip shares one caption baseline', async ({ page }) => {
             expect(spread, `${w}x${h} ${p}: caption tops ${tops.join(', ')}`).toBeLessThanOrEqual(1);
         }
     }
+});
+
+// ---------------------------------------------------------------------------
+// …and it says "no value" with ONE glyph.
+//
+// index.html seeds all five tiles with an em dash and `failTiles()` restores
+// that same em dash, but bot_manager.rs reports an ASCII hyphen for `uptime`
+// and `mode` while the bot is stopped — so the first poll left the strip
+// reading "- - — — —" on the page the app opens to, in its default state.
+//
+// Needs installDashboardMocks (bot offline), not boot()'s populated one: a
+// running bot has real strings in those two tiles and the defect is invisible.
+// ---------------------------------------------------------------------------
+test('the metric strip spells "no value" one way', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await installDashboardMocks(page);
+    await page.goto('/index.html');
+    await waitForDashboardReady(page);
+    await show(page, 'status');
+    // One poll has to land, or the tiles are still showing the markup's seed
+    // and every one of them agrees for the wrong reason.
+    await expect
+        .poll(async () => page.evaluate(() =>
+            document.getElementById('stat-memory')?.dataset.animValue !== undefined))
+        .toBe(true);
+
+    const marks = await page.evaluate(() =>
+        Array.from(document.querySelectorAll<HTMLElement>('#page-status .stat-value'))
+            .map((el) => ({ id: el.id, text: (el.textContent ?? '').trim() })));
+
+    expect(marks.length, 'the status strip rendered no tiles').toBe(5);
+    // Whatever is not a real reading must be the em dash — never the hyphen the
+    // backend hands over, and never an empty tile.
+    const placeholders = marks.filter((m) => /^[-–—]$|^$/.test(m.text));
+    expect(placeholders.length, `no tile was empty: ${JSON.stringify(marks)}`).toBeGreaterThan(0);
+    expect(
+        placeholders.filter((m) => m.text !== '—'),
+        `tiles using a placeholder other than the em dash: ${JSON.stringify(marks)}`,
+    ).toEqual([]);
 });
 
 // `accent-color` tints a checkbox only once it is CHECKED, so the empty box kept
@@ -1787,6 +1831,49 @@ test('every control in a populated chat clears the 24px target floor', async ({ 
     expect(
         undersized,
         `controls under the 24px target floor: ${undersized.join(', ')}`,
+    ).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// The same floor on the OTHER transcript. The test above is scoped to a
+// populated chat, so the AI-History row actions — the same two buttons, one of
+// them destructive — were never walked, and shipped at 20px high.
+//
+// The pane has no IPC command behind it (history-manager.ts drives it off the
+// WebSocket), so the rows are injected exactly as messageRowHtml() emits them.
+// If that markup changes, change it here too.
+// ---------------------------------------------------------------------------
+test('the AI History row actions clear the 24px target floor', async ({ page }) => {
+    await boot(page);
+    await show(page, 'history');
+    await page.evaluate(() => {
+        const host = document.getElementById('ai-history-messages');
+        if (!host) return;
+        host.innerHTML = `
+            <div class="history-msg history-msg-user" data-idx="0">
+                <div class="history-msg-meta">
+                    <span class="history-role-badge role-user">User</span>
+                    <span class="history-msg-time">09:12</span>
+                    <span class="history-msg-actions">
+                        <button class="history-edit-btn" data-idx="0">Edit</button>
+                        <button class="history-delete-btn" data-idx="0">Delete</button>
+                    </span>
+                </div>
+                <div class="history-msg-content">What changed in the deploy last night?</div>
+            </div>`;
+    });
+    await page.waitForTimeout(250);
+
+    const sizes = await page.evaluate(() =>
+        Array.from(document.querySelectorAll<HTMLElement>('.history-msg-actions button')).map((b) => {
+            const r = b.getBoundingClientRect();
+            return { cls: b.className, w: r.width, h: r.height };
+        }));
+
+    expect(sizes.length, 'the injected history row rendered no actions').toBe(2);
+    expect(
+        sizes.filter((s) => s.w < 24 || s.h < 24),
+        `history row actions under the 24px floor: ${JSON.stringify(sizes)}`,
     ).toEqual([]);
 });
 

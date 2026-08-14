@@ -937,6 +937,43 @@ function drawChartMarker(ctx, x, y, color) {
     ctx.fillStyle = color;
     ctx.fill();
 }
+/**
+ * Re-alpha a series colour so the area wash is the SAME hue as the line above
+ * it. Returns a factory, so one parse serves both gradient stops.
+ *
+ * Handles what the chart tokens can actually resolve to: `#rgb`, `#rrggbb`,
+ * `rgb(…)`, `rgba(…)` — `--chart-line`/`--chart-line-2` are plain hex in both
+ * themes, and a computed custom property arrives with its var()s already
+ * substituted. Anything else (a gradient, a named colour, `color-mix(…)`)
+ * returns '' and the caller falls back to the theme token, so an unparseable
+ * value degrades to the old behaviour rather than to no fill at all.
+ */
+function alphaOf(color) {
+    const c = color.trim();
+    let rgb = null;
+    const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c);
+    if (hex) {
+        const h = hex[1];
+        rgb = h.length === 3
+            ? [parseInt(h[0] + h[0], 16), parseInt(h[1] + h[1], 16), parseInt(h[2] + h[2], 16)]
+            : [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+    }
+    else {
+        const fn = /^rgba?\(([^)]+)\)$/i.exec(c);
+        if (fn) {
+            // Both the legacy comma form and the modern space form; the alpha
+            // slot (after a comma or a '/') is dropped — this rewrites it.
+            const parts = fn[1].split('/')[0].split(/[\s,]+/).filter(Boolean).map(Number);
+            if (parts.length >= 3 && parts.slice(0, 3).every((n) => Number.isFinite(n))) {
+                rgb = [parts[0], parts[1], parts[2]];
+            }
+        }
+    }
+    if (!rgb)
+        return () => '';
+    const [r, g, b] = rgb;
+    return (a) => `rgba(${r}, ${g}, ${b}, ${a})`;
+}
 // Exported so app.test.ts exercises the SHIPPED canvas draw sequence (fill
 // closure geometry) against a recording 2D-context mock.
 export function drawChart(canvasId, data, color, spec) {
@@ -953,8 +990,15 @@ export function drawChart(canvasId, data, color, spec) {
     // post-toggle redraw below).
     const tokens = getComputedStyle(document.documentElement);
     const gridColor = tokens.getPropertyValue('--chart-grid').trim() || 'rgba(72,196,232,.10)';
-    const fillTop = tokens.getPropertyValue('--chart-fill-top').trim() || 'rgba(61,245,255,.30)';
-    const fillBot = tokens.getPropertyValue('--chart-fill-bot').trim() || 'rgba(61,245,255,.05)';
+    // The wash is derived from THIS series' own colour, with the theme's
+    // --chart-fill-* only as the fallback. Those two tokens are single-valued
+    // and both plots read them, so the Message Count series — drawn in
+    // --chart-line-2 (wisteria at night, plum at dawn) — sat on a sakura-pink
+    // wash: one series in two hues, and the only thing separating the two plots
+    // was a 2px stroke. Alpha stays where the tokens had it (.30 / .05).
+    const seriesFill = alphaOf(color);
+    const fillTop = seriesFill(0.30) || tokens.getPropertyValue('--chart-fill-top').trim() || 'rgba(61,245,255,.30)';
+    const fillBot = seriesFill(0.05) || tokens.getPropertyValue('--chart-fill-bot').trim() || 'rgba(61,245,255,.05)';
     const inkMuted = tokens.getPropertyValue('--text-tertiary').trim() || 'rgba(255,255,255,0.3)';
     const inkStrong = tokens.getPropertyValue('--text-primary').trim() || 'rgba(255,255,255,0.9)';
     const tooltipBg = tokens.getPropertyValue('--chart-tooltip-bg').trim() || 'rgba(22,15,28,0.94)';
@@ -2500,6 +2544,26 @@ function updateButtons(status) {
     if (btnRestart)
         btnRestart.disabled = !status.is_running;
 }
+/**
+ * The metric strip's "no value" glyph, in ONE spelling.
+ *
+ * index.html seeds all five tiles with an em dash, and `failTiles()` below
+ * restores that same em dash when a stats fetch dies — its comment even calls
+ * it "the same honest placeholder the uptime/mode tiles use". They did not.
+ * bot_manager.rs returns an ASCII hyphen for `uptime` and `mode` whenever the
+ * bot is not running (and for uptime whenever the PID file cannot be read), so
+ * the first poll replaced two of the five with a visibly shorter, thinner mark:
+ * the deck opens on Status with the bot stopped, and its headline row read
+ * "- - — — —".
+ *
+ * Normalised here rather than in Rust because this is a rendering decision —
+ * the backend is reporting "no value", not choosing a typeface's dash — and the
+ * markup already owns which glyph says that.
+ */
+function statPlaceholder(value) {
+    const v = (value ?? '').trim();
+    return v === '' || v === '-' ? '—' : v;
+}
 // dbStats is nullable: get_db_stats can reject (SQLITE_BUSY / uninitialized DB)
 // while get_status keeps succeeding, and the caller now renders the status-only
 // fields regardless. Skip the message/channel counts when it's absent rather
@@ -2507,8 +2571,8 @@ function updateButtons(status) {
 function updateStats(status, dbStats) {
     // Strings that don't animate naturally (uptime, mode) — just set textContent.
     const stringUpdates = [
-        ['stat-uptime', status.uptime],
-        ['stat-mode', status.mode],
+        ['stat-uptime', statPlaceholder(status.uptime)],
+        ['stat-mode', statPlaceholder(status.mode)],
     ];
     stringUpdates.forEach(([id, value]) => {
         const el = document.getElementById(id);

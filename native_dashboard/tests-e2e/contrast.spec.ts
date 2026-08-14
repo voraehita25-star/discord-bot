@@ -28,7 +28,7 @@
  * selector here whenever you add another muted role.
  */
 import { test, expect, type Page } from '@playwright/test';
-import { installPopulatedMocks, waitForDashboardReady } from './_fixtures/mock-tauri';
+import { installPopulatedMocks, waitForDashboardReady, sendWsFrame } from './_fixtures/mock-tauri';
 import { PNG } from 'pngjs';
 
 const PAGES = ['status', 'chat', 'logs', 'database', 'settings', 'history'] as const;
@@ -69,6 +69,71 @@ const MUTED_TEXT = [
     '.cmdk-esc',
     '.cmdk-item',
 ];
+
+/**
+ * The two transcript action rows, measured separately for the same reason the
+ * palette is: neither exists on a resting page. `.message-actions` needs a
+ * conversation OPEN and `.history-msg-actions` needs a channel open, so the
+ * page sweep above walks straight past both — and a selector that matches
+ * nothing is measured as a pass, silently, forever.
+ *
+ * What was hiding there: both rows dimmed themselves with `opacity: .6` at
+ * rest, which put every action of every message under AA in both panes and
+ * both themes (dark 4.21-4.23:1, dawn 3.39-3.41:1). They now carry
+ * --text-tertiary at full alpha instead — quieter to look at, and ~6.5-7.0:1.
+ */
+const TRANSCRIPT_TEXT = [
+    '.message-actions button',
+    '.history-msg-actions button',
+];
+
+const CONTRAST_CONV = {
+    id: 'contrast-1', title: 'Contrast', role_preset: 'default',
+    role_name: 'General Assistant', role_emoji: '\u{1F338}', role_color: '#ff6ba8',
+    thinking_enabled: false, is_starred: false, message_count: 2,
+    created_at: '2026-07-25T09:00:00Z', ai_provider: 'gemini',
+};
+
+/**
+ * Populate BOTH transcripts. The chat pane goes through the real WebSocket
+ * frames; AI History has no IPC command behind it, so its rows are injected as
+ * `messageRowHtml()` emits them (history-manager.ts) — keep the two in step.
+ */
+async function openBothTranscripts(page: Page): Promise<void> {
+    await page.evaluate(
+        (p) => (window as unknown as { showPage?: (s: string) => void }).showPage?.(p), 'history');
+    await page.evaluate(() => {
+        const host = document.getElementById('ai-history-messages');
+        if (!host) return;
+        host.innerHTML = `
+            <div class="history-msg history-msg-user" data-idx="0">
+                <div class="history-msg-meta">
+                    <span class="history-role-badge role-user">User</span>
+                    <span class="history-msg-time">09:12</span>
+                    <span class="history-msg-actions">
+                        <button class="history-edit-btn" data-idx="0">Edit</button>
+                        <button class="history-delete-btn" data-idx="0">Delete</button>
+                    </span>
+                </div>
+                <div class="history-msg-content">What changed in the deploy last night?</div>
+            </div>`;
+    });
+    await page.waitForTimeout(250);
+
+    await page.evaluate(
+        (p) => (window as unknown as { showPage?: (s: string) => void }).showPage?.(p), 'chat');
+    await sendWsFrame(page, { type: 'conversations_list', conversations: [CONTRAST_CONV] });
+    await page.waitForTimeout(150);
+    await sendWsFrame(page, {
+        type: 'conversation_loaded',
+        conversation: CONTRAST_CONV,
+        messages: [
+            { id: 1, role: 'user', content: 'why', created_at: '2026-07-29T18:00:00Z' },
+            { id: 2, role: 'assistant', content: 'because', created_at: '2026-07-29T18:00:05Z' },
+        ],
+    });
+    await page.waitForTimeout(600);
+}
 
 const relLum = (r: number, g: number, b: number): number => {
     const f = [r, g, b].map((v) => {
@@ -254,6 +319,48 @@ for (const theme of ['dark', 'light'] as const) {
             }
         }
         await page.keyboard.press('Escape');
+
+        // The two transcript action rows — see TRANSCRIPT_TEXT. Same shape as
+        // the palette block: a surface the page sweep structurally cannot see,
+        // so it is reached explicitly and asserted to have actually appeared.
+        await openBothTranscripts(page);
+        const chatTargets = await collectTargets(page, TRANSCRIPT_TEXT);
+        expect(
+            chatTargets.some((t) => t.sel === '.message-actions button'),
+            'no conversation opened, so the chat action row was never measured',
+        ).toBe(true);
+        for (const t of chatTargets) {
+            const m = await measure(page, t);
+            if (!m) continue;
+            measured++;
+            if (m.ratio < m.need) {
+                failures.push(
+                    `${theme}/chat ${t.sel} "${t.text}" — ${m.ratio.toFixed(2)}:1 ` +
+                    `(needs ${m.need}, ${t.fontPx}px, fg ${t.color} @${t.alpha.toFixed(2)} on ${m.bg})`,
+                );
+            }
+        }
+        // The history pane is a different page, so its rows have to be measured
+        // with that page active — collectTargets skips anything off-screen.
+        await page.evaluate(
+            (p) => (window as unknown as { showPage?: (s: string) => void }).showPage?.(p), 'history');
+        await page.waitForTimeout(400);
+        const histTargets = await collectTargets(page, TRANSCRIPT_TEXT);
+        expect(
+            histTargets.some((t) => t.sel === '.history-msg-actions button'),
+            'no channel rendered, so the history action row was never measured',
+        ).toBe(true);
+        for (const t of histTargets) {
+            const m = await measure(page, t);
+            if (!m) continue;
+            measured++;
+            if (m.ratio < m.need) {
+                failures.push(
+                    `${theme}/history ${t.sel} "${t.text}" — ${m.ratio.toFixed(2)}:1 ` +
+                    `(needs ${m.need}, ${t.fontPx}px, fg ${t.color} @${t.alpha.toFixed(2)} on ${m.bg})`,
+                );
+            }
+        }
 
         expect(measured, 'no nodes measured — the selector list or the boot flow broke').toBeGreaterThan(40);
         expect(failures, `${failures.length} of ${measured} nodes under AA:\n${failures.join('\n')}`).toEqual([]);
