@@ -131,6 +131,11 @@ from .memory.rag import rag_system
 from .memory.state_tracker import state_tracker
 from .memory.summarizer import summarizer
 from .response.response_mixin import ResponseMixin
+
+# The single mention-defang implementation, shared with ``send_as_webhook`` so
+# the plain-send and per-character paths of one reply cannot escape by
+# different rules (see the note above PATTERN_CHARACTER_TAG).
+from .sanitization import escape_mentions
 from .session_mixin import SessionMixin
 from .storage import (
     _normalize_history_timestamp,
@@ -300,16 +305,24 @@ PATTERN_CHANNEL_ID = re.compile(r"\b(\d{17,20})\b")
 # Discord custom emoji pattern - <:name:id> or <a:name:id> (animated)
 PATTERN_DISCORD_EMOJI = re.compile(r"<(a?):(\w+):(\d+)>")
 
-# Mention-escape patterns. The ``(?!\u200b)`` lookahead is an
-# idempotency guard so re-applying these to already-escaped text doesn't
-# accumulate ZWS chars on retry paths. Use the explicit ``\u200b``
-# Python escape instead of a literal U+200B in source — invisible
-# characters in regex sources are an aging-comment trap (and ruff
-# PLE2515 catches them).
-PATTERN_AT_EVERYONE = re.compile("(?i)@(?!\u200b)everyone")
-PATTERN_AT_HERE = re.compile("(?i)@(?!\u200b)here")
-PATTERN_USER_TAG = re.compile("<@!?(?!\u200b)(\\d+)>")
-PATTERN_ROLE_TAG = re.compile("<@&(?!\u200b)(\\d+)>")
+# NOTE: this module deliberately keeps NO mention-escape patterns of its own.
+# It used to carry a private copy (PATTERN_AT_EVERYONE / _AT_HERE / _USER_TAG /
+# _ROLE_TAG) whose comment claimed to "mirror the canonical pattern in
+# sanitization.py". It did not, and the drift reintroduced three of the exact
+# bugs ``sanitization.escape_mentions`` documents as fixed:
+#   * ``@EVERYONE`` came back LOWERCASED — a fixed replacement string under
+#     IGNORECASE, where the canonical version re-emits the keyword through a
+#     backreference so the model's casing survives.
+#   * ``<@!123>`` lost its legacy-nickname bang — ``!?`` consumed it and the
+#     replacement never put it back, so the rendered text named a different
+#     id form than the model actually wrote.
+#   * ``＠everyone`` (full-width @) went out UNESCAPED — the canonical version
+#     NFKC-folds first, so width variants reach the regex as a plain ``@``.
+# And because ``send_as_webhook`` already calls ``escape_mentions``, a
+# multi-character RP turn escaped its ``{{Name}}`` blocks by one set of rules
+# and its narrator/plain text by another — inside a single reply.
+# ``process_chat`` now calls the canonical escaper for both paths. Do not
+# reintroduce a local copy: the rules belong in ONE function.
 
 # Thai combining marks (tone marks, vowel marks) cannot appear at the start of
 # a chunk — splitting just before one renders as a stray ◌-form glyph.
@@ -2399,22 +2412,14 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # block here could never run and only implied a protection
                     # that no longer exists.)
 
-                    # Sanitize mentions in all AI output (defense-in-depth).
-                    # Must happen BEFORE split so webhook parts are also
-                    # sanitized. Negative-lookahead idempotency guards mirror
-                    # the canonical pattern in ``sanitization.py`` \u2014 without
-                    # them, re-running this on already-escaped text (e.g.
-                    # an emit-then-retry path) accumulates ``\u200b`` chars.
-                    # Non-raw replacement strings: ``\u200b`` becomes the
-                    # literal U+200B character (handled by Python) while
-                    # ``\\1`` keeps the backref escape for re's template
-                    # parser. Using a raw string here would pass ``\u200b``
-                    # verbatim into re's template parser, which doesn't
-                    # know ``\u`` and raises ``PatternError: bad escape``.
-                    response_text = PATTERN_AT_EVERYONE.sub("@\u200beveryone", response_text)
-                    response_text = PATTERN_AT_HERE.sub("@\u200bhere", response_text)
-                    response_text = PATTERN_USER_TAG.sub("<@\u200b\\1>", response_text)
-                    response_text = PATTERN_ROLE_TAG.sub("<@&\u200b\\1>", response_text)
+                    # Defang Discord mentions in ALL AI output (defense-in-depth), through
+                    # the ONE canonical escaper. Must run BEFORE the {{Name}} split so the
+                    # narrator/plain text is escaped by the same rules ``send_as_webhook``
+                    # applies to the character blocks — the private copy that used to live
+                    # here diverged from it (see the note above PATTERN_CHARACTER_TAG).
+                    # ``escape_mentions`` is idempotent, so a retry path can re-run it
+                    # without accumulating zero-width spaces.
+                    response_text = escape_mentions(response_text)
 
                     # Check for {{Name}} syntax (Multi-Character Support)
                     # Split by {{Name}} blocks using precompiled pattern

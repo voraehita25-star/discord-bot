@@ -15,15 +15,26 @@ Findings covered:
   4. ``CharacterState.from_dict`` / ``CharacterStateTracker.from_dict``
      raised on a malformed persistence blob, taking the whole channel
      restore down with it.
+  5. ``logic.py`` carried a private mention-escape copy that had drifted from
+     ``sanitization.escape_mentions``, reintroducing three bugs the canonical
+     version documents as fixed.
+  6. ``_safe_split_message`` claimed to mirror ``_split_for_discord`` but had
+     neither its half-chunk boundary floor (an early newline produced a runt
+     chunk — a whole extra webhook message on Thai RP text) nor its
+     single-newline consumption (``lstrip("\\n")`` ate intentional blank lines).
 """
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
-from cogs.ai_core.logic import MAX_CHARACTER_BLOCKS, PATTERN_CHARACTER_TAG
+import cogs.ai_core.logic as logic_mod
+from cogs.ai_core.logic import MAX_CHARACTER_BLOCKS, PATTERN_CHARACTER_TAG, _split_for_discord
 from cogs.ai_core.memory.history_manager import HistoryManager
 from cogs.ai_core.memory.state_tracker import CharacterState, CharacterStateTracker
+from cogs.ai_core.sanitization import escape_mentions
 from cogs.ai_core.tools.tool_executor import _MAX_CHUNKS, _safe_split_message
 
 # The exact marker _safe_split_message appends when it drops a tail. Pinned
@@ -263,3 +274,137 @@ class TestStateRestoreToleratesMalformedBlob:
         target = CharacterStateTracker()
         target.from_dict(2, source.to_dict(1))
         assert target.get_scene(2) is None
+
+
+class TestOneMentionEscaperOnly:
+    """``logic.py`` must not carry its own mention-escape copy.
+
+    It used to, and the copy had drifted from ``sanitization.escape_mentions``
+    in three ways the canonical version's own comments document as fixed:
+    ``@EVERYONE`` came back lowercased, ``<@!123>`` lost its legacy bang, and a
+    full-width ``@`` (U+FF20) was not escaped at all. Since ``send_as_webhook``
+    already used the canonical escaper, a single multi-character RP reply
+    escaped its ``{{Name}}`` blocks by one set of rules and its narrator text
+    by another.
+
+    Zero-width space and full-width ``@`` are written as ``\\u`` escapes, not
+    literals: ruff PLE2515 bans invisible characters in source, and a
+    look-alike glyph in a test expectation is unreadable in a diff.
+    """
+
+    _Z = "\u200b"  # the ZWSP the escaper inserts
+    _FW_AT = "＠"  # FULLWIDTH COMMERCIAL AT
+
+    # (input, what the canonical escaper must produce)
+    CASES = [
+        ("@everyone hello", f"@{_Z}everyone hello"),
+        # Casing survives — a fixed lowercase replacement under IGNORECASE
+        # was the old bug.
+        ("@EVERYONE hello", f"@{_Z}EVERYONE hello"),
+        ("@Everyone hello", f"@{_Z}Everyone hello"),
+        ("@HERE now", f"@{_Z}HERE now"),
+        # The legacy-nickname bang survives the rewrite.
+        ("<@!123456789012345678> hi", f"<@!{_Z}123456789012345678> hi"),
+        ("<@123456789012345678> hi", f"<@{_Z}123456789012345678> hi"),
+        ("<@&987654321098765432> yo", f"<@&{_Z}987654321098765432> yo"),
+        # Full-width @ is NFKC-folded, then escaped.
+        (f"{_FW_AT}everyone", f"@{_Z}everyone"),
+        (f"{_FW_AT}here", f"@{_Z}here"),
+        ("plain text", "plain text"),
+    ]
+
+    @pytest.mark.parametrize(("raw", "expected"), CASES)
+    def test_canonical_escaper_behaviour(self, raw: str, expected: str) -> None:
+        assert escape_mentions(raw) == expected
+
+    @pytest.mark.parametrize(("raw", "_expected"), CASES)
+    def test_canonical_escaper_is_idempotent(self, raw: str, _expected: str) -> None:
+        once = escape_mentions(raw)
+        assert escape_mentions(once) == once
+
+    @pytest.mark.parametrize(
+        "name",
+        ["PATTERN_AT_EVERYONE", "PATTERN_AT_HERE", "PATTERN_USER_TAG", "PATTERN_ROLE_TAG"],
+    )
+    def test_logic_defines_no_private_escape_patterns(self, name: str) -> None:
+        """A re-added local copy is exactly how the drift happened last time."""
+        assert not hasattr(logic_mod, name), (
+            f"logic.py re-declared {name}; use sanitization.escape_mentions instead"
+        )
+
+    def test_process_chat_calls_the_canonical_escaper(self) -> None:
+        source = inspect.getsource(logic_mod.ChatManager.process_chat)
+        assert "escape_mentions(response_text)" in source
+
+    def test_webhook_send_uses_the_same_escaper(self) -> None:
+        """Pins the shared-ness: both send paths route through one function."""
+        from cogs.ai_core.tools import tool_executor
+
+        assert tool_executor.escape_mentions is escape_mentions
+        assert logic_mod.escape_mentions is escape_mentions
+
+
+class TestTheTwoSplittersAgree:
+    """``_safe_split_message``'s docstring says it mirrors ``_split_for_discord``.
+
+    It didn't. Two of the boundary rules were missing:
+
+    * No half-chunk floor on the newline/space boundary. Thai has no
+      inter-word spaces, so a reply like ``"เขาพูดว่า\\n<2500 unbroken Thai
+      chars>"`` split at index 18 and the RP webhook path posted an 18-char
+      message of its own before the real paragraph.
+    * ``lstrip("\\n")`` after EVERY split, so intentional blank lines
+      straddling a hard cut (ASCII art, a code block inside a character's
+      line) were eaten — the sibling fixed this by consuming exactly the one
+      delimiter newline.
+    """
+
+    THAI_RP = "เขามองมาแล้วพูดว่า\n" + ("เสียงของเขาแผ่วเบาแต่หนักแน่นราวกับคำสาบาน" * 60)
+
+    CORPUS = {
+        "plain-long": "x" * 9000,
+        "thai-long": "สวัสดีครับ" * 1500,
+        "thai-rp-short-opener": THAI_RP,
+        "marks-only": "ิ" * 9000,
+        "base+mark": "กิ" * 4500,
+        "newline-early": "a\n" + "x" * 9000,
+        "newline-dense": "ab\n" * 4000,
+        "spaces": "word " * 3000,
+        "blank-lines": "line1\n\n\n" + "X" * 2500,
+        "exactly2000": "y" * 2000,
+        "exactly2001": "y" * 2001,
+        "emoji": "\U0001f600" * 4000,
+    }
+
+    @pytest.mark.parametrize("name", sorted(CORPUS))
+    def test_same_chunking_as_the_sibling(self, name: str) -> None:
+        text = self.CORPUS[name]
+        assert _safe_split_message(text, 2000) == _split_for_discord(text, 2000)
+
+    def test_short_thai_opener_is_not_orphaned(self) -> None:
+        """The regression that motivated the fix, stated directly."""
+        chunks = _safe_split_message(self.THAI_RP, 2000)
+        assert len(chunks[0]) > 1000, (
+            f"opening line split into a {len(chunks[0])}-char runt chunk — "
+            "the RP webhook path would post it as its own message"
+        )
+
+    def test_intentional_blank_lines_survive_a_hard_cut(self) -> None:
+        text = "line1\n\n\n" + "X" * 2500
+        joined = "".join(_safe_split_message(text, 2000))
+        assert joined == text, "a hard cut ate a blank line"
+
+    def test_one_delimiter_newline_is_consumed_on_a_newline_split(self) -> None:
+        """Splitting ON a newline drops exactly that newline, nothing more.
+
+        ``rfind`` picks the LAST newline inside the window, so with two
+        adjacent newlines the first stays attached to the emitted chunk and
+        only the second — the delimiter — is consumed. The old
+        ``lstrip("\\n")`` swallowed both.
+        """
+        text = "A" * 1500 + "\n\n" + "B" * 1500
+        chunks = _safe_split_message(text, 2000)
+        assert chunks[0] == "A" * 1500 + "\n"
+        assert chunks[1] == "B" * 1500
+        # Exactly one newline lost, and it is the delimiter.
+        assert "".join(chunks) == text.replace("\n\n", "\n", 1)

@@ -134,12 +134,26 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
         if len(text) <= limit:
             chunks.append(text)
             break
-        # Try to split at newline
+        # Prefer a newline boundary, then a space, then a hard cut — but only
+        # accept a boundary at least HALF a chunk in. Without that floor a
+        # single early newline made this emit a runt chunk: Thai has no
+        # inter-word spaces, so a reply like "เขาพูดว่า\n<2500 unbroken Thai
+        # chars>" split at index 18 and the RP webhook path posted an 18-char
+        # message of its own before the real paragraph (measured). Splitting at
+        # ``limit`` there keeps the opening line attached, exactly as
+        # ``_split_for_discord`` already did — this function's docstring claims
+        # to mirror it and this was one of two places it did not.
         split_at = text.rfind("\n", 0, limit)
-        if split_at == -1:
+        # Track whether the chosen boundary IS the delimiter newline: only then
+        # may it be consumed. A hard mid-content cut must keep leading newlines
+        # or intentional blank lines straddling the boundary (ASCII art, code
+        # blocks in a character's line) are silently eaten — which the old
+        # unconditional ``lstrip("\n")`` did on every split.
+        split_on_newline = split_at != -1 and split_at >= limit // 2
+        if not split_on_newline:
             # Try to split at space
             split_at = text.rfind(" ", 0, limit)
-        if split_at <= 0:
+        if split_at == -1 or split_at < limit // 2:
             # Hard split at limit, but ensure we don't break a surrogate pair
             split_at = limit
             # Back up if we're in the middle of a surrogate pair
@@ -171,8 +185,19 @@ def _safe_split_message(text: str, limit: int = 2000) -> list[str]:
                 # is all marks. Take the full-width cut (see logic.py's twin).
                 rewind = split_at
             split_at = rewind
-        chunks.append(text[:split_at])
-        text = text[split_at:].lstrip("\n")
+        # A degenerate ``limit`` (< 2) can make ``limit // 2`` zero and admit a
+        # boundary at index 0; skip the empty chunk rather than hand Discord a
+        # body it rejects with a 400. Unreachable at the >= 256 limits the send
+        # paths use, but ``limit`` is a caller parameter.
+        if split_at > 0:
+            chunks.append(text[:split_at])
+        if split_on_newline:
+            # Consume exactly the ONE delimiter newline; any further blank
+            # lines are the author's and survive into the next chunk.
+            text = text[split_at + 1 :]
+        else:
+            # Space split keeps its leading space; hard cut keeps content as-is.
+            text = text[split_at:]
     if text and len(chunks) >= _MAX_CHUNKS:
         # Past the chunk ceiling. The remainder is dropped — but say so, in the
         # log AND to the reader. Silently appending ``text[:limit]`` made the
