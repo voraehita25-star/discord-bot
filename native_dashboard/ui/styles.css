@@ -56,10 +56,19 @@ html[data-theme="light"] .nav-item.active {
    dividers with its own background through a 1px gap. The strip read as five
    outlined boxes crammed together in light and one quiet panel in dark: the
    same component, two different designs, decided by which theme was active.
-   Dropped so both themes get the tile rule. The three real cards keep it. */
+   Dropped so both themes get the tile rule. The three real cards keep it.
+
+   `.chart-card` was dropped for the SAME reason, one audit later. v6 ("CHARTS —
+   one panel, two cells") retired the nested frames: the section became a single
+   card with a titled header band and the two plots became cells separated by a
+   hairline, which `.charts-grid` draws as a 1px gap over its own background.
+   That rule is `.chart-card { border: 0; box-shadow: none }` at (0,1,0), so
+   this (0,2,0) selector outranked it and dawn kept painting each cell its own
+   rose hairline and 8px drop — a bordered box, in a 1px gap, inside a bordered
+   panel. Midnight showed one panel with two cells; dawn showed the pre-v6
+   design. Only the two genuine cards are left here. */
 html[data-theme="light"] .control-card,
-html[data-theme="light"] .settings-card,
-html[data-theme="light"] .chart-card {
+html[data-theme="light"] .settings-card {
     background: var(--card-bg);
     /* were a slate-violet hairline and a cool-grey drop: every panel on dawn
        paper was outlined and shadowed in a colour from a different palette. The
@@ -197,11 +206,16 @@ html[data-theme="light"] input:checked + .toggle-slider {
     background: var(--accent-cyan);
 }
 
-html[data-theme="light"] .data-item {
-    /* [B2] was a purple wash + border; repointed to the teal Blueprint wash. */
-    background: var(--cyan-100);
-    border: 1px solid var(--accent-cyan);
-}
+/* `html[data-theme="light"] .data-item` used to live here, giving every row a
+   full accent border and a wash. It is gone for the third time this pattern has
+   bitten (see `.stat-card` and `.chart-card` above): v8 turned the data rows
+   into ONE RULED LIST — `.data-item { background: none; border: 0;
+   border-bottom: 1px solid var(--edge); border-radius: 0 }` — and that rule is
+   (0,1,0) against this selector's (0,2,0). So a twelve-channel list read as one
+   quiet list of rules on midnight and twelve outlined, filled boxes on dawn,
+   each one drawn in the full-strength accent rather than a hairline. Rows are
+   rules in both themes now; the section is the only panel. Dawn's hover and
+   selection tints come from --cyan-100/-200, which are already dawn-tuned. */
 
 html[data-theme="light"] .danger-zone {
     background: rgba(220, 38, 38, 0.05);
@@ -979,12 +993,18 @@ html[data-theme="light"] .api-health-result {
     font-weight: 700;
 }
 
-/* Light theme: --accent-green (#0a8a55) on the light log surface (~#f4faf6)
-   computes 4.15:1 — just under the 4.5:1 AA floor for 13px mono text, and INFO
-   is the most common severity. #087a4b clears AA (~4.9:1) on that surface. */
-html[data-theme="light"] .log-line.info {
-    color: #087a4b;
-}
+/* `html[data-theme="light"] .log-line.info { color: #087a4b }` used to sit here
+   and it was an ORPHAN of the design the paragraph above describes retiring.
+   When the whole-line severity colouring went, the dark declaration went with
+   it and this light-only one did not — so INFO, the most common severity, was
+   neutral body text on midnight and green body text on dawn. Every fourth row
+   of the stream was a different colour depending on the theme, which is the
+   third signal that paragraph is about, reintroduced in one theme only.
+   Its own AA rationale had gone stale too: #087a4b was measured against a
+   greenish ~#f4faf6 log surface, and the bed has since been remixed to warm
+   paper (`linear-gradient(180deg, #fbf7f1, #f5efe6)` in orbital.css). The rail
+   carries INFO in both themes now, and the message is --text-secondary, which
+   is what the rest of the stream already used. */
 
 /* Live Indicator */
 .live-indicator {

@@ -141,6 +141,30 @@ export function countParts(
     return { value: n.toLocaleString(), unit: n === 1 ? singular : plural };
 }
 
+/**
+ * A row's share of the largest value in its list, as 0..1.
+ *
+ * Feeds the `--share` custom property that `.data-item::before` reads to draw
+ * its proportion bar. A list of channel ids next to right-aligned numerals is
+ * accurate and completely unscannable — every row is the same shape, so finding
+ * the busy one means reading twelve numbers. The bar gives the column a length
+ * to compare, which is the one thing the digits cannot provide.
+ *
+ * Deliberately LINEAR, not sqrt or log. The exact count is printed on the row
+ * already, so the bar's only job is the comparison — and a compressed scale
+ * would make that comparison say something the numbers next to it do not. When
+ * one channel really does hold most of the traffic, one full bar and eleven
+ * slivers is the true shape of that data, and it is worth seeing.
+ *
+ * Returns 0 for a non-positive max (an all-zero list has no shape to show) and
+ * for non-finite input, so a NaN from the backend can never reach the CSS as
+ * `width: calc(NaN * 100%)`.
+ */
+export function shareOf(value: number, max: number): number {
+    if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0 || value <= 0) return 0;
+    return Math.min(value / max, 1);
+}
+
 // ============================================================================
 // Motion preferences
 // ============================================================================

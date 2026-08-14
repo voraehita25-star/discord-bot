@@ -4819,3 +4819,215 @@ html[data-theme="light"] .sidebar .theme-toggle:hover {
     box-shadow: inset 3px 0 0 var(--accent-cyan);
 }
 .data-item.selected:hover { background: var(--cyan-300); }
+
+/* ============================================================================
+   v9 — A DATA ROW CARRIES ITS OWN SHARE
+
+   Recent Channels and Top Users are the only two lists in the app that are
+   ranked, and neither of them looked it. v8 made the rows rules rather than
+   boxes, which was right, but it left a column of ids beside a column of
+   right-aligned numerals — twelve rows of identical shape, so finding the busy
+   channel meant reading twelve numbers and holding them in your head. The
+   digits are exact and they are the wrong instrument for a comparison.
+
+   So each row gets a length. `--share` is written per row from
+   `shareOf(count, max)` in app.ts (through CSSOM, which `style-src 'self'`
+   permits and a `style=` attribute would not) and this rule turns it into a
+   bar along the bottom of the row.
+
+   It is a 2px underline ON the row rule, and NOT a wash behind the row, which
+   is what it was first drawn as. A wash cannot work here: the row already
+   spends its background on state — --cyan-100 for hover, --cyan-200 for armed-
+   for-deletion — so a fill faint enough not to fight the id on top of it lands
+   inside that same 8–16% band, and the busiest row (share 1.0, so a full-width
+   wash) sat there looking permanently hovered. Two meanings, one device.
+
+   Along the bottom it also compares better. Every bar starts at the same left
+   edge and sits on the same line, so the eye reads the ranking off one
+   baseline; and because the bar is only 2px tall it can be a real accent
+   instead of a whisper, which is what makes a 1% sliver visible at all.
+
+   The bar is decoration in the accessibility sense — the exact count is
+   already on the row, in text — so it is drawn by a pseudo-element and stays
+   out of the tree entirely.
+   ============================================================================ */
+:root { --share-bar: rgba(255, 161, 194, .58); }
+html[data-theme="light"] { --share-bar: rgba(163, 37, 93, .42); }
+
+.data-item { position: relative; }
+.data-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 2px;
+    width: calc(var(--share, 0) * 100%);
+    background: var(--share-bar);
+    /* Round only the free end, so the bar reads as growing out of the row's
+       left edge rather than as a floating pill. */
+    border-radius: 0 1px 1px 0;
+    pointer-events: none;
+}
+
+/* Bars grow in when a list loads or refreshes — the same ease-out the stat
+   numerals count up on, so the two halves of the Database page settle together
+   rather than as two separate events. */
+@media (prefers-reduced-motion: no-preference) {
+    .data-item::before { transition: width var(--dur-slow) var(--ease-out-expo); }
+}
+
+/* ============================================================================
+   v9 — COMMAND PALETTE
+
+   Deliberately NOT shaped like the app's other dialogs. Rename / Delete / Crop
+   are all "answer this question about the thing you were just looking at", so
+   they sit dead-centre with a titled header and a pair of buttons at the
+   bottom. The palette is the opposite errand — it is a way IN, it is opened
+   from anywhere, and the thing it is about is whatever you type — so it takes
+   the shape that errand has everywhere it exists: a search field with results
+   under it, held near the top of the window so the list grows downward into
+   space instead of pushing the field around as it changes length.
+
+   It has no header and no buttons. A titled header would name a dialog whose
+   whole content is already a labelled field, and a button row would put a
+   second, slower way to do the one thing Enter already does.
+   ============================================================================ */
+.cmdk-content {
+    width: min(560px, calc(100vw - 2 * var(--space-5)));
+    padding: 0;
+    overflow: hidden;
+    /* Pinned to the upper third rather than centred. The list is 1–17 rows
+       depending on the query, and a centred dialog would re-centre itself on
+       every keystroke — the field would crawl up and down the screen under the
+       cursor while being typed into. Anchoring the top holds it still. */
+    align-self: flex-start;
+    margin-top: min(14vh, 120px);
+    /* The list scrolls; the shell must not grow past the window to make it. */
+    max-height: min(70vh, 560px);
+    display: flex;
+    flex-direction: column;
+}
+
+.cmdk-search {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--edge);
+    flex: 0 0 auto;
+}
+.cmdk-search-icon { color: var(--text-tertiary); flex: 0 0 auto; }
+.cmdk-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    /* The field IS the dialog, so it gets no chrome of its own — the shell's
+       own border is already the box, and drawing a second one inside it is the
+       nested-panel habit at input scale. */
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: var(--step-1);
+}
+.cmdk-input::placeholder { color: var(--text-tertiary); }
+/* The focus ring is deliberately NOT suppressed here, even though focus cannot
+   be anywhere else while the palette is open and the ring therefore never
+   varies. It is the app's one authoritative focus treatment; a chrome-less
+   field with the ring switched off is a field with no visible focus state at
+   all, and "it is always focused" is an argument that only holds while nothing
+   else in this dialog is ever focusable. The ring is also what gives the
+   borderless input an edge to read as a field. */
+
+.cmdk-list {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: var(--space-2);
+    flex: 1 1 auto;
+}
+.cmdk-group + .cmdk-group { margin-top: var(--space-2); }
+/* Group heading takes the "labels a group" tier verbatim — mono, UPPERCASE,
+   .14em, --step--1 — the same one the section eyebrows use. */
+.cmdk-group-label {
+    font-family: var(--font-mono);
+    font-size: var(--step--1);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    padding: var(--space-2) var(--space-2) var(--space-1);
+}
+
+.cmdk-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 9px var(--space-3);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    color: var(--text-secondary);
+    /* The row is the only moving part, so it carries the left rail rather than
+       a border — the same device .data-item.selected and the log severities
+       use, which is what makes "this one is armed" mean one thing app-wide. */
+    box-shadow: inset 0 0 0 0 var(--accent-cyan);
+}
+.cmdk-item .ic { color: var(--text-tertiary); flex: 0 0 auto; }
+.cmdk-label { flex: 1 1 auto; min-width: 0; }
+.cmdk-item.active {
+    background: var(--cyan-200);
+    color: var(--text-primary);
+    box-shadow: inset 3px 0 0 var(--accent-cyan);
+}
+.cmdk-item.active .ic { color: var(--accent-cyan); }
+
+/* The matched characters. <mark> defaults to a yellow plate with black ink,
+   which is both a colour from no palette in this app and a highlight far
+   louder than the row it sits in — the point is to show WHERE the query
+   landed, not to shout. Plate off, accent on, one weight up. */
+.cmdk-hit {
+    background: none;
+    color: var(--accent-cyan);
+    font-weight: 700;
+}
+.cmdk-item.active .cmdk-hit { color: var(--accent-cyan); }
+
+/* The chord, right-aligned. Existing shortcuts are shown BESIDE the command
+   they run so the palette teaches them: someone who reaches for the palette to
+   get to Logs reads "Ctrl+3" on the way, and eventually stops needing either.
+
+   Both of these are <kbd>, so they inherit `html[data-theme="light"] kbd` —
+   a filled accent pill with white ink. That treatment is right where it lives
+   (the Settings shortcut table and the shortcuts modal, where the chord IS the
+   content and there are two columns of it), and wrong here, where the chord is
+   the quietest thing in the row and six filled pills down the right edge
+   outweighed the command names they annotate. Dark showed quiet mono text and
+   dawn showed a column of pink chips: one component, two designs, decided by
+   the theme — the exact defect the parity guard exists to catch, and it does
+   not catch this one because `kbd` is on its accepted list for the OTHER two
+   places. So both are re-stated at (0,2,0), identically in both themes.
+   Keep the descendant selectors: a bare `.cmdk-hint` is (0,1,0) and loses. */
+.cmdk-item .cmdk-hint,
+.cmdk-search .cmdk-esc {
+    flex: 0 0 auto;
+    background: none;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: var(--step--2);
+    letter-spacing: .04em;
+    color: var(--text-tertiary);
+}
+
+.cmdk-empty {
+    padding: var(--space-5) var(--space-4) var(--space-6);
+    text-align: center;
+    color: var(--text-tertiary);
+}
+
+/* Short windows: the app's minimum is 800x600, where a 14vh offset plus a
+   560px shell would not fit. Sit the palette closer to the top and let the
+   list take what is left. */
+@media (max-height: 700px) {
+    .cmdk-content { margin-top: var(--space-5); max-height: calc(100vh - 2 * var(--space-5)); }
+}

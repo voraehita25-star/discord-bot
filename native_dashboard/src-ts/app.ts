@@ -24,6 +24,7 @@ import {
     icon,
     countLabel,
     countParts,
+    shareOf,
     prefersReducedMotion,
 } from './shared.js';
 import {
@@ -32,6 +33,7 @@ import {
 } from './chat-manager.js';
 import { HistoryManager } from './history-manager.js';
 import { SakuraRenderer, type PetalDraw } from './sakura-model.js';
+import { CommandPalette, type Command } from './command-palette.js';
 
 // ============================================================================
 // Performance Cache System
@@ -277,6 +279,7 @@ document.addEventListener("DOMContentLoaded", () => {
     sakuraEnabled = settings.sakuraEnabled !== false;
     if (sakuraEnabled) initSakuraAnimation();
     initKeyboardShortcuts();
+    initCommandPalette();
     initChatOverlayA11y();
     initChatRailToggle();
     initChatManager();
@@ -391,6 +394,19 @@ function initKeyboardShortcuts(): void {
                         chatManager?.openChatSearch();
                     }
                     return;
+                case 'k': // Command palette
+                    e.preventDefault();
+                    // Toggle, so the chord that opened it also dismisses it —
+                    // and refuse to stack on another dialog, for the same
+                    // reason the `?` handler does: two openModal owners would
+                    // both hold app inert and the first close would lift it
+                    // while the second dialog was still on screen.
+                    if (commandPalette?.isOpen) {
+                        commandPalette.close();
+                    } else if (!document.querySelector('.modal.active')) {
+                        commandPalette?.open();
+                    }
+                    return;
                 default:
                     return; // Unhandled Ctrl chord — let the browser have it.
             }
@@ -411,9 +427,14 @@ function initKeyboardShortcuts(): void {
             return;
         }
 
-        // Escape closes the shortcuts modal if open (routed through closeModal so
-        // focus is restored to the trigger and app inert is lifted).
+        // Escape closes the shortcuts modal or the command palette if open
+        // (routed through closeModal so focus is restored to the trigger and
+        // app inert is lifted).
         if (e.key === 'Escape') {
+            if (commandPalette?.isOpen) {
+                commandPalette.close();
+                return;
+            }
             const shortcuts = document.getElementById('shortcuts-modal');
             if (shortcuts?.classList.contains('active')) {
                 closeModal(shortcuts);
@@ -456,6 +477,131 @@ function initKeyboardShortcuts(): void {
             closeModal(document.getElementById('shortcuts-modal'));
         });
     });
+}
+
+// ============================================================================
+// Command Palette (Ctrl+K)
+// ============================================================================
+
+let commandPalette: CommandPalette | null = null;
+
+/**
+ * Every command the palette offers.
+ *
+ * `run` always calls the SAME function the on-screen control calls — the
+ * palette is a second route to the app's actions, never a second
+ * implementation of them, so a behaviour change lands in one place. Where an
+ * action has a persisted setting, the setting is written too, because a
+ * preference the user changed from the palette that silently reverts on
+ * restart is worse than not offering it.
+ *
+ * Built as a function rather than a module constant so `settings` is read at
+ * INVOCATION time: the density and petal entries flip whatever the current
+ * value is, and a constant captured at module load would keep toggling against
+ * a stale one.
+ */
+function buildCommands(): Command[] {
+    const nav = (page: string, label: string, icon: string, hint: string, keywords?: string): Command => ({
+        id: `nav-${page}`, label, group: 'Navigate', icon, hint, keywords,
+        run: () => switchPage(page),
+    });
+
+    return [
+        nav('status', 'Go to Status', 'gauge', 'Ctrl+1', 'bot control home dashboard'),
+        nav('chat', 'Go to AI Chat', 'chat', 'Ctrl+2', 'conversation message talk'),
+        nav('logs', 'Go to Logs', 'logs', 'Ctrl+3', 'stream output console'),
+        nav('database', 'Go to Database', 'database', 'Ctrl+4', 'stats channels users rag'),
+        nav('settings', 'Go to Settings', 'settings', 'Ctrl+5', 'preferences config options'),
+        nav('history', 'Go to AI History', 'history', 'Ctrl+6', 'archive discord edit transcript'),
+
+        {
+            id: 'bot-start', label: 'Start Bot', group: 'Bot', icon: 'play',
+            keywords: 'run launch boot online', run: () => void startBot(),
+        },
+        {
+            id: 'bot-stop', label: 'Stop Bot', group: 'Bot', icon: 'stop',
+            keywords: 'halt kill shutdown offline', run: () => void stopBot(),
+        },
+        {
+            id: 'bot-restart', label: 'Restart Bot', group: 'Bot', icon: 'restart',
+            keywords: 'reboot cycle reload', run: () => void restartBot(),
+        },
+        {
+            id: 'bot-dev', label: 'Start Dev Mode', group: 'Bot', icon: 'flask',
+            keywords: 'development hot reload watcher', run: () => void startDevBot(),
+        },
+
+        {
+            id: 'view-theme',
+            // The label says which way it goes, so the row is a statement of
+            // what pressing Enter does rather than of what is currently true.
+            label: settings.theme === 'dark' ? 'Switch to Light Theme' : 'Switch to Dark Theme',
+            group: 'View', icon: settings.theme === 'dark' ? 'sun' : 'moon',
+            hint: 'Ctrl+T', keywords: 'dark light dawn midnight colour color appearance',
+            run: () => toggleTheme(),
+        },
+        {
+            id: 'view-density',
+            label: settings.densityCompact === true ? 'Use Comfortable Density' : 'Use Compact Density',
+            group: 'View', icon: 'reflow', keywords: 'spacing tight roomy padding size',
+            run: () => {
+                const next = settings.densityCompact !== true;
+                updateSetting('densityCompact', next);
+                applyDensity(next);
+                loadSettingsUI();
+                showToast(next ? 'Compact density' : 'Comfortable density', { type: 'info', duration: 1500 });
+            },
+        },
+        {
+            id: 'view-sakura',
+            label: settings.sakuraEnabled === false ? 'Show Sakura Petals' : 'Hide Sakura Petals',
+            group: 'View', icon: 'sparkle', keywords: 'cherry blossom animation background motion',
+            run: () => {
+                const next = settings.sakuraEnabled === false;
+                updateSetting('sakuraEnabled', next);
+                setSakuraEnabled(next);
+                loadSettingsUI();
+                showToast(next ? 'Petals on' : 'Petals off', { type: 'info', duration: 1500 });
+            },
+        },
+
+        {
+            id: 'data-refresh', label: 'Refresh All Data', group: 'Data', icon: 'refresh',
+            hint: 'Ctrl+R', keywords: 'reload update poll sync',
+            run: () => {
+                loadAllData();
+                showToast('Refreshed!', { type: 'info', duration: 1500 });
+            },
+        },
+        {
+            id: 'data-logs-folder', label: 'Open Logs Folder', group: 'Data', icon: 'folder',
+            keywords: 'explorer directory file path', run: () => void openFolder('logs'),
+        },
+        {
+            id: 'data-data-folder', label: 'Open Data Folder', group: 'Data', icon: 'folder',
+            keywords: 'explorer directory file path database', run: () => void openFolder('data'),
+        },
+
+        {
+            id: 'help-shortcuts', label: 'Keyboard Shortcuts', group: 'Help', icon: 'keyboard',
+            hint: '?', keywords: 'keys chords bindings help',
+            run: () => openModal(document.getElementById('shortcuts-modal')),
+        },
+    ];
+}
+
+function initCommandPalette(): void {
+    const modal = document.getElementById('command-palette');
+    const input = document.getElementById('command-palette-input');
+    const list = document.getElementById('command-palette-list');
+    const empty = document.getElementById('command-palette-empty');
+    if (!modal || !(input instanceof HTMLInputElement) || !list || !empty) return;
+
+    commandPalette = new CommandPalette(
+        { modal, input, list, empty },
+        { openModal, closeModal },
+        buildCommands,
+    );
 }
 
 // ============================================================================
@@ -3214,6 +3360,24 @@ async function loadDbStats(): Promise<void> {
             return cell;
         };
 
+        /**
+         * Give each row the share of its list's largest value, which
+         * `.data-item::before` turns into a proportion bar.
+         *
+         * Written through CSSOM rather than a `style=` attribute in the markup:
+         * the app ships `style-src 'self'` with no `'unsafe-inline'`, and the
+         * CSSOM is exempt from that (the same route the extended-thinking box
+         * uses to reveal itself — see tests-e2e/h7-csp.spec.ts). A custom
+         * property is the only way to hand a per-row NUMBER to a stylesheet
+         * that is not allowed to be written per-row.
+         */
+        const applyShares = (rows: HTMLElement[], counts: number[]): void => {
+            const max = counts.reduce((a, b) => (b > a ? b : a), 0);
+            rows.forEach((row, i) => {
+                row.style.setProperty('--share', shareOf(counts[i] ?? 0, max).toFixed(4));
+            });
+        };
+
         const channelsList = document.getElementById('channels-list');
         if (channelsList) {
             if (channels.length === 0) {
@@ -3273,6 +3437,10 @@ async function loadDbStats(): Promise<void> {
 
                     channelsList.appendChild(item);
                 });
+                applyShares(
+                    Array.from(channelsList.querySelectorAll<HTMLElement>('.data-item')),
+                    channels.map((ch) => Number(ch.message_count) || 0),
+                );
                 updateChannelSelectionUI();
             }
         }
@@ -3295,6 +3463,10 @@ async function loadDbStats(): Promise<void> {
                     item.appendChild(valSpan);
                     usersList.appendChild(item);
                 });
+                applyShares(
+                    Array.from(usersList.querySelectorAll<HTMLElement>('.data-item')),
+                    users.map((u) => Number(u.message_count) || 0),
+                );
             }
         }
 

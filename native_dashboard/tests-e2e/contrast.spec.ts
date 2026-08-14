@@ -60,6 +60,14 @@ const MUTED_TEXT = [
     '.features-list li',
     '.conv-meta',
     '.data-item-id',
+    // Command palette. Only reachable with the dialog OPEN, which is why the
+    // sweep below opens it on the last page rather than trusting a resting
+    // page to contain these — a selector that matches nothing is measured as a
+    // pass, silently, forever.
+    '.cmdk-group-label',
+    '.cmdk-hint',
+    '.cmdk-esc',
+    '.cmdk-item',
 ];
 
 const relLum = (r: number, g: number, b: number): number => {
@@ -220,6 +228,32 @@ for (const theme of ['dark', 'light'] as const) {
                 }
             }
         }
+
+        // The command palette, which is a surface no page sweep can reach: it
+        // is a dialog, its rows are built at runtime, and its whole vocabulary
+        // is quiet text (a mono group label, a mono chord chip, and rows set in
+        // --text-secondary) sitting on the modal's own tinted plate rather than
+        // on any page surface measured above.
+        await page.keyboard.press('Control+k');
+        await page.waitForTimeout(400);
+        const paletteTargets = await collectTargets(page, MUTED_TEXT);
+        expect(
+            paletteTargets.some((t) => t.sel.startsWith('.cmdk-')),
+            'the palette did not open, so its text was never measured',
+        ).toBe(true);
+        for (const t of paletteTargets) {
+            if (!t.sel.startsWith('.cmdk-')) continue;
+            const m = await measure(page, t);
+            if (!m) continue;
+            measured++;
+            if (m.ratio < m.need) {
+                failures.push(
+                    `${theme}/palette ${t.sel} "${t.text}" — ${m.ratio.toFixed(2)}:1 ` +
+                    `(needs ${m.need}, ${t.fontPx}px, fg ${t.color} @${t.alpha.toFixed(2)} on ${m.bg})`,
+                );
+            }
+        }
+        await page.keyboard.press('Escape');
 
         expect(measured, 'no nodes measured — the selector list or the boot flow broke').toBeGreaterThan(40);
         expect(failures, `${failures.length} of ${measured} nodes under AA:\n${failures.join('\n')}`).toEqual([]);

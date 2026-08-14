@@ -31,6 +31,14 @@ class="page">`, toggled with `.active`. Nothing is routed or mounted.
 **There are six, not five.** `Ctrl+1…6`. AI History is a real screen and is
 easy to miss because no component card shows it whole.
 
+There is also a seventh surface that is not a screen: the **command palette**
+(`Ctrl+K`, `#command-palette`, `app/src/command-palette.ts`). It is a dialog, but
+deliberately not shaped like the app's other dialogs — no titled header, no
+button row, pinned to the upper third rather than centred, because it is a way
+*in* rather than a question about the thing you were looking at. It lists every
+non-destructive action in the app, fuzzy-ranked, with each command's existing
+chord beside it.
+
 `#page-chat` has a title bar but hides it *visually* (`position: absolute`, 1px)
 so the transcript can take the full column; the `<h1>` stays in the
 accessibility tree on purpose.
@@ -60,7 +68,9 @@ drawn by JavaScript and appear in no rule and no tag.
   score it `incomplete` and no automated guard covers it.
 - **Toasts, skeletons and the confirm dialog are built at runtime**, not present
   in `index.html` — `showToast()`, `setSkeleton()` and `showConfirmDialog()` in
-  `app/src/shared.ts`.
+  `app/src/shared.ts`. So are the command palette's rows, which are rebuilt from
+  scratch on every keystroke (`app/src/command-palette.ts`); the only markup in
+  `index.html` is the dialog shell and its empty listbox.
 - **Stat numerals count up.** `animateNumber()` in `shared.ts` tweens them on an
   ease-out-expo curve deliberately matched to the CSS easing token.
 - **Chat content is rendered markdown**, not plain text: `app/src/chat/formatter.ts`
@@ -82,6 +92,12 @@ drawn by JavaScript and appear in no rule and no tag.
   app, and `tests-e2e/h7-csp.spec.ts` fails on any violation. Every proposal has
   to be expressible as rules in a stylesheet. *(This is the single most common
   way a good-looking proposal turns out to be unusable here.)*
+  The one escape hatch: **the CSSOM is exempt.** CSP governs style attributes
+  and `<style>` blocks at parse time, not `el.style.setProperty()` — which is
+  how the thinking box reveals itself and how each data row gets its `--share`.
+  So a design CAN take a per-element NUMBER from JS. What it cannot take is
+  per-element *rules*: hand the stylesheet a custom property and let the rule
+  do the drawing.
 - **Never rename a token, class or id.** `orbital.css` states the rule: values
   change, names never do. `--accent-cyan` is the PRIMARY slot and holds sakura
   pink; `--accent-azure` is secondary and holds wisteria. Several tests couple
@@ -94,6 +110,18 @@ drawn by JavaScript and appear in no rule and no tag.
   24×24 pointer targets, the sidebar watermark fitting the collapsed rail, one
   disabled-button treatment, distinct toast rails, and more. Layout changes meet
   it.
+- **`tests-e2e/theme-parity.spec.ts` forbids a component from being two
+  different shapes.** The two themes may differ in colour and in three named
+  places in design (buttons, `kbd` chips, panel edges); they may not differ in
+  border widths, radius, padding, weight, case or display. This exists because
+  the same defect landed three times — `.stat-card`, `.chart-card` and
+  `.data-item` each went on rendering their pre-audit design on dawn, because
+  the base sheet writes dawn overrides as `html[data-theme="light"] .x` (0,2,0)
+  and every later decision in `orbital.css` is a plain `.x` (0,1,0). Source
+  order never gets consulted and the newer decision loses. **Do not answer this
+  by restating a decision at higher specificity** — remove the stale override.
+  A real intended divergence goes in the spec's `ACCEPTED_DIVERGENCE` list with
+  its reason.
 - **Korean branding stays.** Product name and window title are Korean
   (디스코드 봇 대시보드); UI copy is English with `lang="ko"` on each Korean
   string.
@@ -117,7 +145,12 @@ re-proposing them is churn:
   exception. `--sev-debug` is a muted neutral so the brand accent never means
   "debug".
 - **Data rows are one ruled list**, not a stack of bordered cards; selection is
-  a fill plus a left rail, because there is no border left to colour.
+  a fill plus a left rail, because there is no border left to colour. Each row
+  also carries a 2px proportion bar along its bottom edge, scaled linearly from
+  `--share` (written per row through CSSOM). It is an underline and not a wash
+  because the row's background is already spent on state — hover and selected
+  sit at 10%/16% accent, so any fill faint enough to read behind the id lands in
+  that same band and the busiest row looks permanently hovered.
 - **The hero stat tile does not carry a bottom bar** — that bar is every other
   tile's hover state, and pinning it open made both metric strips read as tab
   bars.

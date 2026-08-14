@@ -17,10 +17,12 @@
 | 🌙 **Dark / Light Theme** | Toggle with localStorage persistence — pink/purple anime palette. |
 | 🔔 **Toast Notifications** | Animated slide-in for confirmations / errors. |
 | 📈 **Performance Charts** | Real-time memory & message count graphs. |
+| 📊 **Ranked Data Rows** | Recent Channels / Top Users draw a proportion bar under each row (linear share of the list's largest count) so the ranking reads at a glance. |
 | ⚡ **Performance Caching** | LRU caching reduces repeat API calls ~50%. |
-| ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
-| 🧪 **Unit Tests** | 624 tests across 21 vitest files: `app.test.ts`, `chat-manager.test.ts` (+`.audit2`), `history-manager.test.ts`, `e2e_smoke.test.ts` + 14 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, document-attach, formatter +3 audit suites, image-attach, message-template +1 audit suite, prism, search, ws-client). |
-| 🤖 **Headless E2E** | 164 Playwright tests across 13 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, pixel-sampled contrast (low-emphasis text + non-text/1.4.11), populated-state a11y + layout, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection, upgrade-audit regression guards (the page-sweep specs cover the History page too). Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
+| ⌨️ **Keyboard Shortcuts** | Ctrl+1-6 navigation, Ctrl+K command palette, Ctrl+R refresh, Ctrl+T theme, Ctrl+Enter to send, Ctrl+S in editors. |
+| 🎛️ **Command Palette** | `Ctrl+K` — fuzzy-search every action (navigate, start/stop/restart, theme, density, petals, refresh, open folders) and run it with Enter. Shows each command's existing chord beside it. No destructive action is reachable from it. |
+| 🧪 **Unit Tests** | 713 tests across 25 vitest files: `app.test.ts`, `chat-manager.test.ts` (+`.audit2`), `history-manager.test.ts`, `e2e_smoke.test.ts` + 14 in `src-ts/chat/` (context-window, conversation-list, conversation-modals, document-attach, formatter +3 audit suites, image-attach, message-template +1 audit suite, prism, search, ws-client) + `command-palette.test.ts` (the fuzzy matcher, the ranker and the highlight builder). |
+| 🤖 **Headless E2E** | 200 Playwright tests across 16 spec files in `tests-e2e/` — UI smoke, user-flow interactions, axe-core a11y audit, pixel-sampled contrast (low-emphasis text + non-text/1.4.11), populated-state a11y + layout, visual-regression snapshots, H5 import-map IPC, H7 strict-CSP render, deep UI inspection, upgrade-audit regression guards, command-palette behaviour + a11y, and a theme SHAPE-parity guard that diffs the computed geometry of every visible element across both themes (the page-sweep specs cover the History page too). Runs in CI on Chromium with python http.server + mocked Tauri IPC. A real (non-mock) Tauri Rust-IPC round-trip is covered by `scripts/dev/validate_ipc.py` (tauri-driver/WebView2). |
 | 📊 **Enhanced Settings** | Configurable refresh interval, notifications, avatars, sakura, sound, haptic, telemetry. |
 | 🔤 **Korean Name** | Full Korean support: 디스코드 봇 대시보드.exe |
 
@@ -48,6 +50,7 @@
 | `Ctrl+Enter` | Send Message (in Chat) |
 | `Ctrl+S` | Save (inside file editor) |
 | `Ctrl+F` | In-chat search (inside chat view) |
+| `Ctrl+K` | Command palette (toggle; `Esc` also closes) |
 
 ## 📎 File Attachments
 
@@ -171,7 +174,7 @@ native_dashboard/
 │       ├── image-attach.ts       # Image attachment + drag-drop + paste; routes docs to DocumentAttachManager
 │       ├── document-attach.ts    # PDF / DOCX / text / code file attach (32 MB cap, 5 per msg)
 │       ├── export-picker.ts      # Export format picker UI
-│       └── *.test.ts             # 14 vitest files (624 tests total across all 21)
+│       └── *.test.ts             # 14 vitest files (713 tests total across all 25)
 ├── tests-e2e/              # Playwright (Chromium) — headless against the static UI
 │   ├── _fixtures/mock-tauri.ts   # Installs window.__TAURI__.core.invoke shim + WS stub + page-error tracker
 │   ├── dashboard-smoke.spec.ts   # smoke tests for recent UI fixes (null-guards, sakura, modals, ...)
@@ -272,7 +275,7 @@ npm run test:coverage          # With coverage report (enforces coverage floors 
 npm run typecheck:test         # Type-check including the *.test.ts specs
 
 # Headless e2e (Playwright + Chromium, ~30s)
-npm run test:e2e               # Run all 164 Playwright tests (smoke + interactions + a11y + contrast + visual + h5/h7 + inspection + upgrade-guards)
+npm run test:e2e               # Run all 200 Playwright tests (smoke + interactions + a11y + contrast + visual + h5/h7 + inspection + upgrade-guards + command-palette + theme-parity)
 npm run test:e2e:ui            # Interactive UI mode for debugging
 npm run test:e2e -- --update-snapshots  # Re-bake visual baselines after intentional UI changes
 npm run test:e2e:screenshots   # Capture screenshots for manual inspection

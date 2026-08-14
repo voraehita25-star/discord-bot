@@ -1436,6 +1436,9 @@
                             <kbd>Ctrl+6</kbd> <span>Go to AI History</span>
                         </div>
                         <div class="shortcut-item">
+                            <kbd>Ctrl+K</kbd> <span>Command Palette</span>
+                        </div>
+                        <div class="shortcut-item">
                             <kbd>Ctrl+R</kbd> <span>Refresh All Data</span>
                         </div>
                         <div class="shortcut-item">
@@ -1485,6 +1488,33 @@
         </main>
     </div>
 
+    <!-- Command Palette (Ctrl+K).
+         Lives outside .app, like every other app-level modal, because
+         setAppInert() inerts .app itself — a dialog inside it would inert
+         itself along with the page behind it.
+         The combobox pattern is spelled out here rather than assembled in JS:
+         the input OWNS the listbox (aria-controls) and points at the current
+         row (aria-activedescendant, written by CommandPalette.setActive), so
+         focus never leaves the text field while the arrows move the selection.
+         aria-expanded is a constant "true" because the list has no collapsed
+         state — the palette either is open, or is not in the tree at all. -->
+    <div id="command-palette" class="modal" role="dialog" aria-modal="true" aria-label="Command palette">
+        <div class="modal-overlay" data-close-cmdk></div>
+        <div class="modal-content cmdk-content">
+            <div class="cmdk-search">
+                <svg class="ic cmdk-search-icon" aria-hidden="true"><use href="#i-search"/></svg>
+                <input type="text" id="command-palette-input" class="cmdk-input"
+                       placeholder="Type a command…" autocomplete="off" spellcheck="false"
+                       role="combobox" aria-expanded="true" aria-autocomplete="list"
+                       aria-controls="command-palette-list" aria-label="Search commands">
+                <kbd class="cmdk-esc">Esc</kbd>
+            </div>
+            <div id="command-palette-list" class="cmdk-list" role="listbox"
+                 aria-label="Commands"></div>
+            <p id="command-palette-empty" class="cmdk-empty hidden" role="status">No matching command.</p>
+        </div>
+    </div>
+
     <!-- Keyboard Shortcuts Modal (opened with ?) -->
     <div id="shortcuts-modal" class="modal" role="dialog" aria-modal="true" aria-label="Keyboard Shortcuts">
         <div class="modal-overlay" data-close-shortcuts></div>
@@ -1502,6 +1532,7 @@
                     <div class="shortcut-item"><kbd>Ctrl+4</kbd><span>Go to Database</span></div>
                     <div class="shortcut-item"><kbd>Ctrl+5</kbd><span>Go to Settings</span></div>
                     <div class="shortcut-item"><kbd>Ctrl+6</kbd><span>Go to AI History</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl+K</kbd><span>Command Palette</span></div>
                     <div class="shortcut-item"><kbd>Ctrl+R</kbd><span>Refresh All Data</span></div>
                     <div class="shortcut-item"><kbd>Ctrl+T</kbd><span>Toggle Theme</span></div>
                     <div class="shortcut-item"><kbd>Ctrl+Enter</kbd><span>Send Message (in Chat)</span></div>

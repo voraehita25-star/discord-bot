@@ -7,6 +7,7 @@ import {
     normalizeSqliteUtc,
     prefersReducedMotion,
     scrollBehavior,
+    shareOf,
 } from './shared.js';
 
 describe('countLabel', () => {
@@ -35,6 +36,46 @@ describe('countLabel', () => {
 
     it('treats -1 as plural (it is not "one")', () => {
         expect(countLabel(-1, 'message')).toBe('-1 messages');
+    });
+});
+
+describe('shareOf', () => {
+    // Feeds `--share` on .data-item, which becomes the width of a proportion
+    // bar. Every guard here is about a value that would reach CSS as
+    // `width: calc(<garbage> * 100%)` and silently paint nothing (or paint the
+    // whole row) rather than throwing anywhere a test could see it.
+    it('is the plain linear ratio', () => {
+        expect(shareOf(50, 100)).toBe(0.5);
+        expect(shareOf(1, 4)).toBe(0.25);
+        expect(shareOf(100, 100)).toBe(1);
+    });
+
+    it('does not compress the scale — a rare row stays visibly rare', () => {
+        // The whole argument for linear: with one dominant channel the sliver
+        // is the truth, and a sqrt/log scale would inflate it to ~3%/~50%.
+        expect(shareOf(1, 1_000_000)).toBe(0.000001);
+    });
+
+    it('clamps above 1 rather than overflowing the row', () => {
+        expect(shareOf(200, 100)).toBe(1);
+    });
+
+    it('returns 0 for an empty or degenerate list', () => {
+        expect(shareOf(0, 0)).toBe(0);
+        expect(shareOf(5, 0)).toBe(0);
+        expect(shareOf(5, -10)).toBe(0);
+    });
+
+    it('returns 0 for a non-positive value', () => {
+        expect(shareOf(0, 100)).toBe(0);
+        expect(shareOf(-3, 100)).toBe(0);
+    });
+
+    it('returns 0 rather than letting NaN/Infinity reach the stylesheet', () => {
+        expect(shareOf(NaN, 100)).toBe(0);
+        expect(shareOf(50, NaN)).toBe(0);
+        expect(shareOf(Infinity, 100)).toBe(0);
+        expect(shareOf(50, Infinity)).toBe(0);
     });
 });
 
