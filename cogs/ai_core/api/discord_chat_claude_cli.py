@@ -63,6 +63,7 @@ from .dashboard_chat_claude_cli import (
     _StaleSessionError,
     _unlink_session_file_by_id,
     build_tools_declaration,
+    effective_ai_tool_names,
     has_prompt_content,
     is_cli_backend_ready,
 )
@@ -985,7 +986,11 @@ async def call_claude_cli_streaming(
             if guild_id is not None
             else getattr(getattr(send_channel, "guild", None), "id", None)
         )
-        ai_tools = _ai_tool_names()
+        # Minimal tool scope cannot carry MCP tools (see effective_ai_tool_names),
+        # so resolve them ONCE here: the same list feeds the argv and the tools
+        # note, which is what stops the prompt from advertising a tool the argv
+        # withheld.
+        ai_tools = effective_ai_tool_names(_ai_tool_names())
         tools_env = (
             _ai_tools_env(guild_id=_guild, channel_id=channel_id, user_id=user_id)
             if ai_tools
@@ -1335,7 +1340,11 @@ async def call_claude_cli(
         if not claude_exe:
             return "", "", []
 
-        ai_tools = _ai_tool_names()
+        # Minimal tool scope cannot carry MCP tools (see effective_ai_tool_names),
+        # so resolve them ONCE here: the same list feeds the argv and the tools
+        # note, which is what stops the prompt from advertising a tool the argv
+        # withheld.
+        ai_tools = effective_ai_tool_names(_ai_tool_names())
         tools_env = (
             _ai_tools_env(guild_id=guild_id, channel_id=channel_id, user_id=user_id)
             if ai_tools

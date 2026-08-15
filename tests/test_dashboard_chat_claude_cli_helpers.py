@@ -653,6 +653,121 @@ class TestBuildClaudeArgv:
         assert "--append-system-prompt-file" not in argv
         assert "--system-prompt-file" not in argv
 
+    def _tools_after(self, argv, flag="--tools"):
+        """The variadic values following `flag`, up to the next option."""
+        i = argv.index(flag) + 1
+        out = []
+        while i < len(argv) and not argv[i].startswith("--"):
+            out.append(argv[i])
+            i += 1
+        return out
+
+    def test_minimal_scope_declares_only_the_used_builtins(self):
+        """Built-in declarations were 22,757 of a 27,337-token turn on the real
+        Discord argv — a wall of coding-agent vocabulary between the persona and
+        the user. A plain chat turn needs none of it."""
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude", session_id=None, allow_read_for_images=False, enable_web=True
+        )
+        assert self._tools_after(argv) == ["WebSearch", "WebFetch"]
+
+    def test_minimal_scope_plain_turn_declares_nothing(self):
+        """`--tools ""` is how the CLI is told 'no built-ins at all'. The empty
+        string must be passed explicitly — omitting the flag would restore the
+        full set."""
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude", session_id=None, allow_read_for_images=False
+        )
+        assert argv[argv.index("--tools") + 1] == ""
+
+    def test_minimal_scope_adds_read_for_attachments(self):
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude", session_id=None, allow_read_for_images=True, enable_web=True
+        )
+        tools = self._tools_after(argv)
+        assert "Read" in tools
+        # WebFetch is withheld on Read turns for exfil-safety; the whitelist must
+        # match that, not advertise a tool the allow-list will refuse.
+        assert "WebSearch" in tools
+        assert "WebFetch" not in tools
+
+    def test_minimal_scope_write_mode_keeps_edit_tools(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DASHBOARD_CLI_ALLOW_WRITE", "1")
+        monkeypatch.setenv("DASHBOARD_CLI_WRITE_DIRS", str(tmp_path))
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+            enable_write=True,
+        )
+        tools = self._tools_after(argv)
+        assert {"Write", "Edit", "MultiEdit"} <= set(tools)
+        # Web tools are denied in write mode; they must not be declared either.
+        assert "WebSearch" not in tools
+
+    def test_full_scope_omits_the_whitelist(self, monkeypatch):
+        """CLI_TOOL_SCOPE=full is the rollback: no --tools at all, so the CLI
+        declares its whole built-in set exactly as before."""
+        monkeypatch.setenv("CLI_TOOL_SCOPE", "full")
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude", session_id=None, allow_read_for_images=False, enable_web=True
+        )
+        assert "--tools" not in argv
+
+    def test_setting_sources_are_dropped(self):
+        """The operator's own skills/plugins/output-style have no business
+        steering a product persona — and cost ~4,300 tokens a turn."""
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude", session_id=None, allow_read_for_images=False
+        )
+        assert argv[argv.index("--setting-sources") + 1] == ""
+
+    def test_write_guard_settings_still_attached_in_write_mode(self, tmp_path, monkeypatch):
+        """--setting-sources '' must not take the write guard with it: the hook
+        arrives on the separate --settings channel and is the authoritative path
+        boundary."""
+        monkeypatch.setenv("DASHBOARD_CLI_ALLOW_WRITE", "1")
+        monkeypatch.setenv("DASHBOARD_CLI_WRITE_DIRS", str(tmp_path))
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+            enable_write=True,
+        )
+        assert "--settings" in argv
+        assert "--setting-sources" in argv
+
+
+class TestToolScope:
+    def test_minimal_is_the_default(self, monkeypatch):
+        monkeypatch.delenv("CLI_TOOL_SCOPE", raising=False)
+        assert cli.cli_tools_minimal() is True
+
+    def test_typo_stays_minimal(self, monkeypatch):
+        """Only the exact string `full` widens the surface; a typo must not
+        silently restore 22k tokens of coding-agent tooling."""
+        monkeypatch.setenv("CLI_TOOL_SCOPE", "ful")
+        assert cli.cli_tools_minimal() is True
+
+    def test_full_opts_out(self, monkeypatch):
+        monkeypatch.setenv("CLI_TOOL_SCOPE", "FULL")
+        assert cli.cli_tools_minimal() is False
+
+    def test_effective_names_drop_mcp_in_minimal(self, monkeypatch):
+        monkeypatch.delenv("CLI_TOOL_SCOPE", raising=False)
+        assert cli.effective_ai_tool_names(["mcp__bottools__remember"]) == []
+
+    def test_effective_names_keep_mcp_in_full(self, monkeypatch):
+        monkeypatch.setenv("CLI_TOOL_SCOPE", "full")
+        assert cli.effective_ai_tool_names(["mcp__bottools__remember"]) == [
+            "mcp__bottools__remember"
+        ]
+
+    def test_effective_names_handles_empty(self, monkeypatch):
+        monkeypatch.setenv("CLI_TOOL_SCOPE", "full")
+        assert cli.effective_ai_tool_names(None) == []
+        assert cli.effective_ai_tool_names([]) == []
+
     def _allowed_tools(self, argv):
         return argv[argv.index("--allowedTools") + 1]
 

@@ -1988,7 +1988,12 @@ class TestDiscordToolsDeclaration:
 
     @pytest.mark.asyncio
     async def test_streaming_turn_sends_the_declaration(self, monkeypatch):
-        """End-to-end: the prompt handed to the subprocess declares the tools."""
+        """End-to-end: the prompt handed to the subprocess declares the tools.
+
+        Pinned to CLI_TOOL_SCOPE=full because that is the scope where MCP tools
+        survive into the argv — see test_minimal_scope_declares_no_mcp_tools for
+        the default, where they must NOT be advertised."""
+        monkeypatch.setenv("CLI_TOOL_SCOPE", "full")
         monkeypatch.setattr(cli_mod, "_CLI_WEB_TOOLS_ENABLED", True)
         monkeypatch.setattr(cli_mod, "_ai_tool_names", lambda: ["mcp__bottools__remember"])
         monkeypatch.setattr(cli_mod, "_ai_tools_env", lambda **_kw: {"X": "1"})
@@ -2026,6 +2031,7 @@ class TestDiscordToolsDeclaration:
     @pytest.mark.asyncio
     async def test_non_streaming_turn_sends_the_declaration(self, monkeypatch):
         """The non-streaming sibling must not drift from the streaming path."""
+        monkeypatch.setenv("CLI_TOOL_SCOPE", "full")
         monkeypatch.setattr(cli_mod, "_CLI_WEB_TOOLS_ENABLED", True)
         monkeypatch.setattr(cli_mod, "_ai_tool_names", lambda: ["mcp__bottools__remember"])
         monkeypatch.setattr(cli_mod, "_ai_tools_env", lambda **_kw: {"X": "1"})
@@ -2053,3 +2059,43 @@ class TestDiscordToolsDeclaration:
         assert text == "ok"
         assert "# Available tools (this session)" in seen["prompt"]
         assert "recall_memory" in seen["prompt"]
+
+    @pytest.mark.asyncio
+    async def test_minimal_scope_declares_no_mcp_tools(self, monkeypatch):
+        """Default (minimal) scope drops MCP tools from the argv, so the prompt
+        must not advertise them. Telling the model it has `remember` when the
+        toolset has no such entry produces confident calls that hard-fail every
+        time — the exact drift effective_ai_tool_names exists to prevent."""
+        monkeypatch.delenv("CLI_TOOL_SCOPE", raising=False)
+        monkeypatch.setattr(cli_mod, "_CLI_WEB_TOOLS_ENABLED", True)
+        monkeypatch.setattr(cli_mod, "_ai_tool_names", lambda: ["mcp__bottools__remember"])
+        monkeypatch.setattr(cli_mod, "_ai_tools_env", lambda **_kw: {"X": "1"})
+        seen: dict[str, object] = {}
+
+        async def fake_subprocess(argv, prompt, **kwargs):
+            seen["prompt"] = prompt
+            seen["argv"] = argv
+            await kwargs["on_text_delta"]("ok")
+            return "sess-tools-3", None
+
+        with (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_run_claude_subprocess", side_effect=fake_subprocess),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="/usr/bin/claude",
+            ),
+        ):
+            await call_claude_cli(
+                contents=[{"role": "user", "parts": ["hi"]}],
+                config_params={"system_instruction": "persona"},
+                channel_id=913,
+            )
+
+        prompt = str(seen["prompt"])
+        argv = list(seen["argv"])  # type: ignore[arg-type]
+        # Web tools are real on this path, so they stay declared...
+        assert "WebSearch" in prompt
+        # ...but the MCP tools are gone from BOTH the prompt and the argv.
+        assert "remember" not in prompt
+        assert not [a for a in argv if a.startswith("mcp__")]

@@ -297,6 +297,60 @@ def _persona_depth_replaces() -> bool:
     return os.getenv(_PERSONA_DEPTH_ENV, "replace").strip().lower() != "append"
 
 
+# Which built-in tools the subprocess is allowed to KNOW ABOUT.
+#
+# ``--allowedTools`` only governs permission; Claude Code still declares its
+# whole built-in set to the model. Measured on the real Discord argv, those
+# declarations were 22,757 of the turn's 27,337 prompt tokens — a wall of
+# coding-agent vocabulary (Bash, Edit, Workflow, Cron, LSP, Skill…) sitting
+# between the persona and the user's message, for a chat path that only ever
+# calls WebSearch/WebFetch. ``--tools`` declares a whitelist instead, taking the
+# same turn to ~6,200 tokens, which is the difference between the persona being
+# ~7% of what the model reads and ~30-40% of it.
+#
+# COST, stated plainly: ``--tools`` also drops every MCP tool, and the CLI gives
+# no way to name one back (``--tools WebSearch mcp__bottools__remember`` yields
+# WebSearch alone). So minimal scope means no ``mcp__bottools__*``. That was an
+# informed choice here: with the shipped argv, Opus 5 and Haiku both reported
+# no ``remember`` tool even at full scope — the MCP tools were already being
+# deferred past the model's reach — so minimal scope drops something that was
+# not arriving anyway. ``CLI_TOOL_SCOPE=full`` restores the old behaviour if
+# that ever changes; :func:`effective_ai_tool_names` keeps the tools note honest
+# either way, so the model is never told about a tool it cannot see.
+_TOOL_SCOPE_ENV = "CLI_TOOL_SCOPE"
+
+
+def cli_tools_minimal() -> bool:
+    """True when the CLI should declare ONLY the built-ins a path actually uses.
+
+    Read per call so flipping ``CLI_TOOL_SCOPE`` takes effect without a restart.
+    Anything other than ``full`` means minimal, so a typo fails toward the
+    smaller (intended) surface.
+    """
+    return os.getenv(_TOOL_SCOPE_ENV, "minimal").strip().lower() != "full"
+
+
+def effective_ai_tool_names(ai_tool_names: list[str] | None) -> list[str]:
+    """The MCP tool names that will really reach the model this turn.
+
+    Minimal scope cannot carry them (see ``_TOOL_SCOPE_ENV``), so this returns
+    ``[]`` there. Callers use the result for BOTH the argv and the prompt's
+    tools declaration, which is the point: the two can't drift into telling the
+    model it has a tool the argv withheld — the failure mode that produces
+    confident calls to a tool that isn't there.
+    """
+    if not ai_tool_names:
+        return []
+    if cli_tools_minimal():
+        logger.debug(
+            "CLI_TOOL_SCOPE=minimal — withholding %d MCP tool(s) from this turn "
+            "(set CLI_TOOL_SCOPE=full to restore them)",
+            len(ai_tool_names),
+        )
+        return []
+    return list(ai_tool_names)
+
+
 def has_prompt_content(path: Path) -> bool:
     """True when ``path`` holds a usable system prompt (exists, non-blank).
 
@@ -2090,6 +2144,41 @@ def _build_claude_argv(
         "--strict-mcp-config",
     ]
 
+    # Ignore the operator's own ~/.claude settings, skills and plugins. This
+    # subprocess is a product surface, not someone's editor session: whatever is
+    # configured for interactive Claude Code (skills, output style, language,
+    # plugin hooks) has no business steering a Discord persona, and it costs
+    # ~4,300 prompt tokens per turn. The write guard is unaffected because it
+    # arrives through --settings, which is a separate channel — verified by
+    # running the guard with and without this flag: the out-of-root write is
+    # refused either way.
+    argv.extend(["--setting-sources", ""])
+
+    # Declare only the built-ins this turn can actually use. Write mode is
+    # resolved here (rather than at its branch below) because the whitelist has
+    # to go into the base argv, ahead of every later flag — --tools is variadic,
+    # so it must never be the last thing on the command line.
+    write_roots = _dashboard_cli_write_dirs() if enable_write else []
+    write_mode = bool(write_roots)
+    if cli_tools_minimal():
+        builtin_tools: list[str] = []
+        if write_mode:
+            # The write path's whole point: Write/Edit/MultiEdit, each vetted by
+            # the PreToolUse guard hook. NotebookEdit stays out — the deny-list
+            # below already removes it from the toolset entirely.
+            builtin_tools += ["Write", "Edit", "MultiEdit"]
+        if allow_read_for_images:
+            builtin_tools.append("Read")
+        if enable_web and not write_mode:
+            # Mirrors the allow-list built below: write mode denies web tools, and
+            # WebFetch is withheld on Read-enabled turns for exfil-safety.
+            builtin_tools.append("WebSearch")
+            if not allow_read_for_images:
+                builtin_tools.append("WebFetch")
+        # An empty whitelist is meaningful: `--tools ""` is how the CLI is told
+        # "no built-ins at all", which is exactly right for a plain chat turn.
+        argv.extend(["--tools", *builtin_tools] if builtin_tools else ["--tools", ""])
+
     # Persona as a cacheable system prefix (instead of re-sending it in the user
     # body every turn). ``replace_system_prompt`` picks the depth: appended to
     # Claude Code's default prompt (preserving its tool scaffolding), or passed
@@ -2120,8 +2209,7 @@ def _build_claude_argv(
     # config-dir subtree are rejected even though acceptEdits would auto-approve
     # the cwd subtree. Shell + network + other mutation tools are also denied —
     # the "files-only" scope.
-    write_roots = _dashboard_cli_write_dirs() if enable_write else []
-    write_mode = bool(write_roots)
+    # write_roots / write_mode were resolved with the tool whitelist above.
     if enable_write and not write_roots:
         logger.warning(
             "DASHBOARD_CLI_ALLOW_WRITE is on but no writable output dir resolved "
