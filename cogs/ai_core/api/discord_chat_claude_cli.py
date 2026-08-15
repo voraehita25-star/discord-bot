@@ -63,6 +63,7 @@ from .dashboard_chat_claude_cli import (
     _StaleSessionError,
     _unlink_session_file_by_id,
     build_tools_declaration,
+    has_prompt_content,
     is_cli_backend_ready,
 )
 from .dashboard_common import (
@@ -151,6 +152,11 @@ _DISCORD_PROMPT_MAX_CHARS = _prompt_max_chars_from_env()
 # the overlay is applied only to ``!unrestricted`` channels (the default
 # ``always`` applies it to every channel). Both are fed to ``_build_claude_argv``
 # — dashboard callers that omit them keep their existing behaviour.
+#
+# The file is passed with ``replace_system_prompt=True``, i.e. as
+# ``--system-prompt-file``: it BECOMES the system prompt instead of trailing
+# Claude Code's built-in one. "Overlay" below is therefore historical wording —
+# nothing precedes the override at system level any more.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DISCORD_CLI_MODEL = "claude-opus-5[1m]"
 _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY = _REPO_ROOT / "CLAUDE2.md"
@@ -187,6 +193,12 @@ def _resolve_discord_system_prompt_file(channel_id: int | None = None) -> Path |
     withheld (returns ``None``) for channels that do NOT have ``!unrestricted``
     enabled — those run on the normal persona already carried in the prompt
     body. In the default ``always`` mode the overlay is applied unconditionally.
+
+    An empty (or whitespace-only) file does not count as present. The override
+    is passed at replace depth, so pointing the CLI at a blank file would hand
+    the model NO system prompt at all — worse than the built-in default it was
+    meant to displace. Returning ``None`` here keeps that turn on the default
+    instead. See :func:`has_prompt_content`.
     """
     if _discord_cli_unrestricted_gated():
         # Lazy import: keeps this module importable even if the unrestricted
@@ -195,9 +207,11 @@ def _resolve_discord_system_prompt_file(channel_id: int | None = None) -> Path |
 
         if channel_id is None or not is_unrestricted(channel_id):
             return None
-    if _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY.exists():
+    if has_prompt_content(_DISCORD_CLI_SYSTEM_PROMPT_PRIMARY):
         return _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY
-    return _DISCORD_CLI_SYSTEM_PROMPT_FALLBACK
+    if has_prompt_content(_DISCORD_CLI_SYSTEM_PROMPT_FALLBACK):
+        return _DISCORD_CLI_SYSTEM_PROMPT_FALLBACK
+    return None
 
 
 def _get_channel_lock(channel_id: int) -> asyncio.Lock:
@@ -1024,6 +1038,15 @@ async def call_claude_cli_streaming(
                 # module-level constants for the rationale.
                 model=_DISCORD_CLI_MODEL,
                 system_prompt_file=_resolve_discord_system_prompt_file(channel_id),
+                # The override REPLACES Claude Code's built-in system prompt
+                # rather than trailing it (see _system_prompt_flag). Appending
+                # left the built-in identity in front, and it won: the model
+                # introduced itself as a coding assistant no matter what the
+                # override said. Safe here because everything this path needs
+                # besides identity — the persona body, the tools declaration,
+                # the timestamp convention — travels in the prompt body, not in
+                # the system prompt being replaced.
+                replace_system_prompt=True,
             )
             try:
                 runner = asyncio.create_task(
@@ -1369,6 +1392,15 @@ async def call_claude_cli(
                 # module-level constants for the rationale.
                 model=_DISCORD_CLI_MODEL,
                 system_prompt_file=_resolve_discord_system_prompt_file(channel_id),
+                # The override REPLACES Claude Code's built-in system prompt
+                # rather than trailing it (see _system_prompt_flag). Appending
+                # left the built-in identity in front, and it won: the model
+                # introduced itself as a coding assistant no matter what the
+                # override said. Safe here because everything this path needs
+                # besides identity — the persona body, the tools declaration,
+                # the timestamp convention — travels in the prompt body, not in
+                # the system prompt being replaced.
+                replace_system_prompt=True,
             )
             try:
                 runner = asyncio.create_task(

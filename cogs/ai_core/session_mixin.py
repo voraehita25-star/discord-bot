@@ -245,7 +245,7 @@ class SessionMixin:
         # editing CLAUDE2.md takes effect without a restart.
         #
         # Skipped entirely under CLAUDE_BACKEND=cli: the CLI Discord path applies
-        # CLAUDE2.md via --append-system-prompt-file (gated by
+        # CLAUDE2.md via --system-prompt-file (gated by
         # DISCORD_CLI_UNRESTRICTED_MODE), so injecting it into the body here too
         # would duplicate the whole override every turn.
         # ``is_unrestricted`` is imported at module top and always resolves

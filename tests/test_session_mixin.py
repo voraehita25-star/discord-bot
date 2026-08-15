@@ -568,8 +568,8 @@ class TestRoleplayAndUnrestrictedWiring:
     @pytest.mark.asyncio
     async def test_cli_mode_skips_unrestricted_body_injection(self):
         """Under CLAUDE_BACKEND=cli the body injection is skipped — the CLI path
-        applies CLAUDE2.md via --append-system-prompt-file instead, so injecting
-        it into the body too would duplicate the whole override every turn."""
+        applies CLAUDE2.md via --system-prompt-file instead, so injecting it
+        into the body too would duplicate the whole override every turn."""
         instance = self._make_instance()
         instance.cli_mode = True
         with (

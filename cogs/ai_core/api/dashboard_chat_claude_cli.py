@@ -28,7 +28,8 @@ Feature parity vs the SDK backend (`dashboard_chat_claude.py`):
     them via the Read tool)
   ✓ Session continuity via `--resume`
   ✓ `/edit` AI rewrite (uses the same SEARCH/REPLACE patch protocol)
-  ✓ Persona delivered as a cacheable system prefix (--append-system-prompt-file)
+  ✓ Persona delivered as a cacheable system prefix (--append-system-prompt-file,
+    or --system-prompt-file at replace depth — see _system_prompt_flag)
     instead of re-sent in every user turn; the next turn's process is
     pre-warmed to hide the `claude -p` cold start (DASHBOARD_CLI_PREWARM=0 to
     disable)
@@ -260,6 +261,69 @@ _WRITE_GUARD_SETTINGS_FILE = (
     Path(__file__).resolve().parents[3] / "data" / "claude_cli_write_guard_settings.json"
 )
 
+# Depth at which an explicit persona file is handed to `claude -p`.
+#
+#   replace (default) — ``--system-prompt-file``: the persona file BECOMES the
+#       system prompt, so it is the model's sole system-level identity with
+#       nothing preceding it. Measured on CLI 2.1.233: with ``--append-…`` a
+#       persona saying "you are NAROK, never mention software engineering"
+#       still answers "I'm Claude Code, and I help with software engineering
+#       tasks" — the built-in prompt comes first and wins. The same file passed
+#       with ``--system-prompt-file`` answers "I'm NAROK". Tool use survives the
+#       swap (a replaced prompt still called ToolSearch + WebSearch in the same
+#       probe), and MCP/tool declarations are carried separately anyway.
+#   append — the historical ``--append-system-prompt-file`` behaviour. Kept as a
+#       one-env-var rollback (``CLI_PERSONA_DEPTH=append``) in case a future CLI
+#       changes the replace flag.
+#
+# ``--system-prompt-file`` is absent from ``claude --help`` (which lists only
+# ``--system-prompt <prompt>``) but is documented in the ``--bare`` entry and
+# accepted by 2.1.233. Two properties matter for callers:
+#   * a REPLACED prompt is not carried by ``--resume`` — the flag must be
+#     re-passed every turn, which holds here because the persona file sits in
+#     the base argv, ahead of the ``--resume`` branch;
+#   * replacing also drops Claude Code's dynamic sections (cwd, env, git
+#     status), which is a bonus for a chat persona, not a loss.
+_PERSONA_DEPTH_ENV = "CLI_PERSONA_DEPTH"
+
+
+def _persona_depth_replaces() -> bool:
+    """True when a persona file should REPLACE (not append to) the system prompt.
+
+    Read per call so flipping ``CLI_PERSONA_DEPTH`` takes effect without a bot
+    restart. Anything other than ``append`` means replace, so a typo fails
+    toward the deeper (intended) placement rather than silently reverting.
+    """
+    return os.getenv(_PERSONA_DEPTH_ENV, "replace").strip().lower() != "append"
+
+
+def has_prompt_content(path: Path) -> bool:
+    """True when ``path`` holds a usable system prompt (exists, non-blank).
+
+    Load-bearing at replace depth. ``--system-prompt-file`` pointed at an empty
+    file hands the model an EMPTY system prompt — no persona and no built-in
+    identity either — which is strictly worse than falling back. That is not
+    hypothetical: the override is designed to be hot-edited while the bot runs
+    (it is re-resolved every turn), so a turn can land mid-save, on a truncated
+    file, or right after the file was cleared to start a rewrite. Blank-only
+    counts as empty; a file of pure whitespace is no more usable than a missing
+    one.
+    """
+    try:
+        return bool(path.read_text(encoding="utf-8").strip())
+    except OSError:
+        return False
+
+
+def _system_prompt_flag(replace: bool) -> str:
+    """The CLI flag carrying a persona file, honouring the depth override."""
+    return (
+        "--system-prompt-file"
+        if (replace and _persona_depth_replaces())
+        else ("--append-system-prompt-file")
+    )
+
+
 # The stable "how to read [timestamp] prefixes" instruction. Extracted to a
 # constant so it can live in EITHER the prompt body (legacy) or the cacheable
 # system prompt (see _build_system_prompt) without the two drifting apart.
@@ -395,12 +459,18 @@ def _build_system_prompt(
     webfetch_enabled: bool = False,
     ai_tools_enabled: bool = False,
 ) -> str:
-    """The cacheable system block sent via --append-system-prompt-file.
+    """The cacheable system block for a role preset, sent at APPEND depth.
 
     Persona (+ the timestamp convention) is appended to Claude Code's default
     system prompt. Putting it here instead of the per-turn user body means it
     forms a stable, prompt-cacheable prefix and gets system-level adherence
     (matching the SDK backend, which passes persona as ``system=``).
+
+    This block is written for that position — it opens with
+    ``_IDENTITY_OVERRIDE``, whose whole job is to argue the preceding built-in
+    identity out of the way. Unrestricted mode instead replaces the system
+    prompt outright and composes its own block; see
+    :func:`_build_unrestricted_system_prompt`.
 
     When tools are enabled we ALSO declare them authoritatively here. Personas
     written for the old Gemini backend say things like "Google Search is
@@ -425,6 +495,43 @@ def _build_system_prompt(
         webfetch_enabled=webfetch_enabled,
         memory_tools_enabled=ai_tools_enabled,
         server_tools_enabled=ai_tools_enabled,
+    )
+    if tools_block:
+        parts.append(tools_block)
+    return "\n\n".join(parts)
+
+
+def _build_unrestricted_system_prompt(
+    override_file: Path,
+    *,
+    web_enabled: bool = False,
+    webfetch_enabled: bool = False,
+) -> str:
+    """The WHOLE system prompt for unrestricted mode: the override, then plumbing.
+
+    The override's text goes first and the result is passed with
+    ``--system-prompt-file``, so it is the entirety of the model's system prompt
+    — no built-in Claude Code identity precedes it, and none of Claude Code's
+    dynamic sections (cwd, env, git status) trail it.
+
+    What follows the override is operational context, not persona: how to read
+    the ``[timestamp]`` prefixes this backend prefixes onto user turns, and
+    which tools the argv actually allows. Both would otherwise be lost with the
+    default prompt they normally ride along with, leaving the model to echo
+    timestamps back and to deny having web access.
+
+    Deliberately no ``_IDENTITY_OVERRIDE``: that block exists to argue a
+    built-in coding-assistant identity out of the way, and a replaced system
+    prompt no longer contains one to argue with.
+
+    Raises ``OSError`` when the override can't be read, so the caller can fall
+    back to passing the file directly.
+    """
+    parts: list[str] = [override_file.read_text(encoding="utf-8").strip()]
+    parts.append(f"# Timestamp convention\n{_TIMESTAMP_CONVENTION}")
+    tools_block = build_tools_declaration(
+        web_enabled=web_enabled,
+        webfetch_enabled=webfetch_enabled,
     )
     if tools_block:
         parts.append(tools_block)
@@ -461,13 +568,15 @@ def _resolve_unrestricted_system_prompt_file() -> Path | None:
 
     Prefers LO's local gitignored ``CLAUDE2.md`` at the repo root (held out of
     git for privacy); falls back to the committed ``CLAUDE.md`` so a fresh clone
-    still spawns a working ``claude -p``. Returns ``None`` when neither exists so
-    the caller cleanly drops back to the role-preset persona. Resolved per turn
-    so adding/removing ``CLAUDE2.md`` takes effect without restarting the bot.
+    still spawns a working ``claude -p``. Returns ``None`` when neither holds
+    usable text so the caller cleanly drops back to the role-preset persona.
+    Resolved per turn so adding/removing/editing ``CLAUDE2.md`` takes effect
+    without restarting the bot — which is exactly why an empty file must not
+    count as present (see :func:`has_prompt_content`).
     """
-    if _UNRESTRICTED_SYSTEM_PROMPT_PRIMARY.exists():
+    if has_prompt_content(_UNRESTRICTED_SYSTEM_PROMPT_PRIMARY):
         return _UNRESTRICTED_SYSTEM_PROMPT_PRIMARY
-    if _UNRESTRICTED_SYSTEM_PROMPT_FALLBACK.exists():
+    if has_prompt_content(_UNRESTRICTED_SYSTEM_PROMPT_FALLBACK):
         return _UNRESTRICTED_SYSTEM_PROMPT_FALLBACK
     return None
 
@@ -1935,6 +2044,7 @@ def _build_claude_argv(
     allow_edit_tools: bool = False,
     enable_write: bool = False,
     system_prompt_file: Path | None = None,
+    replace_system_prompt: bool = False,
     enable_web: bool = False,
     ai_tool_names: list[str] | None = None,
     model: str | None = None,
@@ -1981,11 +2091,14 @@ def _build_claude_argv(
     ]
 
     # Persona as a cacheable system prefix (instead of re-sending it in the user
-    # body every turn). Appended to Claude Code's default system prompt, so tool
-    # scaffolding (Read for images) is preserved. Placed in the base argv so it
-    # applies to every branch below, including write mode.
+    # body every turn). ``replace_system_prompt`` picks the depth: appended to
+    # Claude Code's default prompt (preserving its tool scaffolding), or passed
+    # as the prompt itself so no built-in identity precedes the persona — see
+    # ``_system_prompt_flag``. Placed in the base argv so it applies to every
+    # branch below (including write mode) and is re-sent on every ``--resume``
+    # turn, which a replaced prompt requires.
     if system_prompt_file is not None:
-        argv.extend(["--append-system-prompt-file", str(system_prompt_file)])
+        argv.extend([_system_prompt_flag(replace_system_prompt), str(system_prompt_file)])
 
     # Permission mode. OFF by default: pin "--permission-mode default" so the
     # Read-tool confinement (--allowedTools Read + --add-dir <temp roots>) holds
@@ -3110,19 +3223,47 @@ async def handle_chat_message_claude_cli(
     preset = DASHBOARD_ROLE_PRESETS.get(role_preset, DASHBOARD_ROLE_PRESETS["general"])
     persona = str(preset.get("system_instruction", ""))
 
-    # Deliver persona (+ timestamp convention) as a cacheable system prefix via
-    # --append-system-prompt-file rather than re-sending it in every user turn.
-    # Content-hashed so a stable persona reuses one file and keeps the prompt
-    # cache warm. Best-effort: if the file can't be written we fall back to
-    # persona-in-body (system_prompt_file=None, persona_in_system=False).
+    # Deliver persona (+ timestamp convention) as a cacheable system prefix
+    # rather than re-sending it in every user turn. Content-hashed so a stable
+    # persona reuses one file and keeps the prompt cache warm. Best-effort: if
+    # the file can't be written we fall back to persona-in-body
+    # (system_prompt_file=None, persona_in_system=False).
     #
     # Unrestricted mode no longer prepends a creative-workspace framing to the
     # persona. Instead it swaps the whole system prompt for LO's local
     # CLAUDE2.md (fallback CLAUDE.md) — the same override the Discord CLI path
-    # uses — and the role-preset persona is skipped entirely in that case.
+    # uses — and the role-preset persona is skipped entirely in that case. That
+    # swap goes in at REPLACE depth (--system-prompt-file): the override is the
+    # model's only system prompt, so Claude Code's built-in identity can't sit
+    # in front of it and win. The composed file keeps the timestamp convention
+    # and the tools declaration, which the replaced default would otherwise
+    # have carried away with it.
     system_prompt_file: Path | None = None
+    replace_system_prompt = False
     if unrestricted_requested:
-        system_prompt_file = _resolve_unrestricted_system_prompt_file()
+        override_file = _resolve_unrestricted_system_prompt_file()
+        if override_file is not None:
+            replace_system_prompt = True
+            try:
+                system_prompt_file = _ensure_system_prompt_file(
+                    _build_unrestricted_system_prompt(
+                        override_file,
+                        web_enabled=web_enabled and not write_enabled,
+                        webfetch_enabled=(
+                            web_enabled and not write_enabled and not has_attachments
+                        ),
+                    )
+                )
+            except OSError:
+                # Couldn't read the override or write the composed file. Pass
+                # the override itself — still at replace depth, just without the
+                # appended plumbing — rather than silently losing the persona.
+                logger.warning(
+                    "Could not compose unrestricted system prompt; passing %s directly",
+                    override_file.name,
+                    exc_info=True,
+                )
+                system_prompt_file = override_file
     if system_prompt_file is None:
         try:
             # Advertise web tools only when the argv actually allows them: write
@@ -3347,6 +3488,7 @@ async def handle_chat_message_claude_cli(
         allow_read_for_images=need_read,
         enable_write=write_enabled,
         system_prompt_file=system_prompt_file,
+        replace_system_prompt=replace_system_prompt,
         enable_web=web_enabled,
     )
 
@@ -3398,6 +3540,7 @@ async def handle_chat_message_claude_cli(
                         allow_read_for_images=need_read,
                         enable_write=write_enabled,
                         system_prompt_file=system_prompt_file,
+                        replace_system_prompt=replace_system_prompt,
                         enable_web=web_enabled,
                     )
                     full_prompt = _build_full_prompt(
@@ -3505,6 +3648,7 @@ async def handle_chat_message_claude_cli(
                         allow_read_for_images=need_read,
                         enable_write=write_enabled,
                         system_prompt_file=system_prompt_file,
+                        replace_system_prompt=replace_system_prompt,
                         enable_web=web_enabled,
                     )
                     # The first attempt may have streamed some text (to the
@@ -3663,6 +3807,7 @@ async def handle_chat_message_claude_cli(
                     allow_read_for_images=False,
                     enable_write=write_enabled,
                     system_prompt_file=system_prompt_file,
+                    replace_system_prompt=replace_system_prompt,
                     enable_web=web_enabled,
                 ),
             )

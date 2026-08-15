@@ -326,6 +326,57 @@ class TestStreamingSuccessPath:
         assert "interleaved-thinking" not in captured_argv
 
     @pytest.mark.asyncio
+    async def test_streaming_passes_persona_at_replace_depth(self) -> None:
+        """The CLAUDE2.md override must REPLACE Claude Code's system prompt, not
+        trail it. Appended, the built-in identity comes first and wins — the bot
+        introduces itself as a coding assistant no matter what the override
+        says. The persona body and tools note ride in the prompt body, so
+        nothing else is lost by replacing."""
+        captured_argv: list[str] = []
+        placeholder = MagicMock()
+        placeholder.edit = AsyncMock()
+        placeholder.delete = AsyncMock()
+        send_channel = MagicMock()
+        send_channel.send = AsyncMock(return_value=placeholder)
+
+        async def fake_subprocess(
+            argv: list[str],
+            stdin_payload: str,
+            *,
+            on_text_delta: Any,
+            on_thinking_delta: Any,
+            on_thinking_block_start: Any = None,
+            on_thinking_block_stop: Any = None,
+            timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
+        ) -> tuple[str, dict[str, Any] | None]:
+            captured_argv.extend(argv)
+            await on_text_delta("ok")
+            return "sess-depth", None
+
+        with (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_run_claude_subprocess", side_effect=fake_subprocess),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="/usr/bin/claude",
+            ),
+        ):
+            await call_claude_cli_streaming(
+                contents=[{"role": "user", "parts": ["hi"]}],
+                config_params={"system_instruction": "be brief"},
+                send_channel=send_channel,
+                channel_id=102,
+            )
+
+        assert "--system-prompt-file" in captured_argv
+        assert "--append-system-prompt-file" not in captured_argv
+        # And it points at the override, not at some scratch file.
+        target = captured_argv[captured_argv.index("--system-prompt-file") + 1]
+        assert target.endswith(("CLAUDE2.md", "CLAUDE.md"))
+
+    @pytest.mark.asyncio
     async def test_thinking_flag_does_not_change_the_effort_tier(self) -> None:
         """A stale ``thinking_enabled`` in config_params must not alter argv.
 
@@ -1686,6 +1737,29 @@ class TestResolveDiscordSystemPromptFile:
     def test_gated_mode_no_channel_gets_no_overlay(self, monkeypatch):
         monkeypatch.setenv("DISCORD_CLI_UNRESTRICTED_MODE", "gated")
         # No channel id → cannot be unrestricted → no overlay.
+        assert cli_mod._resolve_discord_system_prompt_file(None) is None
+
+    def test_blank_override_skipped_for_the_fallback(self, monkeypatch, tmp_path):
+        """The override is hot-editable, so a turn can land while CLAUDE2.md is
+        mid-rewrite. At replace depth a blank file would mean NO system prompt
+        at all, so a blank primary must defer to the fallback."""
+        monkeypatch.setenv("DISCORD_CLI_UNRESTRICTED_MODE", "always")
+        blank = tmp_path / "CLAUDE2.md"
+        blank.write_text("   \n\n", encoding="utf-8")
+        fallback = tmp_path / "CLAUDE.md"
+        fallback.write_text("real content", encoding="utf-8")
+        monkeypatch.setattr(cli_mod, "_DISCORD_CLI_SYSTEM_PROMPT_PRIMARY", blank)
+        monkeypatch.setattr(cli_mod, "_DISCORD_CLI_SYSTEM_PROMPT_FALLBACK", fallback)
+        assert cli_mod._resolve_discord_system_prompt_file(None) == fallback
+
+    def test_both_blank_yields_no_overlay(self, monkeypatch, tmp_path):
+        """With nothing usable on either path, run on Claude Code's own prompt
+        rather than replacing it with emptiness."""
+        monkeypatch.setenv("DISCORD_CLI_UNRESTRICTED_MODE", "always")
+        blank = tmp_path / "CLAUDE2.md"
+        blank.write_text("", encoding="utf-8")
+        monkeypatch.setattr(cli_mod, "_DISCORD_CLI_SYSTEM_PROMPT_PRIMARY", blank)
+        monkeypatch.setattr(cli_mod, "_DISCORD_CLI_SYSTEM_PROMPT_FALLBACK", tmp_path / "gone.md")
         assert cli_mod._resolve_discord_system_prompt_file(None) is None
 
 

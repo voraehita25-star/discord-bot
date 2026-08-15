@@ -571,6 +571,9 @@ class TestBuildClaudeArgv:
         assert "enable_thinking" not in params
 
     def test_system_prompt_file_flag(self, tmp_path):
+        """Default depth appends — the role-preset block is written to sit
+        AFTER Claude Code's own prompt (it carries _IDENTITY_OVERRIDE to argue
+        with it), so it must not be promoted to a replacement."""
         spf = tmp_path / "sp.txt"
         spf.write_text("persona", encoding="utf-8")
         argv = cli._build_claude_argv(
@@ -580,7 +583,66 @@ class TestBuildClaudeArgv:
             system_prompt_file=spf,
         )
         assert "--append-system-prompt-file" in argv
+        assert "--system-prompt-file" not in argv
         assert str(spf) in argv
+
+    def test_replace_system_prompt_uses_replacing_flag(self, tmp_path):
+        """replace_system_prompt=True swaps the flag, so nothing of Claude
+        Code's built-in identity precedes the persona."""
+        spf = tmp_path / "sp.txt"
+        spf.write_text("persona", encoding="utf-8")
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+            system_prompt_file=spf,
+            replace_system_prompt=True,
+        )
+        assert "--system-prompt-file" in argv
+        assert "--append-system-prompt-file" not in argv
+        assert str(spf) in argv
+
+    def test_replace_flag_survives_resume(self, tmp_path):
+        """A replaced system prompt is NOT carried by --resume, so the flag has
+        to be re-passed on resumed turns too (it lives in the base argv, ahead
+        of the --resume branch). Without this the persona silently reverts to
+        the coding-assistant default one turn in."""
+        spf = tmp_path / "sp.txt"
+        spf.write_text("persona", encoding="utf-8")
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id="86230b7c-a4af-4d47-ad90-22dbdf2f97df",
+            allow_read_for_images=False,
+            system_prompt_file=spf,
+            replace_system_prompt=True,
+        )
+        assert "--resume" in argv
+        assert "--system-prompt-file" in argv
+
+    def test_replace_depth_env_rollback(self, tmp_path, monkeypatch):
+        """CLI_PERSONA_DEPTH=append forces the historical flag back, so a CLI
+        that ever drops --system-prompt-file is one env var away from working."""
+        spf = tmp_path / "sp.txt"
+        spf.write_text("persona", encoding="utf-8")
+        monkeypatch.setenv("CLI_PERSONA_DEPTH", "append")
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+            system_prompt_file=spf,
+            replace_system_prompt=True,
+        )
+        assert "--append-system-prompt-file" in argv
+        assert "--system-prompt-file" not in argv
+
+    def test_replace_depth_env_typo_stays_deep(self, monkeypatch):
+        """Anything that isn't exactly `append` means replace: a typo must not
+        silently demote the persona back under the built-in prompt."""
+        monkeypatch.setenv("CLI_PERSONA_DEPTH", "appned")
+        assert cli._persona_depth_replaces() is True
+        assert cli._system_prompt_flag(True) == "--system-prompt-file"
+        # An append-depth caller is unaffected by the env either way.
+        assert cli._system_prompt_flag(False) == "--append-system-prompt-file"
 
     def test_no_system_prompt_file_by_default(self):
         argv = cli._build_claude_argv(
@@ -589,6 +651,7 @@ class TestBuildClaudeArgv:
             allow_read_for_images=False,
         )
         assert "--append-system-prompt-file" not in argv
+        assert "--system-prompt-file" not in argv
 
     def _allowed_tools(self, argv):
         return argv[argv.index("--allowedTools") + 1]
@@ -665,6 +728,88 @@ class TestResolveUnrestrictedSystemPromptFile:
         monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_PRIMARY", tmp_path / "CLAUDE2.md")
         monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_FALLBACK", tmp_path / "CLAUDE.md")
         assert cli._resolve_unrestricted_system_prompt_file() is None
+
+    def test_blank_primary_defers_to_fallback(self, monkeypatch, tmp_path):
+        """A file caught mid-rewrite is not a persona. At replace depth an empty
+        override means an empty system prompt, so blank must not win."""
+        primary = tmp_path / "CLAUDE2.md"
+        primary.write_text("\n \t\n", encoding="utf-8")
+        fallback = tmp_path / "CLAUDE.md"
+        fallback.write_text("default", encoding="utf-8")
+        monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_PRIMARY", primary)
+        monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_FALLBACK", fallback)
+        assert cli._resolve_unrestricted_system_prompt_file() == fallback
+
+    def test_blank_everywhere_returns_none(self, monkeypatch, tmp_path):
+        primary = tmp_path / "CLAUDE2.md"
+        primary.write_text("", encoding="utf-8")
+        fallback = tmp_path / "CLAUDE.md"
+        fallback.write_text("   ", encoding="utf-8")
+        monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_PRIMARY", primary)
+        monkeypatch.setattr(cli, "_UNRESTRICTED_SYSTEM_PROMPT_FALLBACK", fallback)
+        assert cli._resolve_unrestricted_system_prompt_file() is None
+
+
+class TestHasPromptContent:
+    def test_true_for_real_content(self, tmp_path):
+        p = tmp_path / "p.md"
+        p.write_text("persona", encoding="utf-8")
+        assert cli.has_prompt_content(p) is True
+
+    def test_false_for_blank_and_missing(self, tmp_path):
+        blank = tmp_path / "blank.md"
+        blank.write_text("  \n\t ", encoding="utf-8")
+        assert cli.has_prompt_content(blank) is False
+        assert cli.has_prompt_content(tmp_path / "nope.md") is False
+
+    def test_false_for_a_directory(self, tmp_path):
+        """A directory raises OSError on read rather than IsADirectoryError on
+        some platforms — either way it is not a prompt."""
+        assert cli.has_prompt_content(tmp_path) is False
+
+
+class TestBuildUnrestrictedSystemPrompt:
+    """The composed prompt sent at REPLACE depth: override first, plumbing after."""
+
+    def test_override_text_comes_first(self, tmp_path):
+        """The override owns the top of the system prompt. Anything above it
+        would be the first thing the model reads as its identity."""
+        override = tmp_path / "CLAUDE2.md"
+        override.write_text("I AM THE OVERRIDE", encoding="utf-8")
+        out = cli._build_unrestricted_system_prompt(override)
+        assert out.startswith("I AM THE OVERRIDE")
+
+    def test_keeps_timestamp_convention(self, tmp_path):
+        """Replacing the default prompt takes the timestamp convention with it
+        unless we re-append it — without it the model echoes [2026-…] prefixes
+        back at the user."""
+        override = tmp_path / "CLAUDE2.md"
+        override.write_text("persona", encoding="utf-8")
+        out = cli._build_unrestricted_system_prompt(override)
+        assert "# Timestamp convention" in out
+
+    def test_declares_tools_when_enabled(self, tmp_path):
+        override = tmp_path / "CLAUDE2.md"
+        override.write_text("persona", encoding="utf-8")
+        assert "WebSearch" not in cli._build_unrestricted_system_prompt(override)
+        assert "WebSearch" in cli._build_unrestricted_system_prompt(override, web_enabled=True)
+
+    def test_no_identity_override_block(self, tmp_path):
+        """_IDENTITY_OVERRIDE argues a built-in coding-assistant identity out of
+        the way. A replaced prompt has no built-in identity to argue with, and
+        the block's 'do not offer help with code' wording would otherwise
+        constrain an override that may want exactly that."""
+        override = tmp_path / "CLAUDE2.md"
+        override.write_text("persona", encoding="utf-8")
+        out = cli._build_unrestricted_system_prompt(override)
+        assert "PRIMARY DIRECTIVE" not in out
+
+    def test_raises_oserror_when_override_unreadable(self, tmp_path):
+        """The caller catches OSError and falls back to passing the override
+        file directly — still at replace depth, just without the plumbing."""
+        missing = tmp_path / "gone.md"
+        with pytest.raises(OSError):
+            cli._build_unrestricted_system_prompt(missing)
 
 
 class TestSystemPromptFile:
