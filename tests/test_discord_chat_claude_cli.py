@@ -2099,3 +2099,119 @@ class TestDiscordToolsDeclaration:
         # ...but the MCP tools are gone from BOTH the prompt and the argv.
         assert "remember" not in prompt
         assert not [a for a in argv if a.startswith("mcp__")]
+
+
+class TestServerLoreOnResume:
+    """CLI_LORE_REFRESH_TURNS — the lore block's own delta-on-resume clock.
+
+    Lore rides the system instruction, which the persona-every-turn contract
+    re-sends on every turn, so a resumed RP turn was ~92% repeated world data.
+    Fresh sessions still carry it; resumed turns re-send only every Nth turn,
+    which keeps a verbatim copy near any server-side compaction without paying
+    for it on every message.
+    """
+
+    def setup_method(self) -> None:
+        cli_mod._TURNS_SINCE_LORE.clear()
+
+    def teardown_method(self) -> None:
+        cli_mod._TURNS_SINCE_LORE.clear()
+
+    # ---------- the knob ----------
+
+    def test_default_refresh_interval(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "CLI_LORE_REFRESH_TURNS"}
+        with patch.dict(os.environ, env, clear=True):
+            assert cli_mod._lore_refresh_turns() == 20
+
+    def test_refresh_interval_override(self) -> None:
+        with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": "5"}):
+            assert cli_mod._lore_refresh_turns() == 5
+        with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": "1"}):
+            assert cli_mod._lore_refresh_turns() == 1
+        with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": "0"}):
+            assert cli_mod._lore_refresh_turns() == 0
+
+    def test_bad_values_fall_back_to_default(self) -> None:
+        """A typo must not silently strand the lore — fail toward re-sending."""
+        for bad in ("-3", "twenty", "   "):
+            with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": bad}):
+                assert cli_mod._lore_refresh_turns() == 20
+
+    # ---------- the stripper ----------
+
+    def test_strips_the_lore_block(self) -> None:
+        lore = "WORLD LORE BODY"
+        instruction = "PERSONA" + "\n\n" + lore
+        assert cli_mod._without_server_lore(instruction, lore) == "PERSONA"
+
+    def test_strips_lore_that_is_not_at_the_tail(self) -> None:
+        """The RP cache-fixup path can append FAUST_ROLEPLAY after the lore."""
+        lore = "WORLD LORE BODY"
+        instruction = "PERSONA" + "\n\n" + lore + "\nTRAILING_ADDENDUM"
+        out = cli_mod._without_server_lore(instruction, lore)
+        assert out == "PERSONA\nTRAILING_ADDENDUM"
+
+    def test_no_lore_is_a_noop(self) -> None:
+        assert cli_mod._without_server_lore("PERSONA", "") == "PERSONA"
+
+    def test_unmatched_lore_sends_the_instruction_whole(self) -> None:
+        """Operator edited the lore file mid-session — never guess at the split."""
+        instruction = "PERSONA\n\nOLD LORE"
+        assert cli_mod._without_server_lore(instruction, "NEW LORE") == instruction
+
+    # ---------- the clock ----------
+
+    def test_fresh_session_always_carries_lore(self) -> None:
+        assert cli_mod._lore_due_this_turn(1, None) is True
+
+    def test_none_channel_always_carries_lore(self) -> None:
+        assert cli_mod._lore_due_this_turn(None, None) is True
+        assert None not in cli_mod._TURNS_SINCE_LORE
+
+    def test_interval_one_is_every_turn(self) -> None:
+        with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": "1"}):
+            for _ in range(5):
+                assert cli_mod._lore_due_this_turn(1, "sess") is True
+
+    def test_zero_never_re_sends_after_the_fresh_turn(self) -> None:
+        with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": "0"}):
+            assert cli_mod._lore_due_this_turn(1, None) is True  # fresh
+            assert [cli_mod._lore_due_this_turn(1, "sess") for _ in range(50)] == [False] * 50
+
+    def test_refreshes_on_every_nth_resumed_turn(self) -> None:
+        with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": "3"}):
+            cli_mod._lore_due_this_turn(1, None)  # fresh turn resets the counter
+            got = [cli_mod._lore_due_this_turn(1, "sess") for _ in range(7)]
+        assert got == [False, False, True, False, False, True, False]
+
+    def test_counters_are_per_channel(self) -> None:
+        with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": "2"}):
+            assert cli_mod._lore_due_this_turn(1, "s") is False
+            assert cli_mod._lore_due_this_turn(2, "s") is False
+            assert cli_mod._lore_due_this_turn(1, "s") is True
+            assert cli_mod._lore_due_this_turn(2, "s") is True
+
+    def test_counter_map_is_lru_bounded(self) -> None:
+        with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": "999"}):
+            for cid in range(cli_mod._MAX_TRACKED_CHANNELS + 50):
+                cli_mod._lore_due_this_turn(cid, "sess")
+        assert len(cli_mod._TURNS_SINCE_LORE) <= cli_mod._MAX_TRACKED_CHANNELS
+
+    # ---------- what actually reaches the prompt ----------
+
+    def test_resumed_prompt_drops_the_lore_fresh_one_keeps_it(self) -> None:
+        lore = "LORE_SENTINEL_BODY"
+        instruction = "PERSONA_SENTINEL" + "\n\n" + lore
+        contents = [{"role": "user", "parts": ["hello"]}]
+
+        fresh = _flatten_contents_to_prompt(contents, instruction, include_history=True)
+        lean = _flatten_contents_to_prompt(
+            contents,
+            cli_mod._without_server_lore(instruction, lore),
+            include_history=False,
+        )
+        assert "LORE_SENTINEL_BODY" in fresh
+        assert "LORE_SENTINEL_BODY" not in lean
+        # the persona is NOT dropped — only the lore block is
+        assert "PERSONA_SENTINEL" in lean

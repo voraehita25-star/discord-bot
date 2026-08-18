@@ -142,6 +142,105 @@ _DISCORD_STREAM_TIMEOUT = 1800.0
 # user chooses via _OverlimitChoiceView (summarize the chat, or pause it).
 _DISCORD_PROMPT_MAX_CHARS = _prompt_max_chars_from_env()
 
+# How often a RESUMED turn re-sends the guild lore block.
+#
+# Lore is part of the system instruction, and the persona-every-turn contract
+# re-sends the whole instruction on every turn — so on the RP guild a resumed
+# turn spent ~92% of its prompt repeating world data the server-side session
+# already had (measured: 55,285 chars/turn, 4,560 without the lore). Sending it
+# only once is not safe either: Claude Code compacts a long session on its own,
+# and a lore block last seen 300 turns ago is exactly what compaction
+# summarises away.
+#
+# So: fresh sessions always carry it, and a resumed turn re-sends it every Nth
+# turn. That keeps a verbatim copy within N turns of any compaction while
+# cutting the steady-state cost by roughly N-fold. Re-sending also fills the
+# window faster, which triggers compaction sooner — the reason the old
+# every-turn behaviour was self-defeating rather than merely expensive.
+#
+#   CLI_LORE_REFRESH_TURNS=1   every turn (the old behaviour, full rollback)
+#   CLI_LORE_REFRESH_TURNS=N   fresh sessions + every Nth resumed turn
+#   CLI_LORE_REFRESH_TURNS=0   fresh sessions only, never re-sent
+_LORE_REFRESH_ENV = "CLI_LORE_REFRESH_TURNS"
+
+
+def _lore_refresh_turns() -> int:
+    """Resolve ``CLI_LORE_REFRESH_TURNS``; see the block comment above.
+
+    Read per call so flipping it takes effect without a bot restart. A
+    negative or unparseable value falls back to the default rather than
+    disabling the refresh, so a typo cannot silently strand the lore.
+    """
+    raw = (os.environ.get(_LORE_REFRESH_ENV) or "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("Invalid %s=%r; using default", _LORE_REFRESH_ENV, raw)
+        else:
+            if value >= 0:
+                return value
+            logger.warning("Negative %s=%r; using default", _LORE_REFRESH_ENV, raw)
+    return 20
+
+
+# Turns since this channel's prompt last carried the lore block. Same LRU cap
+# and lifetime as _CHANNEL_SESSIONS — losing a counter only costs one extra
+# lore re-send, so eviction is harmless.
+_TURNS_SINCE_LORE: OrderedDict[int, int] = OrderedDict()
+
+
+def _lore_due_this_turn(channel_id: int | None, session_id: str | None) -> bool:
+    """Whether THIS turn's prompt should carry the lore block, and tick the counter.
+
+    Call exactly once per user turn, before the attempt loop — the loop rebuilds
+    the prompt per attempt and must not advance the counter twice. The stale-
+    session retry clears ``session_id``, and a fresh session always carries the
+    lore, so a retry is covered regardless of what this returned.
+
+    A ``None`` channel has no session to resume and nothing to count against,
+    so it always carries the lore rather than seeding a ``None`` key.
+    """
+    if channel_id is None:
+        return True
+    every = _lore_refresh_turns()
+    if session_id is None or every == 1:
+        _TURNS_SINCE_LORE[channel_id] = 0
+        _evict_lore_counters()
+        return True
+    seen = _TURNS_SINCE_LORE.get(channel_id, 0) + 1
+    if every > 1 and seen >= every:
+        _TURNS_SINCE_LORE[channel_id] = 0
+        _evict_lore_counters()
+        return True
+    _TURNS_SINCE_LORE[channel_id] = seen
+    _evict_lore_counters()
+    return False
+
+
+def _evict_lore_counters() -> None:
+    """Bound _TURNS_SINCE_LORE the same way _CHANNEL_SESSIONS is bounded."""
+    while len(_TURNS_SINCE_LORE) > _MAX_TRACKED_CHANNELS:
+        _TURNS_SINCE_LORE.popitem(last=False)
+
+
+def _without_server_lore(system_instruction: str, server_lore: str) -> str:
+    """Strip the guild-lore block from a system instruction for a resumed turn.
+
+    ``session_mixin`` appends the lore after the persona separated by a
+    blank line, and stores the same text under ``server_lore``, so the block
+    comes out by exact match. When it is NOT found — an operator edited the
+    lore file mid-session, so the stored text no longer matches what was
+    appended — the instruction goes out whole rather than being guessed at.
+    """
+    if not server_lore:
+        return system_instruction
+    block = "\n\n" + server_lore
+    if block not in system_instruction:
+        return system_instruction
+    return system_instruction.replace(block, "", 1)
+
+
 # Discord-side model + system-prompt overrides. The global ``CLAUDE_MODEL``
 # default tracks Opus 5's 1M-token variant (``claude-opus-5[1m]``), so the
 # explicit ``model=`` pin here is defensive: the Discord RP path stays on the
@@ -863,6 +962,8 @@ async def call_claude_cli_streaming(
         return "", "", []
 
     system_instruction = config_params.get("system_instruction", "") or ""
+    # Dropped from resumed turns — see _lore_due_this_turn.
+    server_lore = config_params.get("server_lore", "") or ""
 
     placeholder_msg = None
     last_edit_time = 0.0
@@ -1000,6 +1101,11 @@ async def call_claude_cli_streaming(
         # web + custom tools that the persona (Gemini-era) doesn't know about.
         tools_note = _discord_tools_note(ai_tools)
 
+        # Once per turn, NOT per attempt: the loop below rebuilds the prompt on
+        # the stale-session retry and must not advance the refresh counter twice.
+        lore_due = _lore_due_this_turn(channel_id, session_id)
+        lean_instruction = _without_server_lore(system_instruction, server_lore)
+
         # Run with retry-once on stale session — exactly mirrors the
         # dashboard handler's behaviour. The stale-session case is when
         # Claude on the server side has GC'd the session log under us.
@@ -1007,10 +1113,12 @@ async def call_claude_cli_streaming(
             # Built per attempt: a resumed session already holds every prior
             # turn server-side, so it gets the delta form (no history recap);
             # a fresh session — including the attempt-2 stale retry, which
-            # clears session_id — gets the full flattened history.
+            # clears session_id — gets the full flattened history. The lore
+            # block follows the same rule on a slower clock (_lore_due_this_turn).
+            send_lore = lore_due or session_id is None
             prompt = _flatten_contents_to_prompt(
                 contents,
-                system_instruction,
+                system_instruction if send_lore else lean_instruction,
                 include_history=session_id is None,
                 tools_note=tools_note,
             )
@@ -1306,6 +1414,8 @@ async def call_claude_cli(
         return "", "", []
 
     system_instruction = config_params.get("system_instruction", "") or ""
+    # Dropped from resumed turns — see _lore_due_this_turn.
+    server_lore = config_params.get("server_lore", "") or ""
 
     accumulated_text = ""
     aborted = False
@@ -1354,13 +1464,19 @@ async def call_claude_cli(
         # enables the identical web + custom tools.
         tools_note = _discord_tools_note(ai_tools)
 
+        # Once per turn, not per attempt — see the streaming sibling.
+        lore_due = _lore_due_this_turn(channel_id, session_id)
+        lean_instruction = _without_server_lore(system_instruction, server_lore)
+
         for attempt in (1, 2):
             # Same delta-on-resume rule as the streaming sibling: resumed
             # sessions skip the history recap; fresh sessions (incl. the
-            # attempt-2 stale retry) re-send the full flattened history.
+            # attempt-2 stale retry) re-send the full flattened history, and
+            # the lore block follows on its own slower clock.
+            send_lore = lore_due or session_id is None
             prompt = _flatten_contents_to_prompt(
                 contents,
-                system_instruction,
+                system_instruction if send_lore else lean_instruction,
                 include_history=session_id is None,
                 tools_note=tools_note,
             )

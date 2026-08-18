@@ -879,3 +879,41 @@ class TestServerLoreCap:
         assert "[... lore truncated ...]" in instruction
         # capped, not the full 500-char lore
         assert instruction.count("WORLD") <= 11
+
+    @pytest.mark.asyncio
+    async def test_session_keeps_the_lore_text_separately(self):
+        """``server_lore`` lets the CLI path drop the block from resumed turns."""
+        from cogs.ai_core import session_mixin as sm
+
+        instance = self._make_instance()
+        hist, meta = self._storage_patches()
+        with (
+            hist,
+            meta,
+            patch.object(sm, "GUILD_ID_RP", 1),
+            patch.object(sm, "FAUST_INSTRUCTION", "FAUST_BASE"),
+            patch.object(sm, "FAUST_ROLEPLAY", "FAUST_BASE"),
+            patch.object(sm, "SERVER_LORE", {2: "WORLD_LORE_TEXT"}),
+        ):
+            result = await instance.get_chat_session(903, guild_id=2)
+        assert result["server_lore"] == "WORLD_LORE_TEXT"
+        # and it is exactly the tail of the instruction, so the CLI's exact-match
+        # strip cannot drift from what was appended
+        assert result["system_instruction"].endswith("\n\n" + "WORLD_LORE_TEXT")
+
+    @pytest.mark.asyncio
+    async def test_dm_session_has_empty_server_lore(self):
+        from cogs.ai_core import session_mixin as sm
+
+        instance = self._make_instance()
+        hist, meta = self._storage_patches()
+        with (
+            hist,
+            meta,
+            patch.object(sm, "GUILD_ID_RP", 1),
+            patch.object(sm, "FAUST_INSTRUCTION", "FAUST_BASE"),
+            patch.object(sm, "SERVER_LORE", {2: "WORLD_LORE_TEXT"}),
+            patch.object(sm, "is_unrestricted", return_value=False),
+        ):
+            result = await instance.get_chat_session(904)
+        assert result["server_lore"] == ""

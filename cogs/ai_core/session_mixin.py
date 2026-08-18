@@ -224,6 +224,12 @@ class SessionMixin:
                 self.chats[channel_id] = {
                     "history": history,
                     "system_instruction": system_instruction,
+                    # The lore slice of system_instruction, kept verbatim and
+                    # separately so the CLI path can drop it from RESUMED turns
+                    # (the server-side session already holds it) without having
+                    # to guess where the persona ends. Empty for DMs and guilds
+                    # with no SERVER_LORE entry.
+                    "server_lore": lore,
                     # RP server force-enables thinking. This rule previously
                     # lived only in the cached-session branch, so the FIRST
                     # turn after a restart/eviction ran without extended
@@ -252,6 +258,7 @@ class SessionMixin:
                 if lore:
                     system_instruction = system_instruction + "\n\n" + lore
                 self.chats[channel_id]["system_instruction"] = system_instruction
+                self.chats[channel_id]["server_lore"] = lore
 
             # Guild Faust session missing the roleplay-format addendum (e.g.
             # cached before FAUST_ROLEPLAY was wired): append it so existing guild

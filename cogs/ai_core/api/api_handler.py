@@ -168,6 +168,11 @@ def build_api_config(
         # the wire request is assembled (``with_prefix_note``), mirroring the
         # CLI path where it lives in the prompt builder, not the config.
         "system_instruction": system_instruction,
+        # The lore block inside system_instruction, verbatim. Only the Discord
+        # CLI path reads it (to drop the block from resumed turns); the SDK
+        # path ignores the key, and nothing splats config_params into an API
+        # request, so carrying it here is inert for every other consumer.
+        "server_lore": chat_data.get("server_lore", "") or "",
         "max_tokens": CLAUDE_MAX_TOKENS,
     }
 
