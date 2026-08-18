@@ -62,9 +62,9 @@ def _resolve_server_lore(guild_id: int | None, *, context: str = "") -> str:
     """Return this guild's lore, capped to :data:`_MAX_LORE_CHARS`.
 
     Returns ``""`` for a DM (``guild_id`` None) or a guild with no lore, so
-    callers can skip the append with a plain truthiness check. Shared by BOTH injection sites — the
-    cache-miss path and the RP cache-fixup path — which previously carried
-    their own copy of the cap and could drift apart on it.
+    callers can skip the append with a plain truthiness check. Shared by BOTH
+    injection sites — the cache-miss path and the RP cache-fixup path — which
+    previously carried their own copy of the cap and could drift apart on it.
 
     ``context`` is appended to the truncation warning to say which path hit it.
     """

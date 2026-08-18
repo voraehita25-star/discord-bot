@@ -176,10 +176,9 @@ URL_PATTERN = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
 def _int_from_env(name: str, default: int, minimum: int) -> int:
     """Read a positive int knob from the environment, clamped to ``minimum``.
 
-    There is deliberately no "0 = unlimited" escape hatch here: the GitHub
-    README branch derives a BYTE cap from the remaining char budget
-    (``remaining * 4``), so a zero would read zero bytes rather than
-    everything. Clamping keeps every consumer's arithmetic meaningful.
+    Clamping rather than allowing ``0`` is deliberate for both callers below:
+    each treats the value as a real budget it does arithmetic on, so a zero
+    would mean "read nothing", not "read everything".
     """
     raw = (os.environ.get(name) or "").strip()
     if raw:
@@ -197,6 +196,9 @@ def _int_from_env(name: str, default: int, minimum: int) -> int:
 # had barely read. 50000 lets a normal article through whole and still costs
 # only a few percent of the window. Fetched content rides the CURRENT message,
 # so with delta-on-resume it is sent once, not re-sent every turn.
+# There is no "0 = unlimited": the GitHub README branch derives a BYTE cap
+# from the remaining char budget (remaining * 4), so a zero here would read
+# zero bytes of the README rather than all of it. Floor is 500.
 MAX_CONTENT_LENGTH = _int_from_env("URL_CONTENT_MAX_CHARS", 50_000, 500)
 
 # How many URLs from one message are fetched. They go out concurrently
