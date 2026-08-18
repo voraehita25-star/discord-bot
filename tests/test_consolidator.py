@@ -183,8 +183,8 @@ class TestMemoryConsolidatorMethods:
         assert "User: Hello world" in result
         assert "AI: Hi there" in result
 
-    def test_history_to_text_truncates_long_parts(self):
-        """Test _history_to_text truncates long text parts."""
+    def test_history_to_text_keeps_a_long_post_whole(self):
+        """A 1000-char post survives intact — the old hard-coded 500 cut it in half."""
         from cogs.ai_core.memory.consolidator import MemoryConsolidator
 
         consolidator = MemoryConsolidator()
@@ -195,8 +195,33 @@ class TestMemoryConsolidatorMethods:
 
         result = consolidator._history_to_text(history)
 
-        # Should be truncated to 500 chars
-        assert len(result) < 1000
+        assert long_text in result
+
+    def test_history_to_text_truncates_at_the_configured_cap(self):
+        """Past EXTRACTION_MAX_CHARS_PER_MESSAGE the post is still cut."""
+        from unittest.mock import patch
+
+        from cogs.ai_core.memory import consolidator as mod
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        consolidator = MemoryConsolidator()
+        history = [{"role": "user", "parts": ["A" * 5000]}]
+
+        with patch.object(mod, "EXTRACTION_MAX_CHARS_PER_MESSAGE", 100):
+            result = consolidator._history_to_text(history)
+
+        assert result == "User: " + "A" * 100
+
+    def test_history_to_text_skips_non_string_text(self):
+        """A dict part whose 'text' is not a string is skipped, not sliced."""
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        consolidator = MemoryConsolidator()
+        history = [{"role": "user", "parts": [{"text": 12345}, "real text"]}]
+
+        result = consolidator._history_to_text(history)
+
+        assert result == "User: real text"
 
     def test_parse_extraction_valid_json(self):
         """Test _parse_extraction with valid JSON."""

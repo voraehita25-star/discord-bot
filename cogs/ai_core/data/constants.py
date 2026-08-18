@@ -60,24 +60,12 @@ STREAMING_TIMEOUT_INITIAL = 120.0  # Initial chunk timeout (wide enough for exte
 STREAMING_TIMEOUT_CHUNK = (
     45.0  # Subsequent chunk timeout (raised so a slow-but-valid thoughtful reply isn't truncated)
 )
-MAX_STALL_TIME = 60.0  # Max time before considering stream stalled
 
 # Database timeouts (in seconds)
 DB_CONNECTION_TIMEOUT = 30.0  # SQLite connection timeout
-DB_QUERY_TIMEOUT = 10.0  # Individual query timeout
 
 # HTTP/External service timeouts (in seconds)
 HTTP_REQUEST_TIMEOUT = 10  # Default HTTP request timeout
-HEALTH_CHECK_TIMEOUT = 5.0  # Health check endpoint timeout
-WEBHOOK_SEND_TIMEOUT = 10.0  # Discord webhook send timeout
-
-# Music playback timeouts (in seconds)
-MUSIC_LOCK_TIMEOUT = 0.1  # Lock acquisition for play_next
-MUSIC_DISCONNECT_DELAY = 180  # Auto-disconnect after inactivity (3 min)
-
-# Shutdown timeouts (in seconds)
-SHUTDOWN_TIMEOUT = 30.0  # Global shutdown timeout
-PROCESS_KILL_TIMEOUT = 5.0  # Wait time before force-killing process
 
 # Content limits
 # In-context conversation history fed to the model PER TURN (distinct from the
@@ -94,32 +82,20 @@ RAG_TOP_K = _safe_int_env("RAG_TOP_K", 15)  # Long-term memories retrieved per t
 ENTITY_TOP_K = _safe_int_env("ENTITY_TOP_K", 8)  # Entities retrieved per turn
 # Dashboard (web UI) history window rendered into a fresh-session prompt.
 DASHBOARD_HISTORY_MESSAGES = _safe_int_env("DASHBOARD_HISTORY_MESSAGES", 500)
-MAX_TEXT_TRUNCATE_LENGTH = 10000  # Truncate text longer than this
-TEXT_TRUNCATE_HEAD = 5000  # Keep first N chars when truncating
-TEXT_TRUNCATE_TAIL = 3000  # Keep last N chars when truncating
 
 # Performance tracking
 PERFORMANCE_SAMPLES_MAX = 100  # Max samples to keep per metric
 
 # ==================== Discord Limits ====================
-DISCORD_MESSAGE_LIMIT = 2000  # Max characters per message
-# (MAX_DISCORD_LENGTH alias removed — its only consumer, response_sender.py,
-# no longer exists.)
-# WEBHOOK_SEND_TIMEOUT is defined once above in "HTTP/External service timeouts"
 DISCORD_WEBHOOK_LIMIT = 15  # Max webhooks per channel
 MAX_CHANNEL_NAME_LENGTH = 100  # Max length for channel/category names
-MAX_ROLE_NAME_LENGTH = 100  # Max length for role names
-DEFAULT_LIST_MEMBERS_LIMIT = 50  # Default limit for list_members command
 
 # ==================== AI Model Config ====================
 SUMMARIZATION_MAX_OUTPUT_TOKENS = (
     1000  # Max tokens for summarization (richer summary retains more detail)
 )
-SUMMARIZATION_TEMPERATURE = 0.3  # Temperature for consistent summaries
 
 # ==================== Lock/Cache Settings ====================
-STALE_LOCK_MAX_AGE_SECONDS = 300.0  # 5 minutes - max age for stale locks
-UNUSED_LOCK_MAX_AGE_SECONDS = 3600.0  # 1 hour - max age for unused locks
 MAX_CHANNELS = 5000  # Max channels to track in message queue
 MAX_PENDING_PER_CHANNEL = 50  # Max pending messages per channel
 
@@ -129,6 +105,13 @@ CONSOLIDATE_EVERY_N_MESSAGES = 30  # Consolidate after N messages
 CONSOLIDATE_INTERVAL_SECONDS = 3600  # Or after N seconds (1 hour)
 MIN_CONVERSATION_LENGTH = 200  # Minimum chars to extract facts from
 MAX_RECENT_MESSAGES_FOR_EXTRACTION = 50  # Messages to consider for extraction
+# Per-message truncation applied when rendering those messages into the
+# extraction prompt. The old hard-coded 500 meant a long roleplay post was
+# read only to its first quarter, so anything stated later in the post never
+# became a remembered fact — silently, with no log line. Worst case per run
+# is MAX_RECENT_MESSAGES_FOR_EXTRACTION * this; unlike the prompt-side knobs
+# this one bills through the Anthropic SDK, so lower it if that matters.
+EXTRACTION_MAX_CHARS_PER_MESSAGE = _safe_int_env("EXTRACTION_MAX_CHARS_PER_MESSAGE", 4000)
 
 # ==================== Memory Cleanup Settings ====================
 # State tracker cleanup (character states in roleplay)
@@ -138,3 +121,14 @@ STATE_CLEANUP_MAX_CHANNELS = 500  # Max channels to track states for
 # Consolidator cleanup (tracking data for fact extraction)
 CONSOLIDATOR_CLEANUP_MAX_AGE_SECONDS = 86400  # 24 hours
 CONSOLIDATOR_CLEANUP_MAX_CHANNELS = 500  # Max channels to track
+
+# ==================== Removed (dead) ====================
+# These had no consumer anywhere in the tree — the only references were tests
+# asserting the constants' own literal values. Recover from git history if a
+# caller ever needs one: DB_QUERY_TIMEOUT, DEFAULT_LIST_MEMBERS_LIMIT,
+# DISCORD_MESSAGE_LIMIT (ai_cog.py keeps its own _DISCORD_MAX_MESSAGE_LEN),
+# HEALTH_CHECK_TIMEOUT, MAX_ROLE_NAME_LENGTH, MAX_STALL_TIME,
+# MAX_TEXT_TRUNCATE_LENGTH, MUSIC_DISCONNECT_DELAY, MUSIC_LOCK_TIMEOUT,
+# PROCESS_KILL_TIMEOUT, SHUTDOWN_TIMEOUT, STALE_LOCK_MAX_AGE_SECONDS,
+# SUMMARIZATION_TEMPERATURE, TEXT_TRUNCATE_HEAD, TEXT_TRUNCATE_TAIL,
+# UNUSED_LOCK_MAX_AGE_SECONDS, WEBHOOK_SEND_TIMEOUT.

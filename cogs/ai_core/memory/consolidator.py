@@ -30,6 +30,7 @@ from ..data.constants import (
     CONSOLIDATE_INTERVAL_SECONDS,
     CONSOLIDATOR_CLEANUP_MAX_AGE_SECONDS,
     CONSOLIDATOR_CLEANUP_MAX_CHANNELS,
+    EXTRACTION_MAX_CHARS_PER_MESSAGE,
     MAX_RECENT_MESSAGES_FOR_EXTRACTION,
     MIN_CONVERSATION_LENGTH,
 )
@@ -37,6 +38,12 @@ from ..data.model_caps import thinking_off_kwargs
 from .entity_memory import EntityFacts, entity_memory
 
 logger = logging.getLogger(__name__)
+
+# Upper bound on RENDERED LINES in the extraction prompt, a second bound on
+# top of MAX_RECENT_MESSAGES_FOR_EXTRACTION (one message can render several
+# lines when it carries multiple parts). Rarely binds at the current message
+# count; it exists so a pathological multi-part history can't blow the prompt.
+_MAX_EXTRACTION_LINES = 100
 
 
 # Canonical relationship tokens the contradiction heuristic recognises. Kept
@@ -483,13 +490,17 @@ class MemoryConsolidator:
 
             for part in parts:
                 if isinstance(part, str):
-                    text = part[:500] if len(part) > 500 else part
-                    lines.append(f"{role}: {text}")
-                elif isinstance(part, dict) and "text" in part:
-                    text = part["text"][:500] if len(part["text"]) > 500 else part["text"]
-                    lines.append(f"{role}: {text}")
+                    raw = part
+                elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                    raw = part["text"]
+                else:
+                    # Non-text part (inline media) or a dict whose 'text' is
+                    # not a string — nothing to extract facts from. Skipping
+                    # also avoids slicing a non-str, which used to raise.
+                    continue
+                lines.append(f"{role}: {raw[:EXTRACTION_MAX_CHARS_PER_MESSAGE]}")
 
-        return "\n".join(lines[-100:])  # Last 100 lines max
+        return "\n".join(lines[-_MAX_EXTRACTION_LINES:])
 
     def _parse_extraction(self, response_text: str) -> dict | None:
         """Parse JSON extraction response with multiple fallback strategies."""

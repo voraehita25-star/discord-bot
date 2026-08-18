@@ -171,12 +171,6 @@ class TestProcessingTimeouts:
 
         assert STREAMING_TIMEOUT_CHUNK == 45.0
 
-    def test_max_stall_time(self):
-        """Test MAX_STALL_TIME is defined."""
-        from cogs.ai_core.data.constants import MAX_STALL_TIME
-
-        assert MAX_STALL_TIME == 60.0
-
 
 class TestContentLimits:
     """Tests for content limit constants."""
@@ -187,23 +181,36 @@ class TestContentLimits:
 
         assert MAX_HISTORY_ITEMS == 8000
 
-    def test_max_text_truncate_length(self):
-        """Test MAX_TEXT_TRUNCATE_LENGTH is defined."""
-        from cogs.ai_core.data.constants import MAX_TEXT_TRUNCATE_LENGTH
+    def test_extraction_max_chars_per_message(self):
+        """Raised from a hard-coded 500 so a long RP post is read past its first quarter."""
+        from cogs.ai_core.data.constants import EXTRACTION_MAX_CHARS_PER_MESSAGE
 
-        assert MAX_TEXT_TRUNCATE_LENGTH == 10000
+        assert EXTRACTION_MAX_CHARS_PER_MESSAGE == 4000
 
-    def test_text_truncate_head(self):
-        """Test TEXT_TRUNCATE_HEAD is defined."""
-        from cogs.ai_core.data.constants import TEXT_TRUNCATE_HEAD
+    def test_dead_constants_are_gone(self):
+        """The unused-constant sweep: these had no consumer outside their own tests."""
+        from cogs.ai_core.data import constants
 
-        assert TEXT_TRUNCATE_HEAD == 5000
-
-    def test_text_truncate_tail(self):
-        """Test TEXT_TRUNCATE_TAIL is defined."""
-        from cogs.ai_core.data.constants import TEXT_TRUNCATE_TAIL
-
-        assert TEXT_TRUNCATE_TAIL == 3000
+        for name in (
+            "DB_QUERY_TIMEOUT",
+            "DEFAULT_LIST_MEMBERS_LIMIT",
+            "DISCORD_MESSAGE_LIMIT",
+            "HEALTH_CHECK_TIMEOUT",
+            "MAX_ROLE_NAME_LENGTH",
+            "MAX_STALL_TIME",
+            "MAX_TEXT_TRUNCATE_LENGTH",
+            "MUSIC_DISCONNECT_DELAY",
+            "MUSIC_LOCK_TIMEOUT",
+            "PROCESS_KILL_TIMEOUT",
+            "SHUTDOWN_TIMEOUT",
+            "STALE_LOCK_MAX_AGE_SECONDS",
+            "SUMMARIZATION_TEMPERATURE",
+            "TEXT_TRUNCATE_HEAD",
+            "TEXT_TRUNCATE_TAIL",
+            "UNUSED_LOCK_MAX_AGE_SECONDS",
+            "WEBHOOK_SEND_TIMEOUT",
+        ):
+            assert not hasattr(constants, name), f"{name} came back — is it used now?"
 
 
 class TestPerformanceTracking:
