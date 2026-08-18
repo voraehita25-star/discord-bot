@@ -98,15 +98,62 @@ class TestFormatUrlContentForContext:
 
 
 class TestMaxContentLength:
-    """Tests for MAX_CONTENT_LENGTH constant."""
+    """Tests for MAX_CONTENT_LENGTH and its env knob."""
 
     def test_content_length_is_reasonable(self):
-        """Test that MAX_CONTENT_LENGTH is within reasonable bounds."""
-        assert 2000 <= MAX_CONTENT_LENGTH <= 10000
+        """Sized for a 1M-token window, not the old Gemini-era 4500."""
+        assert 20_000 <= MAX_CONTENT_LENGTH <= 200_000
 
     def test_content_length_is_integer(self):
         """Test that MAX_CONTENT_LENGTH is an integer."""
         assert isinstance(MAX_CONTENT_LENGTH, int)
+
+    def test_env_knob_defaults(self):
+        import os
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("URL_CONTENT_MAX_CHARS", None)
+            assert uf._int_from_env("URL_CONTENT_MAX_CHARS", 50_000, 500) == 50_000
+
+    def test_env_knob_override(self):
+        import os
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        with patch.dict(os.environ, {"URL_CONTENT_MAX_CHARS": "120000"}):
+            assert uf._int_from_env("URL_CONTENT_MAX_CHARS", 50_000, 500) == 120_000
+
+    def test_env_knob_clamps_to_minimum(self):
+        """No 0 = unlimited: the GitHub README branch derives bytes from this."""
+        import os
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        with patch.dict(os.environ, {"URL_CONTENT_MAX_CHARS": "0"}):
+            assert uf._int_from_env("URL_CONTENT_MAX_CHARS", 50_000, 500) == 500
+        with patch.dict(os.environ, {"URL_CONTENT_MAX_CHARS": "-9"}):
+            assert uf._int_from_env("URL_CONTENT_MAX_CHARS", 50_000, 500) == 500
+
+    def test_env_knob_ignores_garbage(self):
+        import os
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        with patch.dict(os.environ, {"URL_CONTENT_MAX_CHARS": "not-a-number"}):
+            assert uf._int_from_env("URL_CONTENT_MAX_CHARS", 50_000, 500) == 50_000
+        with patch.dict(os.environ, {"URL_CONTENT_MAX_CHARS": "   "}):
+            assert uf._int_from_env("URL_CONTENT_MAX_CHARS", 50_000, 500) == 50_000
+
+    def test_max_urls_per_message_is_at_least_the_old_hardcoded_two(self):
+        from utils.web.url_fetcher import MAX_URLS_PER_MESSAGE
+
+        assert MAX_URLS_PER_MESSAGE >= 2
 
 
 # ======================================================================
@@ -1856,6 +1903,37 @@ class TestFetchAllUrls:
         assert len(out) == 2
         assert out[0] == ("http://a/", "Title-http://a/", "body")
         assert out[1] == ("http://b/", "Title-http://b/", "body")
+
+    @pytest.mark.asyncio
+    async def test_default_max_urls_comes_from_module_policy(self):
+        """No max_urls argument -> MAX_URLS_PER_MESSAGE, not a call-site literal."""
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        async def fake(url):
+            return ("T", "body")
+
+        urls = [f"http://h{i}/" for i in range(10)]
+        with patch.object(uf, "fetch_url_content", new=fake):
+            with patch.object(uf, "MAX_URLS_PER_MESSAGE", 3):
+                assert len(await uf.fetch_all_urls(urls)) == 3
+            with patch.object(uf, "MAX_URLS_PER_MESSAGE", 7):
+                assert len(await uf.fetch_all_urls(urls)) == 7
+
+    @pytest.mark.asyncio
+    async def test_explicit_max_urls_still_overrides_policy(self):
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        async def fake(url):
+            return ("T", "body")
+
+        urls = [f"http://h{i}/" for i in range(10)]
+        with patch.object(uf, "fetch_url_content", new=fake):
+            with patch.object(uf, "MAX_URLS_PER_MESSAGE", 7):
+                assert len(await uf.fetch_all_urls(urls, max_urls=1)) == 1
 
     @pytest.mark.asyncio
     async def test_exception_in_one_url_recorded_as_failure(self):

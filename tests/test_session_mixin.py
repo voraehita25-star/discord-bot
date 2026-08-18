@@ -668,3 +668,214 @@ class TestRoleplayAndUnrestrictedWiring:
         assert "OVERRIDE_TEXT_A" not in instruction  # old text refreshed out
         assert instruction.count("OVERRIDE_TEXT_B") == 1  # exactly one block, no stacking
         assert "FAUST_BASE" in instruction
+
+
+class TestServerLoreCap:
+    """MAX_SERVER_LORE_CHARS — the env knob that replaced a hard-coded 20000.
+
+    The old constant was cutting a real 50,723-char RP lore down by 60%,
+    mid-sentence, on every session creation, and announcing it only as a log
+    WARNING. Both injection sites (cache-miss and RP cache-fixup) now share
+    one helper so they cannot drift apart on the ceiling again.
+    """
+
+    def _make_instance(self):
+        from cogs.ai_core.session_mixin import SessionMixin
+
+        class TestClass(SessionMixin):
+            MAX_CHANNELS = 1000
+
+            def __init__(self):
+                self.client = MagicMock()
+                self.bot = MagicMock()
+                self.chats = {}
+                self.last_accessed = {}
+                self.seen_users = {}
+                self.processing_locks = {}
+                self.pending_messages = {}
+                self.cancel_flags = {}
+                self.streaming_enabled = {}
+
+            def _enforce_channel_limit(self):
+                return 0
+
+        return TestClass()
+
+    def _storage_patches(self):
+        return (
+            patch(
+                "cogs.ai_core.session_mixin.load_history", new_callable=AsyncMock, return_value=[]
+            ),
+            patch(
+                "cogs.ai_core.session_mixin.load_metadata",
+                new_callable=AsyncMock,
+                return_value={"thinking_enabled": True},
+            ),
+        )
+
+    # ---------- the env knob itself ----------
+
+    def test_default_is_raised_above_the_old_hardcoded_20000(self):
+        from cogs.ai_core import session_mixin as sm
+
+        assert sm._max_lore_chars_from_env() == 60_000
+
+    def test_env_override(self):
+        import os
+
+        from cogs.ai_core import session_mixin as sm
+
+        with patch.dict(os.environ, {"MAX_SERVER_LORE_CHARS": "125000"}):
+            assert sm._max_lore_chars_from_env() == 125_000
+
+    def test_zero_means_no_cap(self):
+        import os
+
+        from cogs.ai_core import session_mixin as sm
+
+        with patch.dict(os.environ, {"MAX_SERVER_LORE_CHARS": "0"}):
+            assert sm._max_lore_chars_from_env() == 0
+
+    def test_negative_clamps_to_zero(self):
+        import os
+
+        from cogs.ai_core import session_mixin as sm
+
+        with patch.dict(os.environ, {"MAX_SERVER_LORE_CHARS": "-5"}):
+            assert sm._max_lore_chars_from_env() == 0
+
+    def test_garbage_falls_back_to_default(self):
+        import os
+
+        from cogs.ai_core import session_mixin as sm
+
+        with patch.dict(os.environ, {"MAX_SERVER_LORE_CHARS": "twenty"}):
+            assert sm._max_lore_chars_from_env() == 60_000
+        with patch.dict(os.environ, {"MAX_SERVER_LORE_CHARS": "   "}):
+            assert sm._max_lore_chars_from_env() == 60_000
+
+    # ---------- the resolver ----------
+
+    def test_missing_guild_and_dm_resolve_empty(self):
+        from cogs.ai_core import session_mixin as sm
+
+        with patch.object(sm, "SERVER_LORE", {7: "LORE"}):
+            assert sm._resolve_server_lore(None) == ""
+            assert sm._resolve_server_lore(0) == ""
+            assert sm._resolve_server_lore(999) == ""
+
+    def test_lore_under_cap_passes_through_whole(self):
+        from cogs.ai_core import session_mixin as sm
+
+        lore = "L" * 5_000
+        with (
+            patch.object(sm, "SERVER_LORE", {7: lore}),
+            patch.object(sm, "_MAX_LORE_CHARS", 60_000),
+        ):
+            assert sm._resolve_server_lore(7) == lore
+
+    def test_lore_over_cap_is_truncated_and_warned(self, caplog):
+        from cogs.ai_core import session_mixin as sm
+
+        lore = "L" * 5_000
+        with (
+            patch.object(sm, "SERVER_LORE", {7: lore}),
+            patch.object(sm, "_MAX_LORE_CHARS", 100),
+            caplog.at_level("WARNING"),
+        ):
+            out = sm._resolve_server_lore(7)
+        assert out.startswith("L" * 100)
+        assert "[... lore truncated ...]" in out
+        assert "Truncated server lore for guild 7" in caplog.text
+        assert "MAX_SERVER_LORE_CHARS" in caplog.text  # tells the operator the fix
+
+    def test_zero_cap_sends_lore_whole(self):
+        from cogs.ai_core import session_mixin as sm
+
+        lore = "L" * 300_000
+        with (
+            patch.object(sm, "SERVER_LORE", {7: lore}),
+            patch.object(sm, "_MAX_LORE_CHARS", 0),
+        ):
+            assert sm._resolve_server_lore(7) == lore
+
+    def test_context_label_names_the_path(self, caplog):
+        from cogs.ai_core import session_mixin as sm
+
+        with (
+            patch.object(sm, "SERVER_LORE", {7: "L" * 500}),
+            patch.object(sm, "_MAX_LORE_CHARS", 10),
+            caplog.at_level("WARNING"),
+        ):
+            sm._resolve_server_lore(7, context=" on cache fixup")
+        assert "guild 7 on cache fixup" in caplog.text
+
+    # ---------- both injection sites ----------
+
+    @pytest.mark.asyncio
+    async def test_cache_miss_path_injects_capped_lore(self):
+        from cogs.ai_core import session_mixin as sm
+
+        instance = self._make_instance()
+        hist, meta = self._storage_patches()
+        with (
+            hist,
+            meta,
+            patch.object(sm, "GUILD_ID_RP", 1),
+            patch.object(sm, "FAUST_INSTRUCTION", "FAUST_BASE"),
+            patch.object(sm, "FAUST_ROLEPLAY", "FAUST_BASE"),
+            patch.object(sm, "SERVER_LORE", {2: "WORLD" * 100}),
+            patch.object(sm, "_MAX_LORE_CHARS", 50),
+        ):
+            result = await instance.get_chat_session(900, guild_id=2)
+        instruction = result["system_instruction"]
+        assert "FAUST_BASE" in instruction
+        assert "[... lore truncated ...]" in instruction
+
+    @pytest.mark.asyncio
+    async def test_dm_gets_no_lore(self):
+        from cogs.ai_core import session_mixin as sm
+
+        instance = self._make_instance()
+        hist, meta = self._storage_patches()
+        with (
+            hist,
+            meta,
+            patch.object(sm, "GUILD_ID_RP", 1),
+            patch.object(sm, "FAUST_INSTRUCTION", "FAUST_BASE"),
+            patch.object(sm, "SERVER_LORE", {2: "WORLD_LORE_TEXT"}),
+            patch.object(sm, "is_unrestricted", return_value=False),
+        ):
+            result = await instance.get_chat_session(901)  # DM
+        assert "WORLD_LORE_TEXT" not in result["system_instruction"]
+
+    @pytest.mark.asyncio
+    async def test_rp_cache_fixup_path_uses_the_same_cap(self):
+        """A cached RP session corrected in place gets the same capped lore."""
+        from cogs.ai_core import session_mixin as sm
+
+        instance = self._make_instance()
+        # Pre-seed a cached session missing the RP instruction so the
+        # correction branch fires.
+        instance.chats[902] = {
+            "history": [],
+            "system_instruction": "STALE_NON_RP_PERSONA",
+            "thinking_enabled": True,
+            "_db_loaded": False,
+        }
+        hist, meta = self._storage_patches()
+        with (
+            hist,
+            meta,
+            patch.object(sm, "GUILD_ID_RP", 1),
+            patch.object(sm, "ROLEPLAY_ASSISTANT_INSTRUCTION", "RP_WORLD"),
+            patch.object(sm, "SERVER_LORE", {1: "WORLD" * 100}),
+            patch.object(sm, "_MAX_LORE_CHARS", 50),
+            patch.object(sm, "is_unrestricted", return_value=False),
+        ):
+            result = await instance.get_chat_session(902, guild_id=1)
+        instruction = result["system_instruction"]
+        assert "RP_WORLD" in instruction
+        assert "[... lore truncated ...]" in instruction
+        # capped, not the full 500-char lore
+        assert instruction.count("WORLD") <= 11

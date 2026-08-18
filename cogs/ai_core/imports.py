@@ -41,7 +41,7 @@ except ImportError:
         return []
 
     async def fetch_all_urls(
-        urls: list[str], max_urls: int = 3
+        urls: list[str], max_urls: int | None = None
     ) -> list[tuple[str, str, str | None]]:
         return []
 

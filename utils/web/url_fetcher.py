@@ -9,6 +9,7 @@ import asyncio
 import functools
 import ipaddress
 import logging
+import os
 import re
 import socket
 from typing import TYPE_CHECKING
@@ -171,9 +172,37 @@ async def close_shared_session() -> None:
 # URL pattern - matches http/https URLs
 URL_PATTERN = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
 
-# Maximum content length per URL (characters)
-# Balanced between context and preventing Gemini silent blocks
-MAX_CONTENT_LENGTH = 4500
+
+def _int_from_env(name: str, default: int, minimum: int) -> int:
+    """Read a positive int knob from the environment, clamped to ``minimum``.
+
+    There is deliberately no "0 = unlimited" escape hatch here: the GitHub
+    README branch derives a BYTE cap from the remaining char budget
+    (``remaining * 4``), so a zero would read zero bytes rather than
+    everything. Clamping keeps every consumer's arithmetic meaningful.
+    """
+    raw = (os.environ.get(name) or "").strip()
+    if raw:
+        try:
+            return max(minimum, int(raw))
+        except ValueError:
+            logger.warning("Invalid %s=%r; using default %d", name, raw, default)
+    return default
+
+
+# Maximum content length per URL (characters) injected into the model prompt.
+# The old 4500 was chosen to avoid "Gemini silent blocks" — a constraint that
+# left with the Gemini backend. On Claude's 1M-token window 4500 chars is
+# roughly the first screen of an article, so the model answered about links it
+# had barely read. 50000 lets a normal article through whole and still costs
+# only a few percent of the window. Fetched content rides the CURRENT message,
+# so with delta-on-resume it is sent once, not re-sent every turn.
+MAX_CONTENT_LENGTH = _int_from_env("URL_CONTENT_MAX_CHARS", 50_000, 500)
+
+# How many URLs from one message are fetched. They go out concurrently
+# (asyncio.gather in fetch_all_urls), so raising this costs bandwidth and
+# prompt size, not latency.
+MAX_URLS_PER_MESSAGE = _int_from_env("URL_FETCH_MAX_URLS", 4, 1)
 
 # Maximum response body size (bytes) to prevent memory exhaustion
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5 MB
@@ -770,13 +799,16 @@ Default Branch: {data.get("default_branch", "main")}
         return url, None
 
 
-async def fetch_all_urls(urls: list[str], max_urls: int = 3) -> list[tuple[str, str, str | None]]:
+async def fetch_all_urls(
+    urls: list[str], max_urls: int | None = None
+) -> list[tuple[str, str, str | None]]:
     """
     Fetch content from multiple URLs concurrently.
 
     Args:
         urls: List of URLs to fetch
-        max_urls: Maximum number of URLs to process
+        max_urls: Maximum number of URLs to process. ``None`` (the default)
+            uses :data:`MAX_URLS_PER_MESSAGE`, the env-tunable policy.
 
     Returns:
         List of (url, title, content) tuples
@@ -785,7 +817,7 @@ async def fetch_all_urls(urls: list[str], max_urls: int = 3) -> list[tuple[str, 
         return []
 
     # Limit number of URLs
-    urls_to_fetch = urls[:max_urls]
+    urls_to_fetch = urls[: MAX_URLS_PER_MESSAGE if max_urls is None else max_urls]
 
     # ``fetch_url_content`` ignores its ``session`` argument (it always
     # uses the SSRF-safe shared session internally). Don't pre-fetch one

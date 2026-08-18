@@ -1749,7 +1749,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 logger.info(
                                     "🔗 Found %d URL(s) in message, fetching content...", len(urls)
                                 )
-                                fetched = await fetch_all_urls(urls, max_urls=2)
+                                # No max_urls here: url_fetcher owns the
+                                # policy (MAX_URLS_PER_MESSAGE, env-tunable via
+                                # URL_FETCH_MAX_URLS). The old hard-coded 2 sat
+                                # below even that module's own default.
+                                fetched = await fetch_all_urls(urls)
                                 url_context = format_url_content_for_context(fetched)
                                 if url_context:
                                     logger.info("🔗 Fetched content from %d URL(s)", len(fetched))

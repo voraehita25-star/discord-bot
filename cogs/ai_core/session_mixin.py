@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from typing import TYPE_CHECKING, Any, cast
@@ -29,6 +30,61 @@ from .storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _max_lore_chars_from_env() -> int:
+    """Resolve the per-guild server-lore ceiling (characters).
+
+    ``MAX_SERVER_LORE_CHARS`` overrides; ``0`` disables the cap entirely —
+    same contract as ``CLI_PROMPT_MAX_CHARS``.
+
+    The previous hard-coded 20000 predates the 1M-token window and was cutting
+    a real RP server's 50,723-char lore down by 60%, mid-sentence, on every
+    session creation. The default is raised to 60000 so that lore arrives
+    whole while still bounding a runaway entry. Note what this bounds is a
+    PER-TURN cost, not the window: under the persona-every-turn contract the
+    CLI backend re-sends the system instruction (persona + lore) on every
+    single turn, so an operator paying per token can dial it back down here.
+    """
+    raw = (os.environ.get("MAX_SERVER_LORE_CHARS") or "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            logger.warning("Invalid MAX_SERVER_LORE_CHARS=%r; using default", raw)
+    return 60_000
+
+
+_MAX_LORE_CHARS = _max_lore_chars_from_env()
+
+
+def _resolve_server_lore(guild_id: int | None, *, context: str = "") -> str:
+    """Return this guild's lore, capped to :data:`_MAX_LORE_CHARS`.
+
+    Returns ``""`` for a DM (``guild_id`` None) or a guild with no lore, so
+    callers can skip the append with a plain truthiness check. Shared by BOTH injection sites — the
+    cache-miss path and the RP cache-fixup path — which previously carried
+    their own copy of the cap and could drift apart on it.
+
+    ``context`` is appended to the truncation warning to say which path hit it.
+    """
+    if not guild_id:
+        return ""
+    lore = SERVER_LORE.get(guild_id, "")
+    if not lore:
+        return ""
+    if _MAX_LORE_CHARS and len(lore) > _MAX_LORE_CHARS:
+        logger.warning(
+            "Truncated server lore for guild %s%s (%d -> %d chars) — "
+            "raise MAX_SERVER_LORE_CHARS to send it whole",
+            guild_id,
+            context,
+            len(lore),
+            _MAX_LORE_CHARS,
+        )
+        return lore[:_MAX_LORE_CHARS] + "\n[... lore truncated ...]"
+    return lore
+
 
 # Stable sentinel markers wrapping the injected UNRESTRICTED-mode override.
 # Injection/removal keys on these markers, NOT on the resolved override text:
@@ -130,18 +186,8 @@ class SessionMixin:
                 system_instruction = cast(str, FAUST_INSTRUCTION) + "\n" + cast(str, FAUST_ROLEPLAY)
 
             # Append server-specific lore if available
-            if guild_id and guild_id in SERVER_LORE:
-                lore = SERVER_LORE[guild_id]
-                # Cap lore length to prevent exceeding API token limits
-                MAX_LORE_LENGTH = 20000
-                if len(lore) > MAX_LORE_LENGTH:
-                    lore = lore[:MAX_LORE_LENGTH] + "\n[... lore truncated ...]"
-                    logger.warning(
-                        "Truncated server lore for guild %s (%d -> %d chars)",
-                        guild_id,
-                        len(SERVER_LORE[guild_id]),
-                        MAX_LORE_LENGTH,
-                    )
+            lore = _resolve_server_lore(guild_id)
+            if lore:
                 system_instruction = system_instruction + "\n\n" + lore
                 logger.info("Applied server lore for guild %s", guild_id)
 
@@ -199,20 +245,11 @@ class SessionMixin:
             if guild_id == GUILD_ID_RP and ROLEPLAY_ASSISTANT_INSTRUCTION not in cached_instruction:
                 logger.warning("⚠️ Correcting system_instruction for RP channel %s", channel_id)
                 system_instruction = ROLEPLAY_ASSISTANT_INSTRUCTION
-                # Mirror the cache-miss path's 20000-char lore cap so an
-                # oversized lore entry can't bypass the API token limit
-                # just because we hit the cache-correction branch.
-                if guild_id in SERVER_LORE:
-                    lore = SERVER_LORE[guild_id]
-                    MAX_LORE_LENGTH = 20000
-                    if len(lore) > MAX_LORE_LENGTH:
-                        lore = lore[:MAX_LORE_LENGTH] + "\n[... lore truncated ...]"
-                        logger.warning(
-                            "Truncated server lore for guild %s on cache fixup (%d -> %d chars)",
-                            guild_id,
-                            len(SERVER_LORE[guild_id]),
-                            MAX_LORE_LENGTH,
-                        )
+                # Same capped lore as the cache-miss path — one helper, so an
+                # oversized entry can't bypass the ceiling just because we hit
+                # the cache-correction branch, and the two can't drift apart.
+                lore = _resolve_server_lore(guild_id, context=" on cache fixup")
+                if lore:
                     system_instruction = system_instruction + "\n\n" + lore
                 self.chats[channel_id]["system_instruction"] = system_instruction
 
