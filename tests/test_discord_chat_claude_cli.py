@@ -2119,10 +2119,20 @@ class TestServerLoreOnResume:
 
     # ---------- the knob ----------
 
-    def test_default_refresh_interval(self) -> None:
+    def test_default_is_send_once_never_re_send(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "CLI_LORE_REFRESH_TURNS"}
         with patch.dict(os.environ, env, clear=True):
-            assert cli_mod._lore_refresh_turns() == 20
+            assert cli_mod._lore_refresh_turns() == 0
+
+    def test_default_carries_lore_on_the_fresh_turn_only(self) -> None:
+        """The shipped behaviour end to end: once per session, then never."""
+        env = {k: v for k, v in os.environ.items() if k != "CLI_LORE_REFRESH_TURNS"}
+        with patch.dict(os.environ, env, clear=True):
+            assert cli_mod._lore_due_this_turn(7, None) is True
+            assert [cli_mod._lore_due_this_turn(7, "sess") for _ in range(100)] == [False] * 100
+        # the fresh turn seeds the counter (so flipping the knob mid-session
+        # starts counting from the right place) and nothing advances it after
+        assert cli_mod._TURNS_SINCE_LORE[7] == 0
 
     def test_refresh_interval_override(self) -> None:
         with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": "5"}):
@@ -2133,10 +2143,10 @@ class TestServerLoreOnResume:
             assert cli_mod._lore_refresh_turns() == 0
 
     def test_bad_values_fall_back_to_default(self) -> None:
-        """A typo must not silently strand the lore — fail toward re-sending."""
+        """A typo lands on the shipped default, not on some cadence nobody chose."""
         for bad in ("-3", "twenty", "   "):
             with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": bad}):
-                assert cli_mod._lore_refresh_turns() == 20
+                assert cli_mod._lore_refresh_turns() == 0
 
     # ---------- the stripper ----------
 

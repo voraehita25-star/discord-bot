@@ -142,34 +142,35 @@ _DISCORD_STREAM_TIMEOUT = 1800.0
 # user chooses via _OverlimitChoiceView (summarize the chat, or pause it).
 _DISCORD_PROMPT_MAX_CHARS = _prompt_max_chars_from_env()
 
-# How often a RESUMED turn re-sends the guild lore block.
+# How often a RESUMED turn re-sends the guild lore block. Default 0: once per
+# session, never again — the operator's call, made with the trade-off below on
+# the table.
 #
 # Lore is part of the system instruction, and the persona-every-turn contract
 # re-sends the whole instruction on every turn — so on the RP guild a resumed
 # turn spent ~92% of its prompt repeating world data the server-side session
-# already had (measured: 55,285 chars/turn, 4,560 without the lore). Sending it
-# only once is not safe either: Claude Code compacts a long session on its own,
-# and a lore block last seen 300 turns ago is exactly what compaction
-# summarises away.
+# already had (measured: 55,285 chars/turn, 4,560 without the lore, 7.8x less
+# on average even at the periodic setting).
 #
-# So: fresh sessions always carry it, and a resumed turn re-sends it every Nth
-# turn. That keeps a verbatim copy within N turns of any compaction while
-# cutting the steady-state cost by roughly N-fold. Re-sending also fills the
-# window faster, which triggers compaction sooner — the reason the old
-# every-turn behaviour was self-defeating rather than merely expensive.
+# The trade-off the default accepts: Claude Code compacts a long session on its
+# own, and a lore block last seen hundreds of turns ago is what compaction
+# summarises away first — after which nothing re-sends it. Raise the knob if a
+# long-running channel ever starts forgetting world detail. Note the opposite
+# extreme is not the safe one either: re-sending every turn fills the window
+# ~12x faster, so it TRIGGERS the compaction it is trying to survive.
 #
-#   CLI_LORE_REFRESH_TURNS=1   every turn (the old behaviour, full rollback)
+#   CLI_LORE_REFRESH_TURNS=0   fresh sessions only, never re-sent (default)
 #   CLI_LORE_REFRESH_TURNS=N   fresh sessions + every Nth resumed turn
-#   CLI_LORE_REFRESH_TURNS=0   fresh sessions only, never re-sent
+#   CLI_LORE_REFRESH_TURNS=1   every turn (the pre-change behaviour)
 _LORE_REFRESH_ENV = "CLI_LORE_REFRESH_TURNS"
 
 
 def _lore_refresh_turns() -> int:
     """Resolve ``CLI_LORE_REFRESH_TURNS``; see the block comment above.
 
-    Read per call so flipping it takes effect without a bot restart. A
-    negative or unparseable value falls back to the default rather than
-    disabling the refresh, so a typo cannot silently strand the lore.
+    Read per call so flipping it takes effect without a bot restart. A negative
+    or unparseable value falls back to the default (0), so a typo lands on the
+    shipped behaviour rather than on a re-send cadence nobody chose.
     """
     raw = (os.environ.get(_LORE_REFRESH_ENV) or "").strip()
     if raw:
@@ -181,7 +182,7 @@ def _lore_refresh_turns() -> int:
             if value >= 0:
                 return value
             logger.warning("Negative %s=%r; using default", _LORE_REFRESH_ENV, raw)
-    return 20
+    return 0
 
 
 # Turns since this channel's prompt last carried the lore block. Same LRU cap
@@ -208,6 +209,10 @@ def _lore_due_this_turn(channel_id: int | None, session_id: str | None) -> bool:
         _TURNS_SINCE_LORE[channel_id] = 0
         _evict_lore_counters()
         return True
+    if every == 0:
+        # Default: sent once when the session was created, never again. No
+        # counter to keep, so don't grow the map for channels that never use it.
+        return False
     seen = _TURNS_SINCE_LORE.get(channel_id, 0) + 1
     if every > 1 and seen >= every:
         _TURNS_SINCE_LORE[channel_id] = 0
