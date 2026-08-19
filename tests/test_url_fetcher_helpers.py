@@ -116,7 +116,13 @@ class TestFormatUrlContentExtra:
         assert "Hello body" in out
 
     def test_truncates_long_content(self):
-        long_body = "x" * (uf.MAX_CONTENT_LENGTH * 2)
-        out = uf.format_url_content_for_context([("https://big.example", "Big", long_body)])
-        # Truncated to MAX_CONTENT_LENGTH plus formatting overhead.
-        assert len(out) < uf.MAX_CONTENT_LENGTH * 2
+        """Pinned, not ambient: both caps are env knobs env.example documents,
+        and the formatter now spends an aggregate budget across URLs."""
+        from unittest.mock import patch
+
+        with patch.object(uf, "MAX_TOTAL_CONTENT_CHARS", 5_000):
+            # "Q" not "x": the URL itself contains an x, which the count picks up
+            long_body = "Q" * 10_000
+            out = uf.format_url_content_for_context([("https://big.example", "Big", long_body)])
+        assert out.count("Q") == 5_000
+        assert "[Content truncated...]" in out

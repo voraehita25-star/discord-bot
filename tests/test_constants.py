@@ -182,10 +182,29 @@ class TestContentLimits:
         assert MAX_HISTORY_ITEMS == 8000
 
     def test_extraction_max_chars_per_message(self):
-        """Raised from a hard-coded 500 so a long RP post is read past its first quarter."""
+        """Raised from a hard-coded 500 so a long RP post is read past its first
+        quarter. Bounded rather than pinned — the knob is documented in
+        env.example, so an operator setting it must not turn the suite red."""
         from cogs.ai_core.data.constants import EXTRACTION_MAX_CHARS_PER_MESSAGE
 
-        assert EXTRACTION_MAX_CHARS_PER_MESSAGE == 4000
+        assert EXTRACTION_MAX_CHARS_PER_MESSAGE >= 200
+
+    def test_extraction_cap_is_clamped_against_zero_and_negative(self):
+        """It lands in a slice bound: 0 renders bare role labels, negative cuts
+        the TAIL off every message. _safe_int_env alone clamps neither."""
+        import os
+        from importlib import reload
+        from unittest.mock import patch
+
+        from cogs.ai_core.data import constants as c
+
+        try:
+            for bad in ("0", "-500"):
+                with patch.dict(os.environ, {"EXTRACTION_MAX_CHARS_PER_MESSAGE": bad}):
+                    reload(c)
+                    assert c.EXTRACTION_MAX_CHARS_PER_MESSAGE >= 200
+        finally:
+            reload(c)
 
     def test_dead_constants_are_gone(self):
         """The unused-constant sweep: these had no consumer outside their own tests."""

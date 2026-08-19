@@ -496,8 +496,11 @@ cp cogs/ai_core/data/roleplay_data_example.py cogs/ai_core/data/roleplay_data.py
 > **RP server message handling.** In the guild set as `GUILD_ID_RP` the AI does **not**
 > auto-reply to plain messages — players must run `!chat`/`!ask` in `CHANNEL_ID_RP_COMMAND`
 > (the only input room) and the reply is redirected to `CHANNEL_ID_RP_OUTPUT`, which is
-> write-only. `SERVER_LORE` is appended to `ROLEPLAY_PROMPT` and capped at **20 000 chars**
-> (`session_mixin.py`) — keep `WORLD_LORE` under that or the tail gets truncated.
+> write-only. `SERVER_LORE` is appended to `ROLEPLAY_PROMPT`, capped at **60 000 chars** by
+> default and tunable with `MAX_SERVER_LORE_CHARS` (`0` = no cap; `session_mixin.py`). Do NOT
+> hand-trim `WORLD_LORE` to fit — an over-cap lore is cut mid-sentence and logs a WARNING
+> naming the knob to raise. The cap used to be a hard-coded 20 000, which silently dropped
+> 60% of a real 50 723-char lore.
 
 **Character Images:**
 

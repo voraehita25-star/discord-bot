@@ -185,9 +185,11 @@ def _lore_refresh_turns() -> int:
     return 0
 
 
-# Turns since this channel's prompt last carried the lore block. Same LRU cap
-# and lifetime as _CHANNEL_SESSIONS — losing a counter only costs one extra
-# lore re-send, so eviction is harmless.
+# Turns since this channel's prompt last carried the lore block. Same 500-entry
+# LRU cap as _CHANNEL_SESSIONS. Eviction is not free: a channel sitting at
+# seen=19 with every=20 restarts at 1, so the refresh arrives 19 turns LATE — a
+# MISSED re-send, not a spare one. Hence move_to_end on every touch, so the
+# channels that are actually talking are the ones that survive.
 _TURNS_SINCE_LORE: OrderedDict[int, int] = OrderedDict()
 
 
@@ -205,26 +207,33 @@ def _lore_due_this_turn(channel_id: int | None, session_id: str | None) -> bool:
     if channel_id is None:
         return True
     every = _lore_refresh_turns()
-    if session_id is None or every == 1:
-        _TURNS_SINCE_LORE[channel_id] = 0
-        _evict_lore_counters()
-        return True
     if every == 0:
-        # Default: sent once when the session was created, never again. No
-        # counter to keep, so don't grow the map for channels that never use it.
-        return False
-    seen = _TURNS_SINCE_LORE.get(channel_id, 0) + 1
-    if every > 1 and seen >= every:
-        _TURNS_SINCE_LORE[channel_id] = 0
-        _evict_lore_counters()
+        # Shipped default: carried when the session is created, never again.
+        # Checked BEFORE the fresh-session branch so the map stays empty — at
+        # this setting nothing ever reads it, and seeding a row per channel
+        # (including every DM and non-RP guild) would be pure bookkeeping.
+        return session_id is None
+    if session_id is None or every == 1:
+        _touch_lore_counter(channel_id, 0)
         return True
-    _TURNS_SINCE_LORE[channel_id] = seen
-    _evict_lore_counters()
+    seen = _TURNS_SINCE_LORE.get(channel_id, 0) + 1
+    if seen >= every:
+        _touch_lore_counter(channel_id, 0)
+        return True
+    _touch_lore_counter(channel_id, seen)
     return False
 
 
-def _evict_lore_counters() -> None:
-    """Bound _TURNS_SINCE_LORE the same way _CHANNEL_SESSIONS is bounded."""
+def _touch_lore_counter(channel_id: int, value: int) -> None:
+    """Write a counter and mark the channel most-recently-used, then evict.
+
+    ``OrderedDict[k] = v`` on an EXISTING key does not reorder, so a plain
+    assignment would leave eviction ordered by FIRST touch — popping the busiest
+    channel while a long-idle one survives. move_to_end makes it a real LRU,
+    matching what ``_record_session`` and ``_get_channel_lock`` already do.
+    """
+    _TURNS_SINCE_LORE[channel_id] = value
+    _TURNS_SINCE_LORE.move_to_end(channel_id)
     while len(_TURNS_SINCE_LORE) > _MAX_TRACKED_CHANNELS:
         _TURNS_SINCE_LORE.popitem(last=False)
 
@@ -241,9 +250,25 @@ def _without_server_lore(system_instruction: str, server_lore: str) -> str:
     if not server_lore:
         return system_instruction
     block = "\n\n" + server_lore
-    if block not in system_instruction:
-        return system_instruction
-    return system_instruction.replace(block, "", 1)
+    if system_instruction.endswith(block):
+        return system_instruction[: -len(block)]
+    occurrences = system_instruction.count(block)
+    if occurrences == 1:
+        # Not at the tail but unambiguous — the RP cache-fixup path can append
+        # a roleplay-format addendum after the lore.
+        return system_instruction.replace(block, "", 1)
+    if occurrences > 1:
+        # Two or more copies and none at the tail: the persona itself embeds
+        # the lore text (e.g. ROLEPLAY_PROMPT interpolating WORLD_LORE). A
+        # blind replace() would delete the PERSONA's copy and leave the
+        # appended one, silently running the whole optimisation inert.
+        logger.warning(
+            "Server lore appears %d times in the system instruction and not at "
+            "its tail — sending the instruction whole rather than stripping the "
+            "wrong copy",
+            occurrences,
+        )
+    return system_instruction
 
 
 # Discord-side model + system-prompt overrides. The global ``CLAUDE_MODEL``
@@ -532,9 +557,17 @@ def _flatten_contents_to_prompt(
     the server-side session already contains every prior turn, so
     re-sending the recap would duplicate the entire conversation in the
     session context each turn (quadratic growth that exhausts the model
-    window within tens of turns). The ``# System`` persona and
+    window within tens of turns). The ``# System`` block and
     ``# Formatting rules`` stay in every turn — same persona-every-turn
     contract as the dashboard handler's ``is_resumed_session`` path.
+
+    ONE exception, applied by the callers rather than here: the guild-lore
+    slice of ``system_instruction`` is stripped before it reaches this
+    function on a resumed turn (see ``_without_server_lore`` and
+    ``_lore_due_this_turn``). It is static world data, unlike the persona and
+    profile the every-turn rule was written for, and on the RP guild it was
+    ~92% of the prompt. What arrives here is still just "the system
+    instruction" — this function has no opinion about what is in it.
 
     ``tools_note`` is the ``# Available tools (this session)`` block from
     :func:`_discord_tools_note`. It goes AFTER the persona so it supersedes
@@ -1109,7 +1142,6 @@ async def call_claude_cli_streaming(
         # Once per turn, NOT per attempt: the loop below rebuilds the prompt on
         # the stale-session retry and must not advance the refresh counter twice.
         lore_due = _lore_due_this_turn(channel_id, session_id)
-        lean_instruction = _without_server_lore(system_instruction, server_lore)
 
         # Run with retry-once on stale session — exactly mirrors the
         # dashboard handler's behaviour. The stale-session case is when
@@ -1123,7 +1155,13 @@ async def call_claude_cli_streaming(
             send_lore = lore_due or session_id is None
             prompt = _flatten_contents_to_prompt(
                 contents,
-                system_instruction if send_lore else lean_instruction,
+                # Stripped lazily: on a lore-carrying turn (every fresh session,
+                # and every turn at the CLI_LORE_REFRESH_TURNS=1 rollback) the
+                # stripped copy would be built and thrown away — two scans of a
+                # ~55 KB string against a ~50 KB needle, for nothing.
+                system_instruction
+                if send_lore
+                else _without_server_lore(system_instruction, server_lore),
                 include_history=session_id is None,
                 tools_note=tools_note,
             )
@@ -1471,7 +1509,6 @@ async def call_claude_cli(
 
         # Once per turn, not per attempt — see the streaming sibling.
         lore_due = _lore_due_this_turn(channel_id, session_id)
-        lean_instruction = _without_server_lore(system_instruction, server_lore)
 
         for attempt in (1, 2):
             # Same delta-on-resume rule as the streaming sibling: resumed
@@ -1481,7 +1518,13 @@ async def call_claude_cli(
             send_lore = lore_due or session_id is None
             prompt = _flatten_contents_to_prompt(
                 contents,
-                system_instruction if send_lore else lean_instruction,
+                # Stripped lazily: on a lore-carrying turn (every fresh session,
+                # and every turn at the CLI_LORE_REFRESH_TURNS=1 rollback) the
+                # stripped copy would be built and thrown away — two scans of a
+                # ~55 KB string against a ~50 KB needle, for nothing.
+                system_instruction
+                if send_lore
+                else _without_server_lore(system_instruction, server_lore),
                 include_history=session_id is None,
                 tools_note=tools_note,
             )

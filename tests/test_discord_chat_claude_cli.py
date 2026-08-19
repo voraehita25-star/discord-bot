@@ -2130,9 +2130,9 @@ class TestServerLoreOnResume:
         with patch.dict(os.environ, env, clear=True):
             assert cli_mod._lore_due_this_turn(7, None) is True
             assert [cli_mod._lore_due_this_turn(7, "sess") for _ in range(100)] == [False] * 100
-        # the fresh turn seeds the counter (so flipping the knob mid-session
-        # starts counting from the right place) and nothing advances it after
-        assert cli_mod._TURNS_SINCE_LORE[7] == 0
+        # nothing is tracked at this setting — see
+        # test_shipped_default_keeps_the_counter_map_empty for why that matters
+        assert 7 not in cli_mod._TURNS_SINCE_LORE
 
     def test_refresh_interval_override(self) -> None:
         with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": "5"}):
@@ -2225,3 +2225,67 @@ class TestServerLoreOnResume:
         assert "LORE_SENTINEL_BODY" not in lean
         # the persona is NOT dropped — only the lore block is
         assert "PERSONA_SENTINEL" in lean
+
+
+class TestServerLoreStripAmbiguity:
+    """The strip removed the FIRST match, not the tail session_mixin appended.
+
+    With the lore text also present inside the persona — a one-line edit away,
+    e.g. ROLEPLAY_PROMPT interpolating WORLD_LORE — replace(..., 1) deleted the
+    persona's copy and left the appended one, so the whole optimisation ran
+    inert with nothing logged.
+    """
+
+    def test_tail_copy_is_the_one_removed(self):
+        lore = "SHARED BLOCK"
+        instruction = "PERSONA HEADER\n\n" + lore + "\n\nmore persona text\n\n" + lore
+        out = cli_mod._without_server_lore(instruction, lore)
+        assert out == "PERSONA HEADER\n\n" + lore + "\n\nmore persona text"
+        assert not out.endswith("\n\n" + lore + "\n\n" + lore)
+
+    def test_ambiguous_non_tail_duplicate_sends_whole_and_warns(self, caplog):
+        """Two copies, neither at the tail: refuse rather than delete the wrong
+        one, and say so — silence here is what made it undiagnosable."""
+        lore = "SHARED"
+        instruction = "HEAD\n\n" + lore + "\n\nMID\n\n" + lore + "\nTRAILER"
+        with caplog.at_level("WARNING"):
+            out = cli_mod._without_server_lore(instruction, lore)
+        assert out == instruction
+        assert "appears 2 times" in caplog.text
+
+    def test_single_non_tail_copy_is_still_stripped(self):
+        """The RP cache-fixup path can append a format addendum after the lore."""
+        lore = "WORLD"
+        instruction = "PERSONA\n\n" + lore + "\nADDENDUM"
+        assert cli_mod._without_server_lore(instruction, lore) == "PERSONA\nADDENDUM"
+
+    def test_counter_map_is_true_lru_not_first_touch(self):
+        """OrderedDict[k] = v does NOT reorder an existing key, so a plain
+        assignment evicted the busiest channel instead of the stalest."""
+        cli_mod._TURNS_SINCE_LORE.clear()
+        try:
+            with patch.dict(os.environ, {"CLI_LORE_REFRESH_TURNS": "999"}):
+                for cid in range(cli_mod._MAX_TRACKED_CHANNELS):
+                    cli_mod._lore_due_this_turn(cid, "sess")
+                # channel 0 is the oldest by first touch; keep it busy
+                for _ in range(5):
+                    cli_mod._lore_due_this_turn(0, "sess")
+                # now overflow by one
+                cli_mod._lore_due_this_turn(9_999, "sess")
+            assert 0 in cli_mod._TURNS_SINCE_LORE  # busy channel survived
+            assert 1 not in cli_mod._TURNS_SINCE_LORE  # stalest was evicted
+        finally:
+            cli_mod._TURNS_SINCE_LORE.clear()
+
+    def test_shipped_default_keeps_the_counter_map_empty(self):
+        """At CLI_LORE_REFRESH_TURNS=0 nothing reads the map, so nothing should
+        seed a row for every DM and non-RP guild either."""
+        cli_mod._TURNS_SINCE_LORE.clear()
+        try:
+            env = {k: v for k, v in os.environ.items() if k != "CLI_LORE_REFRESH_TURNS"}
+            with patch.dict(os.environ, env, clear=True):
+                assert cli_mod._lore_due_this_turn(42, None) is True
+                assert cli_mod._lore_due_this_turn(42, "sess") is False
+            assert len(cli_mod._TURNS_SINCE_LORE) == 0
+        finally:
+            cli_mod._TURNS_SINCE_LORE.clear()

@@ -23,12 +23,22 @@ from ..claude_payloads import build_single_user_text_messages
 from ..data.constants import (
     ANTHROPIC_API_KEY,
     DEFAULT_MODEL,
+    EXTRACTION_MAX_CHARS_PER_MESSAGE,
     MIN_CONVERSATION_LENGTH,
     SUMMARIZATION_MAX_OUTPUT_TOKENS,
 )
 from ..data.model_caps import thinking_off_kwargs
 
 logger = logging.getLogger(__name__)
+
+# Total ceiling on the rendered history handed to one summarisation call.
+# Deliberately a CHARACTER budget rather than a line count: ``compress_history``
+# passes ``max_messages=len(old_history)`` on purpose so the WHOLE old segment
+# is summarised, and a line cap would re-break exactly that. This bounds the
+# pathological case (MAX_HISTORY_ITEMS is 8000, so a per-message cap alone
+# leaves the total unbounded) while leaving every realistic history untouched.
+# Front-truncated — the newest turns are the ones a summary most needs.
+_MAX_SUMMARY_INPUT_CHARS = 400_000
 
 # Summarization Model (configurable via environment variable)
 SUMMARIZATION_MODEL = os.getenv("CLAUDE_SUMMARIZATION_MODEL", DEFAULT_MODEL)
@@ -221,7 +231,13 @@ class ConversationSummarizer:
             return None
 
     def _history_to_text(self, history: list[dict[str, Any]]) -> str:
-        """Convert history list to readable text."""
+        """Convert history list to readable text.
+
+        Shares ``EXTRACTION_MAX_CHARS_PER_MESSAGE`` with the consolidator's
+        near-identical renderer: both cut each message before handing history to
+        a model, and a summary built from the first 500 chars of every roleplay
+        post is the same data loss in a different place.
+        """
         lines = []
         for msg in history:
             role = "User" if msg.get("role") == "user" else "AI"
@@ -229,14 +245,32 @@ class ConversationSummarizer:
 
             for part in parts:
                 if isinstance(part, str):
-                    # Truncate long messages
-                    text = part[:500] + "..." if len(part) > 500 else part
-                    lines.append(f"{role}: {text}")
-                elif isinstance(part, dict) and "text" in part:
-                    text = part["text"][:500] + "..." if len(part["text"]) > 500 else part["text"]
-                    lines.append(f"{role}: {text}")
+                    raw = part
+                elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                    raw = part["text"]
+                else:
+                    # Non-text part, or a dict whose "text" is not a string.
+                    # The old ``"text" in part`` test let an int through to
+                    # len(), and the resulting TypeError was swallowed upstream
+                    # as a "parsing error" — compression then declined silently
+                    # and the history just kept growing.
+                    continue
+                text = (
+                    raw[:EXTRACTION_MAX_CHARS_PER_MESSAGE] + "..."
+                    if len(raw) > EXTRACTION_MAX_CHARS_PER_MESSAGE
+                    else raw
+                )
+                lines.append(f"{role}: {text}")
 
-        return "\n".join(lines)
+        rendered = "\n".join(lines)
+        if len(rendered) > _MAX_SUMMARY_INPUT_CHARS:
+            logger.info(
+                "Summary input front-truncated (%d > %d chars)",
+                len(rendered),
+                _MAX_SUMMARY_INPUT_CHARS,
+            )
+            rendered = "[...older context truncated...]\n" + rendered[-_MAX_SUMMARY_INPUT_CHARS:]
+        return rendered
 
     async def should_summarize(self, history: list[dict[str, Any]], threshold: int = 100) -> bool:
         """Check if history should be summarized.

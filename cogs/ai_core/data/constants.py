@@ -111,7 +111,12 @@ MAX_RECENT_MESSAGES_FOR_EXTRACTION = 50  # Messages to consider for extraction
 # became a remembered fact — silently, with no log line. Worst case per run
 # is MAX_RECENT_MESSAGES_FOR_EXTRACTION * this; unlike the prompt-side knobs
 # this one bills through the Anthropic SDK, so lower it if that matters.
-EXTRACTION_MAX_CHARS_PER_MESSAGE = _safe_int_env("EXTRACTION_MAX_CHARS_PER_MESSAGE", 4000)
+# Clamped, unlike a bare _safe_int_env read: this value lands directly in a
+# slice bound, where 0 renders every message as a bare "User: " label (still
+# over MIN_CONVERSATION_LENGTH, so a real billed call fires on nothing) and a
+# negative chops the TAIL off every message — the inverse of a cap, and the
+# exact silent-truncation class this knob was added to remove.
+EXTRACTION_MAX_CHARS_PER_MESSAGE = max(200, _safe_int_env("EXTRACTION_MAX_CHARS_PER_MESSAGE", 4000))
 
 # ==================== Memory Cleanup Settings ====================
 # State tracker cleanup (character states in roleplay)

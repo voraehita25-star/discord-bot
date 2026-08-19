@@ -716,9 +716,15 @@ class TestServerLoreCap:
     # ---------- the env knob itself ----------
 
     def test_default_is_raised_above_the_old_hardcoded_20000(self):
+        """Env-isolated: env.example invites operators to SET this, and a suite
+        that fails on a legal configuration trains people to ignore it."""
+        import os
+
         from cogs.ai_core import session_mixin as sm
 
-        assert sm._max_lore_chars_from_env() == 60_000
+        env = {k: v for k, v in os.environ.items() if k != "MAX_SERVER_LORE_CHARS"}
+        with patch.dict(os.environ, env, clear=True):
+            assert sm._max_lore_chars_from_env() == 60_000
 
     def test_env_override(self):
         import os

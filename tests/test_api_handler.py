@@ -822,3 +822,42 @@ class TestStreamingPlaceholderSendBreaker:
         assert result[0] == "fallback text"
         fallback_mock.assert_awaited_once()
         breaker.record_failure.assert_called_once()
+
+
+class TestServerLoreBridge:
+    """``server_lore`` is the only wire from session_mixin to the CLI stripper.
+
+    Nothing covered it: deleting the key left the suite green while every
+    resumed turn silently went back to re-sending the whole 50 KB block.
+    """
+
+    def test_config_carries_the_lore_text(self):
+        from cogs.ai_core.api.api_handler import build_api_config
+
+        cfg = build_api_config(
+            {"system_instruction": "PERSONA\n\nLORE_BODY", "server_lore": "LORE_BODY"}
+        )
+        assert cfg["server_lore"] == "LORE_BODY"
+
+    def test_missing_key_degrades_to_empty_not_none(self):
+        """Pre-change sessions in memory have no such key; the CLI path does
+        ``config_params.get(...) or ""`` and must get a string either way."""
+        from cogs.ai_core.api.api_handler import build_api_config
+
+        cfg = build_api_config({"system_instruction": "PERSONA"})
+        assert cfg["server_lore"] == ""
+
+    def test_round_trip_strips_exactly_what_session_mixin_appended(self):
+        """The producer and the consumer agree — asserted across both, since
+        each side's own unit tests pass literals to itself."""
+        from cogs.ai_core.api.api_handler import build_api_config
+        from cogs.ai_core.api.discord_chat_claude_cli import _without_server_lore
+
+        lore = "WORLD LORE BODY " * 50
+        chat_data = {
+            "system_instruction": "PERSONA_HEAD\n\n" + lore,
+            "server_lore": lore,
+        }
+        cfg = build_api_config(chat_data)
+        lean = _without_server_lore(cfg["system_instruction"], cfg["server_lore"])
+        assert lean == "PERSONA_HEAD"

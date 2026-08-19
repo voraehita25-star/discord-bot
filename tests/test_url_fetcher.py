@@ -101,8 +101,21 @@ class TestMaxContentLength:
     """Tests for MAX_CONTENT_LENGTH and its env knob."""
 
     def test_content_length_is_reasonable(self):
-        """Sized for a 1M-token window, not the old Gemini-era 4500."""
-        assert 20_000 <= MAX_CONTENT_LENGTH <= 200_000
+        """Sized for a 1M-token window, not the old Gemini-era 4500.
+
+        Asserted against the RESOLVER with the env isolated, not against the
+        module constant: the constant is bound at import, so an operator who
+        sets the documented knob would otherwise turn this red.
+        """
+        import os
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        env = {k: v for k, v in os.environ.items() if k != "URL_CONTENT_MAX_CHARS"}
+        with patch.dict(os.environ, env, clear=True):
+            default = uf._int_from_env("URL_CONTENT_MAX_CHARS", 50_000, 500)
+        assert 20_000 <= default <= 200_000
 
     def test_content_length_is_integer(self):
         """Test that MAX_CONTENT_LENGTH is an integer."""
@@ -151,9 +164,37 @@ class TestMaxContentLength:
             assert uf._int_from_env("URL_CONTENT_MAX_CHARS", 50_000, 500) == 50_000
 
     def test_max_urls_per_message_is_at_least_the_old_hardcoded_two(self):
-        from utils.web.url_fetcher import MAX_URLS_PER_MESSAGE
+        import os
+        from unittest.mock import patch
 
-        assert MAX_URLS_PER_MESSAGE >= 2
+        from utils.web import url_fetcher as uf
+
+        env = {k: v for k, v in os.environ.items() if k != "URL_FETCH_MAX_URLS"}
+        with patch.dict(os.environ, env, clear=True):
+            assert uf._int_from_env("URL_FETCH_MAX_URLS", 4, 0) >= 2
+
+    def test_url_fetching_can_be_turned_off(self):
+        """0 is a real setting here — the only switch for link dereferencing."""
+        import os
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        with patch.dict(os.environ, {"URL_FETCH_MAX_URLS": "0"}):
+            assert uf._int_from_env("URL_FETCH_MAX_URLS", 4, 0) == 0
+
+    @pytest.mark.asyncio
+    async def test_zero_max_urls_fetches_nothing(self):
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        async def fake(url):  # pragma: no cover - must never run
+            raise AssertionError("fetched a URL while disabled")
+
+        with patch.object(uf, "fetch_url_content", new=fake):
+            with patch.object(uf, "MAX_URLS_PER_MESSAGE", 0):
+                assert await uf.fetch_all_urls(["http://a/", "http://b/"]) == []
 
 
 # ======================================================================
@@ -1946,11 +1987,77 @@ class TestFetchAllUrls:
                 raise ValueError("kaboom")
             return ("OK", "body")
 
+        # max_urls pinned: this test is about failure handling, not the limit,
+        # and URL_FETCH_MAX_URLS=1 is a legal operator setting.
         with patch.object(uf, "fetch_url_content", new=fake):
-            out = await uf.fetch_all_urls(["http://ok/", "http://boom/"])
+            out = await uf.fetch_all_urls(["http://ok/", "http://boom/"], max_urls=2)
 
         ok_row = next(r for r in out if r[0] == "http://ok/")
         boom_row = next(r for r in out if r[0] == "http://boom/")
         assert ok_row == ("http://ok/", "OK", "body")
         # Failures fall back to (url, url, None).
         assert boom_row == ("http://boom/", "http://boom/", None)
+
+
+class TestAggregateWebBudget:
+    """MAX_TOTAL_CONTENT_CHARS — the per-URL cap was never a per-message budget.
+
+    Raising the per-URL cap and the URL count together multiplied instead of
+    adding (2x4,500 -> 4x50,000), and the Discord path does not truncate an
+    over-ceiling prompt: it stops the turn and waits for the bot owner.
+    """
+
+    def test_total_is_bounded_across_urls(self):
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        fetched = [(f"http://h{i}/", f"T{i}", "X" * 50_000) for i in range(4)]
+        with patch.object(uf, "MAX_TOTAL_CONTENT_CHARS", 60_000):
+            out = uf.format_url_content_for_context(fetched)
+        assert out.count("X") == 60_000
+
+    def test_over_budget_urls_say_so_instead_of_vanishing(self):
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        fetched = [("http://a/", "A", "X" * 5_000), ("http://b/", "B", "Y" * 5_000)]
+        with patch.object(uf, "MAX_TOTAL_CONTENT_CHARS", 5_000):
+            out = uf.format_url_content_for_context(fetched)
+        assert "X" * 5_000 in out
+        assert "[Content dropped: per-message web budget exhausted]" in out
+        assert "http://b/" in out  # the model is told the page existed
+
+    def test_partial_url_is_marked_truncated(self):
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        with patch.object(uf, "MAX_TOTAL_CONTENT_CHARS", 100):
+            out = uf.format_url_content_for_context([("http://a/", "A", "X" * 5_000)])
+        assert "X" * 100 in out
+        assert "[Content truncated...]" in out
+
+    def test_upstream_truncation_marker_is_not_amputated(self):
+        """The fetcher stores cap+marker chars; the formatter used to re-slice
+        every value at exactly the cap, cutting off precisely the marker."""
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        upstream = "X" * 50_000 + "\n[Content truncated...]"
+        with patch.object(uf, "MAX_TOTAL_CONTENT_CHARS", 60_000):
+            out = uf.format_url_content_for_context([("http://a/", "A", upstream)])
+        assert out.rstrip().endswith("[Content truncated...]")
+
+    def test_failed_fetches_do_not_spend_budget(self):
+        from unittest.mock import patch
+
+        from utils.web import url_fetcher as uf
+
+        fetched = [("http://dead/", "dead", None), ("http://ok/", "ok", "Z" * 1_000)]
+        with patch.object(uf, "MAX_TOTAL_CONTENT_CHARS", 1_000):
+            out = uf.format_url_content_for_context(fetched)
+        assert "[Failed to fetch content]" in out
+        assert "Z" * 1_000 in out

@@ -129,19 +129,81 @@ class TestHistoryToText:
 
         assert "User: Hello world" in result
 
-    def test_history_to_text_truncates_long(self):
-        """Test that long messages are truncated."""
+    def test_history_to_text_keeps_a_long_post_whole(self):
+        """The twin of the consolidator fix: a 1000-char post is no longer cut
+        to its first 500 chars before being summarised."""
+        from importlib import import_module
+        from unittest.mock import patch
+
         from cogs.ai_core.memory.summarizer import ConversationSummarizer
+
+        # NOT ``from cogs.ai_core.memory import summarizer`` — the package
+        # __init__ binds that name to the singleton INSTANCE, shadowing the
+        # submodule, so patch.object would target the object and fail.
+        mod = import_module("cogs.ai_core.memory.summarizer")
 
         summarizer = ConversationSummarizer()
         long_text = "A" * 1000
         history = [{"role": "user", "parts": [long_text]}]
 
-        result = summarizer._history_to_text(history)
+        with patch.object(mod, "EXTRACTION_MAX_CHARS_PER_MESSAGE", 4000):
+            result = summarizer._history_to_text(history)
 
-        # Should be truncated to 500 + ...
-        assert len(result) < 1000
-        assert "..." in result
+        assert long_text in result
+        assert "..." not in result
+
+    def test_history_to_text_truncates_past_the_configured_cap(self):
+        from importlib import import_module
+        from unittest.mock import patch
+
+        from cogs.ai_core.memory.summarizer import ConversationSummarizer
+
+        # NOT ``from cogs.ai_core.memory import summarizer`` — the package
+        # __init__ binds that name to the singleton INSTANCE, shadowing the
+        # submodule, so patch.object would target the object and fail.
+        mod = import_module("cogs.ai_core.memory.summarizer")
+
+        summarizer = ConversationSummarizer()
+        history = [{"role": "user", "parts": ["A" * 5000]}]
+
+        with patch.object(mod, "EXTRACTION_MAX_CHARS_PER_MESSAGE", 100):
+            result = summarizer._history_to_text(history)
+
+        assert result == "User: " + "A" * 100 + "..."
+
+    def test_history_to_text_skips_non_string_text(self):
+        """``"text" in part`` let an int reach len(); the TypeError was swallowed
+        upstream as a parsing error, so compression declined in silence."""
+        from cogs.ai_core.memory.summarizer import ConversationSummarizer
+
+        summarizer = ConversationSummarizer()
+        history = [{"role": "user", "parts": [{"text": 12345}, "real text"]}]
+
+        assert summarizer._history_to_text(history) == "User: real text"
+
+    def test_history_to_text_front_truncates_a_pathological_history(self):
+        """compress_history deliberately passes the WHOLE old segment, so the
+        bound is a CHARACTER budget (newest kept), never a line cap."""
+        from importlib import import_module
+        from unittest.mock import patch
+
+        from cogs.ai_core.memory.summarizer import ConversationSummarizer
+
+        # NOT ``from cogs.ai_core.memory import summarizer`` — the package
+        # __init__ binds that name to the singleton INSTANCE, shadowing the
+        # submodule, so patch.object would target the object and fail.
+        mod = import_module("cogs.ai_core.memory.summarizer")
+
+        summarizer = ConversationSummarizer()
+        history = [{"role": "user", "parts": [f"MSG{i:04d}"]} for i in range(500)]
+
+        with patch.object(mod, "_MAX_SUMMARY_INPUT_CHARS", 300):
+            result = summarizer._history_to_text(history)
+
+        assert result.startswith("[...older context truncated...]")
+        assert "MSG0499" in result  # newest survives
+        assert "MSG0000" not in result  # oldest is what goes
+        assert len(result) <= 300 + len("[...older context truncated...]\n")
 
     def test_history_to_text_model_role(self):
         """Test model role is converted to AI."""

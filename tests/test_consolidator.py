@@ -185,6 +185,9 @@ class TestMemoryConsolidatorMethods:
 
     def test_history_to_text_keeps_a_long_post_whole(self):
         """A 1000-char post survives intact — the old hard-coded 500 cut it in half."""
+        from unittest.mock import patch
+
+        from cogs.ai_core.memory import consolidator as mod
         from cogs.ai_core.memory.consolidator import MemoryConsolidator
 
         consolidator = MemoryConsolidator()
@@ -193,7 +196,10 @@ class TestMemoryConsolidatorMethods:
             {"role": "user", "parts": [long_text]},
         ]
 
-        result = consolidator._history_to_text(history)
+        # Pinned rather than ambient: the cap is an env knob env.example
+        # documents, and the point of this test is the 1000-vs-500 contrast.
+        with patch.object(mod, "EXTRACTION_MAX_CHARS_PER_MESSAGE", 4000):
+            result = consolidator._history_to_text(history)
 
         assert long_text in result
 

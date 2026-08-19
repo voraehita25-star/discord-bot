@@ -176,9 +176,10 @@ URL_PATTERN = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
 def _int_from_env(name: str, default: int, minimum: int) -> int:
     """Read a positive int knob from the environment, clamped to ``minimum``.
 
-    Clamping rather than allowing ``0`` is deliberate for both callers below:
-    each treats the value as a real budget it does arithmetic on, so a zero
-    would mean "read nothing", not "read everything".
+    ``minimum`` is the caller's own floor. The char budgets pass a positive one
+    deliberately — each treats the value as a real budget it does arithmetic on,
+    so a zero would mean "read nothing", not "read everything" — while the URL
+    COUNT passes 0, where "fetch no URLs" is a meaningful setting.
     """
     raw = (os.environ.get(name) or "").strip()
     if raw:
@@ -193,18 +194,35 @@ def _int_from_env(name: str, default: int, minimum: int) -> int:
 # The old 4500 was chosen to avoid "Gemini silent blocks" — a constraint that
 # left with the Gemini backend. On Claude's 1M-token window 4500 chars is
 # roughly the first screen of an article, so the model answered about links it
-# had barely read. 50000 lets a normal article through whole and still costs
-# only a few percent of the window. Fetched content rides the CURRENT message,
-# so with delta-on-resume it is sent once, not re-sent every turn.
+# had barely read. 50000 lets a normal article through whole.
+#
+# Note what this does NOT mean:
+# fetched text is written into the channel's stored history verbatim (logic.py
+# folds it into the user message before save_history), and the history recap has
+# no per-item cap — so every fresh session replays it in full. It is a permanent
+# cost per link, not a one-turn one, which is why MAX_TOTAL_CONTENT_CHARS below
+# bounds the per-message total rather than trusting the per-URL cap alone.
 # There is no "0 = unlimited": the GitHub README branch derives a BYTE cap
 # from the remaining char budget (remaining * 4), so a zero here would read
 # zero bytes of the README rather than all of it. Floor is 500.
 MAX_CONTENT_LENGTH = _int_from_env("URL_CONTENT_MAX_CHARS", 50_000, 500)
 
+# Aggregate ceiling across ALL URLs in one message. The per-URL cap alone is
+# not a budget: nothing summed across URLs, so raising both the cap and the URL
+# count multiplied rather than added (2x4,500 = 9,000 -> 4x50,000 = 200,000).
+# Because the fetched text is persisted into history, an unbounded per-message
+# total also means an unbounded permanent addition to every later fresh-session
+# prompt — and the Discord path does not truncate an over-ceiling prompt, it
+# stops the turn and waits for the bot OWNER to choose. Bounding here keeps a
+# member-posted wall of links from wedging a channel.
+MAX_TOTAL_CONTENT_CHARS = _int_from_env("URL_CONTENT_TOTAL_MAX_CHARS", 60_000, 1_000)
+
 # How many URLs from one message are fetched. They go out concurrently
 # (asyncio.gather in fetch_all_urls), so raising this costs bandwidth and
-# prompt size, not latency.
-MAX_URLS_PER_MESSAGE = _int_from_env("URL_FETCH_MAX_URLS", 4, 1)
+# prompt size, not latency. Unlike the char caps this one accepts 0, which
+# turns link dereferencing OFF entirely — an operator may want that for the
+# prompt-size or the SSRF/privacy surface, and there is no other switch.
+MAX_URLS_PER_MESSAGE = _int_from_env("URL_FETCH_MAX_URLS", 4, 0)
 
 # Maximum response body size (bytes) to prevent memory exhaustion
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5 MB
@@ -856,22 +874,41 @@ def format_url_content_for_context(fetched_urls: list[tuple[str, str, str | None
         return ""
 
     parts = ["[Web Content from URLs]"]
+    # Spent greedily in fetch order. The per-URL cap was applied upstream; this
+    # is the only place the TOTAL is bounded.
+    budget = MAX_TOTAL_CONTENT_CHARS
 
     for url, title, content in fetched_urls:
-        if content:
-            # Truncate very long content to prevent context overflow
-            truncated = (
-                content[:MAX_CONTENT_LENGTH] if len(content) > MAX_CONTENT_LENGTH else content
-            )
-            parts.append(f"\n--- {title} ({url}) ---")
-            parts.append(truncated)
-            logger.debug(
-                "URL content size: %d chars (truncated: %s)",
-                len(content),
-                len(content) > MAX_CONTENT_LENGTH,
-            )
-        else:
+        if not content:
             parts.append(f"\n--- {url} ---")
             parts.append("[Failed to fetch content]")
+            continue
+
+        parts.append(f"\n--- {title} ({url}) ---")
+        if budget <= 0:
+            # Say so rather than dropping the entry silently — the model must
+            # not treat a missing page as a page with nothing in it.
+            parts.append("[Content dropped: per-message web budget exhausted]")
+            logger.info("Dropped %s — per-message web budget exhausted", url)
+            continue
+
+        if len(content) <= budget:
+            # Passes through UNSLICED, which is what keeps the fetcher's own
+            # "[Content truncated...]" marker intact. The old code re-sliced
+            # every value at exactly MAX_CONTENT_LENGTH, and a page truncated
+            # upstream is MAX_CONTENT_LENGTH + len(marker) long — so the slice
+            # landed precisely on the marker and cut it off, leaving the model
+            # to reason about an amputated article as if it were complete.
+            parts.append(content)
+            budget -= len(content)
+        else:
+            parts.append(content[:budget] + "\n[Content truncated...]")
+            logger.info(
+                "Truncated %s to the remaining web budget (%d of %d chars)",
+                url,
+                budget,
+                len(content),
+            )
+            budget = 0
 
     return "\n".join(parts)
