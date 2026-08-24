@@ -50,6 +50,7 @@ import discord
 from discord.ext import commands
 
 from .dashboard_chat_claude_cli import (
+    _CLI_EFFORT,
     _CLI_WEB_TOOLS_ENABLED,
     _IDENTITY_OVERRIDE,
     _PENDING_SESSION_CLEANUPS,
@@ -57,9 +58,11 @@ from .dashboard_chat_claude_cli import (
     _ai_tool_names,
     _ai_tools_env,
     _build_claude_argv,
+    _lower_effort,
     _OverloadedError,
     _prompt_max_chars_from_env,
     _run_claude_subprocess,
+    _SafeguardError,
     _StaleSessionError,
     _unlink_session_file_by_id,
     build_tools_declaration,
@@ -967,6 +970,21 @@ async def _record_cli_usage(
         logger.debug("discord-cli token usage recording skipped", exc_info=True)
 
 
+def _safeguard_notice(err: _SafeguardError) -> str:
+    """User-facing Thai notice for an AUP-safeguard refusal.
+
+    Two texts because the two stages need different advice: a reasoning-stage
+    flag has nothing to do with what the member typed (asking them to rephrase
+    would be misleading), while a content-stage one is exactly that.
+    """
+    if err.is_reasoning_stage:
+        return (
+            "⚠️ ตัวกรองความปลอดภัยของ Anthropic บล็อกเทิร์นนี้ "
+            "(เกิดที่ขั้นตอนคิดของโมเดล ไม่ได้เกิดจากข้อความของคุณ) กรุณาลองส่งใหม่อีกครั้ง"
+        )
+    return "⚠️ ตัวกรองความปลอดภัยของ Anthropic ไม่อนุญาตให้ตอบข้อความนี้ กรุณาลองเรียบเรียงใหม่"
+
+
 async def call_claude_cli_streaming(
     contents: list[dict[str, Any]],
     config_params: dict[str, Any],
@@ -1143,6 +1161,11 @@ async def call_claude_cli_streaming(
         # the stale-session retry and must not advance the refresh counter twice.
         lore_due = _lore_due_this_turn(channel_id, session_id)
 
+        # Reasoning depth for the attempt. Normally None (= the operator's
+        # pinned _CLI_EFFORT); the `[reasoning_extraction]` safeguard retry
+        # below drops it one rung.
+        effort_override: str | None = None
+
         # Run with retry-once on stale session — exactly mirrors the
         # dashboard handler's behaviour. The stale-session case is when
         # Claude on the server side has GC'd the session log under us.
@@ -1181,9 +1204,12 @@ async def call_claude_cli_streaming(
                 allow_edit_tools=False,
                 # Reasoning depth is pinned by `_CLI_EFFORT` (CLAUDE_EFFORT,
                 # default xhigh) — the CLI has no thinking switch, so there is
-                # nothing per-turn to pass here. Subscription mode redacts the
+                # no per-turn thinking flag. Subscription mode redacts the
                 # reasoning content (only start/stop markers reach us — see
-                # on_thinking), but the effort is real.
+                # on_thinking), but the effort is real. `effort_override` is
+                # None except on the safeguard retry below, which steps one
+                # rung down; it is never a caller-supplied value.
+                effort=effort_override,
                 # Give the Discord AI web access (WebSearch + WebFetch). There's
                 # no Read tool on this path, so no local-file exfil risk; both
                 # run server-side at Anthropic.
@@ -1371,6 +1397,56 @@ async def call_claude_cli_streaming(
                 accumulated_text = ""
                 error_notice = "⚠️ เซิร์ฟเวอร์ Anthropic ไม่ว่างชั่วคราว กรุณาลองใหม่อีกครั้งในอีกสักครู่"
                 break
+            except _SafeguardError as err:
+                # Anthropic's AUP classifier refused the turn. A
+                # `[reasoning_extraction]` flag fired on the model's own
+                # reasoning trace — not on anything the member typed — and
+                # Anthropic's own wording ("This sometimes happens with safe,
+                # normal conversations") makes it non-deterministic, so it is
+                # worth exactly one retry. Both levers the CLI itself suggests
+                # are pulled: a fresh session, and one rung less --effort
+                # (a shallower trace is what tripped the classifier, and the
+                # retry finishes minutes sooner than a same-depth re-run).
+                # A content-stage flag gets no retry: re-sending identical text
+                # would burn another full turn to fail the same way.
+                retry_effort = _lower_effort(effort_override or _CLI_EFFORT)
+                if attempt == 1 and err.is_reasoning_stage and retry_effort:
+                    logger.warning(
+                        "Claude CLI safeguard flag on reasoning for channel %s "
+                        "(session=%s); retrying fresh at --effort %s",
+                        channel_id,
+                        (session_id or "")[:8] or "none",
+                        retry_effort,
+                    )
+                    effort_override = retry_effort
+                    session_id = None
+                    accumulated_text = ""
+                    if channel_id is not None:
+                        _CHANNEL_SESSIONS.pop(channel_id, None)
+                    # Same placeholder reset as the stale-session retry so
+                    # attempt-1 preview text doesn't linger and attempt 2's
+                    # first delta + reasoning marker fire again.
+                    last_edit_time = 0.0
+                    reasoning_signalled = False
+                    with contextlib.suppress(Exception):
+                        await placeholder_msg.edit(
+                            content="💭 กำลังลองใหม่...",
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
+                    continue
+                logger.warning(
+                    "Claude CLI refused by the AUP safeguard classifier for channel %s "
+                    "(session=%s attempt=%d stage=%s)",
+                    channel_id,
+                    (session_id or "")[:8] or "none",
+                    attempt,
+                    err.stage or "<unknown>",
+                )
+                if channel_id is not None:
+                    _CHANNEL_SESSIONS.pop(channel_id, None)
+                accumulated_text = ""
+                error_notice = _safeguard_notice(err)
+                break
             except Exception:
                 logger.exception(
                     "Claude CLI subprocess failed for channel %s (session=%s attempt=%d)",
@@ -1510,6 +1586,9 @@ async def call_claude_cli(
         # Once per turn, not per attempt — see the streaming sibling.
         lore_due = _lore_due_this_turn(channel_id, session_id)
 
+        # Lowered only by the safeguard retry — see the streaming sibling.
+        effort_override: str | None = None
+
         for attempt in (1, 2):
             # Same delta-on-resume rule as the streaming sibling: resumed
             # sessions skip the history recap; fresh sessions (incl. the
@@ -1552,9 +1631,12 @@ async def call_claude_cli(
                 allow_edit_tools=False,
                 # Reasoning depth is pinned by `_CLI_EFFORT` (CLAUDE_EFFORT,
                 # default xhigh) — the CLI has no thinking switch, so there is
-                # nothing per-turn to pass here. Subscription mode redacts the
+                # no per-turn thinking flag. Subscription mode redacts the
                 # reasoning content (only start/stop markers reach us — see
-                # on_thinking), but the effort is real.
+                # on_thinking), but the effort is real. `effort_override` is
+                # None except on the safeguard retry below, which steps one
+                # rung down; it is never a caller-supplied value.
+                effort=effort_override,
                 # Give the Discord AI web access (WebSearch + WebFetch). There's
                 # no Read tool on this path, so no local-file exfil risk; both
                 # run server-side at Anthropic.
@@ -1711,6 +1793,37 @@ async def call_claude_cli(
                 if channel_id is not None:
                     _CHANNEL_SESSIONS.pop(channel_id, None)
                 accumulated_text = "⚠️ เซิร์ฟเวอร์ Anthropic ไม่ว่างชั่วคราว กรุณาลองใหม่อีกครั้งในอีกสักครู่"
+                break
+            except _SafeguardError as err:
+                # Same one-shot recovery as the streaming sibling: a
+                # reasoning-stage flag is retried once on a fresh session at
+                # one rung less --effort; a content-stage flag is reported.
+                retry_effort = _lower_effort(effort_override or _CLI_EFFORT)
+                if attempt == 1 and err.is_reasoning_stage and retry_effort:
+                    logger.warning(
+                        "Claude CLI safeguard flag on reasoning (non-stream) for channel %s "
+                        "(session=%s); retrying fresh at --effort %s",
+                        channel_id,
+                        (session_id or "")[:8] or "none",
+                        retry_effort,
+                    )
+                    effort_override = retry_effort
+                    session_id = None
+                    accumulated_text = ""
+                    if channel_id is not None:
+                        _CHANNEL_SESSIONS.pop(channel_id, None)
+                    continue
+                logger.warning(
+                    "Claude CLI refused by the AUP safeguard classifier (non-stream) "
+                    "for channel %s (session=%s attempt=%d stage=%s)",
+                    channel_id,
+                    (session_id or "")[:8] or "none",
+                    attempt,
+                    err.stage or "<unknown>",
+                )
+                if channel_id is not None:
+                    _CHANNEL_SESSIONS.pop(channel_id, None)
+                accumulated_text = _safeguard_notice(err)
                 break
             except Exception:
                 logger.exception(

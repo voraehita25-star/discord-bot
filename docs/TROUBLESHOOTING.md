@@ -98,6 +98,26 @@ tail -f logs/bot_errors.log
    The failover layer flips between these two endpoints automatically based on
    error rate; manual override via `ANTHROPIC_API_ENDPOINT` is for sticky pinning.
 
+5. **Safeguard refusal (`cli` backend)** — `claude -p` exits 1 with:
+
+   ```text
+   API Error: <model>'s safeguards flagged this message
+   (https://www.anthropic.com/legal/aup). ... Details: `[reasoning_extraction]`
+   ```
+
+   The `Details:` tag names the stage that tripped, and the two mean different
+   things:
+
+   | Stage | What was flagged | What the bot does |
+   | --- | --- | --- |
+   | `reasoning_extraction` | The model's own (redacted) reasoning trace — **not** the user's message | Retries **once**: fresh session, one rung down the `--effort` ladder. Only if that also fails does the user see a notice, and it says the message wasn't the cause. |
+   | anything else / absent | The turn's content | No retry — an identical re-send fails identically. The user is asked to rephrase. |
+
+   Deep reasoning is what feeds the reasoning-stage classifier, so a bot pinned
+   at `CLAUDE_EFFORT=max` sees these more often than one at `high`. Grep
+   `bot.log` for `AUP safeguard classifier` to count them; if they are frequent,
+   lower `CLAUDE_EFFORT` rather than raising the retry count.
+
 ### High Memory Usage
 
 The memory monitor triggers cache cleanup at configurable RSS thresholds:
@@ -247,6 +267,11 @@ backend there is nothing for it to control:
 | ------- | --------- | ---------- |
 | `api` (Anthropic SDK) | `thinking: {"type": "adaptive"}` at `CLAUDE_EFFORT` | Thinking genuinely off — an explicit `thinking: {"type": "disabled"}`, with effort clamped to `high` (Opus 5 returns a 400 for disabled thinking at `xhigh`/`max`) |
 | `cli` (`claude -p`, **default**) | *n/a — the toggle is disabled* | *n/a* — every turn reasons at `CLAUDE_EFFORT` (default `xhigh`) |
+
+The one exception to "every turn reasons at `CLAUDE_EFFORT`" is the
+`[reasoning_extraction]` safeguard retry (see [AI Not Responding](#ai-not-responding)),
+which re-runs the refused turn one rung lower. It is a recovery step, not a
+setting: the next turn is back at `CLAUDE_EFFORT`.
 
 Rather than leave a control that silently does nothing, the CLI backend turns it
 off end to end:

@@ -556,6 +556,140 @@ class TestHandlerErrorPathsDropSession:
         assert "c1" not in cli_mod._CONVERSATION_SESSIONS
 
 
+class TestHandlerSafeguardFlag:
+    """Anthropic's AUP classifier refuses a turn at one of two stages.
+
+    ``[reasoning_extraction]`` fired on the model's own reasoning trace, so —
+    unlike the stale branch — there is nothing to rebuild: same session, same
+    prompt, one rung less ``--effort``. Any other stage is a refusal of the
+    content itself, where a retry would only fail the same way.
+    """
+
+    @staticmethod
+    def _capture(calls: list[tuple[list[str], str]], *, stages: list[str | None]):
+        async def fake_subprocess(
+            argv,
+            stdin_payload,
+            *,
+            on_text_delta,
+            on_thinking_delta,
+            on_thinking_block_start=None,
+            on_thinking_block_stop=None,
+            timeout,
+            extra_env=None,
+            proc=None,
+        ):
+            idx = len(calls)
+            calls.append((list(argv), stdin_payload))
+            stage = stages[idx] if idx < len(stages) else None
+            if stage is not None:
+                await on_text_delta("refused partial")
+                raise cli_mod._SafeguardError("safeguards flagged", stage=stage)
+            await on_text_delta("recovered")
+            return "sess-after", None
+
+        return fake_subprocess
+
+    @staticmethod
+    def _effort_of(argv: list[str]) -> str:
+        return argv[argv.index("--effort") + 1]
+
+    @pytest.mark.asyncio
+    async def test_reasoning_flag_retries_one_rung_down_same_session(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        cli_mod._CONVERSATION_SESSIONS["c1"] = "live-sess"
+        calls: list[tuple[list[str], str]] = []
+
+        try:
+            with _handler_patches(
+                _mock_db(), self._capture(calls, stages=["reasoning_extraction"])
+            ):
+                await cli_mod.handle_chat_message_claude_cli(
+                    ws,
+                    {"conversation_id": "c1", "content": "hello", "role_preset": "general"},
+                    None,
+                )
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+        assert len(calls) == 2, "a reasoning-stage flag must be retried exactly once"
+        (argv1, prompt1), (argv2, prompt2) = calls
+        assert self._effort_of(argv1) == cli_mod._CLI_EFFORT
+        assert self._effort_of(argv2) == cli_mod._lower_effort(cli_mod._CLI_EFFORT)
+        # Nothing about the prompt caused this, so nothing about it changes —
+        # the session still holds the context server-side.
+        assert prompt2 == prompt1
+        assert "--resume" in argv2 and "live-sess" in argv2
+        # Second stream_start tells the client to drop the refused partial, so
+        # the persisted body is the retry's alone.
+        assert len(ws.find("stream_start")) == 2
+        ends = ws.find("stream_end")
+        assert ends and ends[-1]["full_response"] == "recovered"
+        assert not ws.find("error")
+
+    @pytest.mark.asyncio
+    async def test_content_flag_is_reported_not_retried(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        cli_mod._CONVERSATION_SESSIONS["c1"] = "live-sess"
+        calls: list[tuple[list[str], str]] = []
+
+        try:
+            with _handler_patches(_mock_db(), self._capture(calls, stages=[""])):
+                await cli_mod.handle_chat_message_claude_cli(
+                    ws,
+                    {"conversation_id": "c1", "content": "hello", "role_preset": "general"},
+                    None,
+                )
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+        assert len(calls) == 1
+        errors = ws.find("error")
+        assert errors, "the client must be told what actually happened"
+        # Named cause, not "see server logs" — and "rephrase" only for the
+        # stage the user's text actually caused.
+        assert "rephrase" in errors[-1]["message"].lower()
+        assert "c1" not in cli_mod._CONVERSATION_SESSIONS
+
+    @pytest.mark.asyncio
+    async def test_repeat_reasoning_flag_does_not_blame_the_message(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        cli_mod._CONVERSATION_SESSIONS["c1"] = "live-sess"
+        calls: list[tuple[list[str], str]] = []
+
+        try:
+            with _handler_patches(
+                _mock_db(),
+                self._capture(calls, stages=["reasoning_extraction", "reasoning_extraction"]),
+            ):
+                await cli_mod.handle_chat_message_claude_cli(
+                    ws,
+                    {"conversation_id": "c1", "content": "hello", "role_preset": "general"},
+                    None,
+                )
+        finally:
+            cli_mod._CONVERSATION_SESSIONS.pop("c1", None)
+            await _settle_session_cleanups()
+
+        assert len(calls) == 2, "retry is once, not a loop"
+        errors = ws.find("error")
+        assert errors
+        assert "rephrase" not in errors[-1]["message"].lower()
+        assert "reasoning" in errors[-1]["message"].lower()
+        assert "c1" not in cli_mod._CONVERSATION_SESSIONS
+
+
 class TestHandlerPrewarmThinking:
     """The warm argv must carry the turn's thinking flag (conversation-sticky
     in the frontend) or it never matches and every thinking turn wastes a

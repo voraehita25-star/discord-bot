@@ -561,6 +561,34 @@ class TestBuildClaudeArgv:
         # Exactly one --effort; a second would let the last one silently win.
         assert argv.count("--effort") == 1
 
+    def test_effort_override_replaces_the_pinned_tier(self):
+        """The `[reasoning_extraction]` safeguard retry re-runs one rung down."""
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+            effort="medium",
+        )
+        idx = argv.index("--effort")
+        assert argv[idx + 1] == "medium"
+        assert argv.count("--effort") == 1
+
+    @pytest.mark.parametrize("bogus", ["", "ultra", "--inject", "max; rm -rf /"])
+    def test_off_ladder_effort_override_falls_back_to_pinned(self, bogus):
+        """An off-ladder value must never reach argv — `--effort --inject`
+        would hand the CLI a flag token instead of a tier."""
+        argv = cli._build_claude_argv(
+            "/usr/bin/claude",
+            session_id=None,
+            allow_read_for_images=False,
+            effort=bogus,
+        )
+        idx = argv.index("--effort")
+        assert argv[idx + 1] == cli._CLI_EFFORT
+        if bogus:
+            # "" is skipped: `--tools ""` legitimately puts one in the argv.
+            assert bogus not in argv
+
     def test_build_argv_has_no_thinking_switch(self):
         """The toggle is reported unsupported to the dashboard and refused by
         `!thinking` on this backend, so accepting a per-turn flag here would
@@ -736,6 +764,33 @@ class TestBuildClaudeArgv:
         )
         assert "--settings" in argv
         assert "--setting-sources" in argv
+
+
+class TestLowerEffort:
+    """One rung down the --effort ladder, used only by the safeguard retry."""
+
+    @pytest.mark.parametrize(
+        ("current", "expected"),
+        [
+            ("max", "xhigh"),
+            ("xhigh", "high"),
+            ("high", "medium"),
+            ("medium", "low"),
+            ("MAX", "xhigh"),
+            ("  high  ", "medium"),
+        ],
+    )
+    def test_steps_down_one_rung(self, current, expected):
+        assert cli._lower_effort(current) == expected
+
+    def test_floor_has_nowhere_to_go(self):
+        assert cli._lower_effort("low") is None
+
+    @pytest.mark.parametrize("bogus", [None, "", "ultra", "xxhigh"])
+    def test_unknown_tier_is_not_guessed(self, bogus):
+        """An operator typo in CLAUDE_EFFORT must not silently become
+        "retry at low" — the retry is skipped instead."""
+        assert cli._lower_effort(bogus) is None
 
 
 class TestToolScope:
@@ -1672,6 +1727,123 @@ class TestRunClaudeSubprocessErrors:
         assert not isinstance(exc.value, cli._StaleSessionError)
         assert "selected model" in str(exc.value)
         assert "betas" not in str(exc.value).lower()
+
+    async def test_aup_safeguard_raises_safeguard_error_with_stage(self, monkeypatch, tmp_path):
+        """The verbatim refusal from the incident, including its Details tag.
+
+        Classified — before the fix this exited as a bare RuntimeError, so the
+        Discord path answered "Claude CLI ขัดข้อง ดู log" and never retried a
+        failure Anthropic itself calls non-deterministic.
+        """
+        stdout = _ndjson(
+            {
+                "type": "result",
+                "is_error": True,
+                "result": (
+                    "API Error: Opus 5 (1M context)'s safeguards flagged this message "
+                    "(https://www.anthropic.com/legal/aup). This sometimes happens with "
+                    "safe, normal conversations. Claude Code can't respond to this "
+                    "message with Opus 5 (1M context).\n"
+                    "Try rephrasing the request in a new session or change your model.\n"
+                    "Learn more: https://support.claude.com/en/articles/16049681\n"
+                    "Details: `[reasoning_extraction]`\n"
+                    "Request ID: req_011CeMMjquZTjLU7SUWu2ybA"
+                ),
+            },
+        )
+        with pytest.raises(cli._SafeguardError) as exc:
+            await _run_with_fake(
+                monkeypatch,
+                tmp_path,
+                stdout_lines=stdout,
+                stderr_chunks=[_BETAS_WARNING],
+                rc=1,
+            )
+        assert exc.value.stage == "reasoning_extraction"
+        assert exc.value.is_reasoning_stage is True
+        # "…in a new session…" must NOT be read as a stale --resume: that
+        # verdict triggers a full-history re-send that fixes nothing here.
+        assert not isinstance(exc.value, cli._StaleSessionError)
+
+    async def test_content_stage_safeguard_has_no_reasoning_flag(self, monkeypatch, tmp_path):
+        """No Details tag → treat as a content refusal: no retry, and the user
+        is told to rephrase (which a reasoning-stage flag must never claim)."""
+        stdout = _ndjson(
+            {
+                "type": "result",
+                "is_error": True,
+                "result": (
+                    "API Error: Claude's safeguards flagged this message "
+                    "(https://www.anthropic.com/legal/aup)."
+                ),
+            },
+        )
+        with pytest.raises(cli._SafeguardError) as exc:
+            await _run_with_fake(
+                monkeypatch,
+                tmp_path,
+                stdout_lines=stdout,
+                stderr_chunks=[],
+                rc=1,
+            )
+        assert exc.value.stage == ""
+        assert exc.value.is_reasoning_stage is False
+
+    async def test_stage_survives_the_error_text_truncation(self, monkeypatch, tmp_path):
+        """The stage is parsed BEFORE the 500-char log truncation.
+
+        Anthropic's real message already puts the ``Details:`` tag ~350 chars
+        in. One extra sentence and it falls past the cap — which would silently
+        turn a retryable reasoning flag into "no retry, tell the user to
+        rephrase", the wrong answer for a flag their text never caused.
+        """
+        stdout = _ndjson(
+            {
+                "type": "result",
+                "is_error": True,
+                "result": (
+                    "API Error: safeguards flagged this message "
+                    "(https://www.anthropic.com/legal/aup). "
+                    + "padding sentence. " * 40
+                    + "Details: `[reasoning_extraction]`"
+                ),
+            },
+        )
+        with pytest.raises(cli._SafeguardError) as exc:
+            await _run_with_fake(
+                monkeypatch,
+                tmp_path,
+                stdout_lines=stdout,
+                stderr_chunks=[],
+                rc=1,
+            )
+        # The tag is past the cap, so the raised message can't carry it…
+        assert "reasoning_extraction" not in str(exc.value)
+        # …but the classification still did.
+        assert exc.value.is_reasoning_stage is True
+
+    async def test_safeguard_wins_over_stale_session_wording(self, monkeypatch, tmp_path):
+        """Ordering guard: the safeguard check runs first, so a refusal that
+        also happens to name a session id is not mis-healed as a stale one."""
+        stdout = _ndjson(
+            {
+                "type": "result",
+                "is_error": True,
+                "result": (
+                    "API Error: safeguards flagged this message "
+                    "(https://www.anthropic.com/legal/aup). Session ID: abc-123. "
+                    "Details: `[reasoning_extraction]`"
+                ),
+            },
+        )
+        with pytest.raises(cli._SafeguardError):
+            await _run_with_fake(
+                monkeypatch,
+                tmp_path,
+                stdout_lines=stdout,
+                stderr_chunks=[],
+                rc=1,
+            )
 
     async def test_stale_resume_on_stderr_raises_stale(self, monkeypatch, tmp_path):
         # The stale --resume message lands on STDERR; the result event carries

@@ -151,6 +151,49 @@ class _OverloadedError(RuntimeError):
     """
 
 
+class _SafeguardError(RuntimeError):
+    """``claude -p`` was refused by Anthropic's AUP safety classifier.
+
+    The CLI exits 1 having printed, as the stream-json ``result`` text::
+
+        API Error: <model>'s safeguards flagged this message
+        (https://www.anthropic.com/legal/aup). This sometimes happens with
+        safe, normal conversations. ... Details: `[reasoning_extraction]`
+
+    ``stage`` carries that ``Details:`` tag. It matters because the two stages
+    are not the same failure: ``reasoning_extraction`` means the classifier
+    fired on the model's own (redacted) reasoning trace — nothing the user
+    typed — which is both non-deterministic and correlated with how much
+    reasoning we asked for, so it is worth one retry at a lower ``--effort``.
+    Any other stage means the turn's *content* was refused, where an identical
+    re-send would just burn another multi-minute turn to fail the same way.
+
+    Subclass of ``RuntimeError`` so existing ``except RuntimeError`` paths keep
+    working; handlers that want the distinction must catch this BEFORE the
+    generic ``RuntimeError`` branch.
+    """
+
+    def __init__(self, message: str, *, stage: str = "") -> None:
+        super().__init__(message)
+        self.stage = stage
+
+    @property
+    def is_reasoning_stage(self) -> bool:
+        """True when the flag fired on the model's reasoning, not on content."""
+        return "reasoning" in self.stage
+
+
+# Markers for the AUP-safeguard refusal above. Matched against the lowercased
+# stdout result text + stderr. Two independent needles because the sentence
+# wording is Anthropic's and can be reworded, while the policy URL is stable.
+_SAFEGUARD_MARKERS = ("safeguards flagged", "/legal/aup")
+
+# ``Details: `[reasoning_extraction]``` — the stage that tripped. Optional in
+# the message, so a miss just leaves ``stage`` empty (treated as content-stage:
+# no retry).
+_SAFEGUARD_STAGE_RE = re.compile(r"details:\s*`?\[([\w.-]+)\]", re.IGNORECASE)
+
+
 # Bound the conversation→session map so a long-running bot doesn't accumulate
 # entries forever. We evict oldest insertion order on overflow.
 _MAX_TRACKED_SESSIONS = 500
@@ -188,6 +231,27 @@ _THINKING_STREAM_TIMEOUT = max(300, _env_int("DASHBOARD_STREAM_TIMEOUT_THINKING"
 # ``--permission-mode``: the bot's behaviour must not track someone's
 # interactive Claude Code preference.
 _CLI_EFFORT = CLAUDE_EFFORT or "xhigh"
+
+# The CLI's --effort scale, weakest first. Only used to step DOWN one rung on a
+# `[reasoning_extraction]` safeguard retry (see _SafeguardError): a shallower
+# trace gives the classifier less surface to false-positive on, and the retry
+# also finishes sooner — a same-depth re-run at `max` can cost another several
+# minutes before failing identically.
+_EFFORT_LADDER = ("low", "medium", "high", "xhigh", "max")
+
+
+def _lower_effort(effort: str | None) -> str | None:
+    """One rung below *effort*, or ``None`` if it is already the floor.
+
+    ``None`` also for a value that isn't on the ladder — an operator typo in
+    ``CLAUDE_EFFORT`` must not silently become "retry at low".
+    """
+    try:
+        idx = _EFFORT_LADDER.index((effort or "").strip().lower())
+    except ValueError:
+        return None
+    return _EFFORT_LADDER[idx - 1] if idx > 0 else None
+
 
 # Strong refs to in-flight sidecar-persistence tasks. Without this set the
 # tasks scheduled by ``_save_persisted_sessions`` are only weakly referenced
@@ -2102,11 +2166,16 @@ def _build_claude_argv(
     enable_web: bool = False,
     ai_tool_names: list[str] | None = None,
     model: str | None = None,
+    effort: str | None = None,
 ) -> list[str]:
     """Construct the argv for the `claude -p` invocation.
 
-    Reasoning depth is always pinned to ``_CLI_EFFORT`` (``CLAUDE_EFFORT``,
-    default ``xhigh``). The CLI has no way to disable thinking, so there is no
+    Reasoning depth is pinned to ``_CLI_EFFORT`` (``CLAUDE_EFFORT``, default
+    ``xhigh``) unless *effort* names another rung of ``_EFFORT_LADDER`` — the
+    one caller that does is the ``[reasoning_extraction]`` safeguard retry (see
+    ``_SafeguardError``), never a per-turn user setting. An off-ladder value is
+    ignored rather than passed through, so nothing can inject an argv token
+    here. The CLI has no way to disable thinking, so there is no
     per-turn thinking switch here — the model always reasons internally. The
     *content* of that reasoning is still redacted by Anthropic in subscription
     mode (only the start/stop markers reach us), but the effort is real and
@@ -2220,9 +2289,16 @@ def _build_claude_argv(
 
     # Effort only — NOT --betas interleaved-thinking. See the docstring: custom
     # betas are ignored (and noisily warned about) in subscription mode, and
-    # that warning used to mask real stdout errors. Always pinned; see
-    # ``_CLI_EFFORT`` for why there is no per-turn thinking branch.
-    argv.extend(["--effort", _CLI_EFFORT])
+    # that warning used to mask real stdout errors. Pinned to the operator's
+    # depth; see ``_CLI_EFFORT`` for why there is no per-turn thinking branch,
+    # and ``effort`` for the single retry that steps off it.
+    turn_effort = _CLI_EFFORT
+    if effort is not None:
+        if effort.strip().lower() in _EFFORT_LADDER:
+            turn_effort = effort.strip().lower()
+        else:
+            logger.warning("Ignoring off-ladder --effort override %r", effort)
+    argv.extend(["--effort", turn_effort])
     if session_id and _SESSION_ID_PATTERN.match(session_id):
         argv.extend(["--resume", session_id])
     elif session_id:
@@ -2666,6 +2742,11 @@ async def _run_claude_subprocess(
     # benign warning happened to land on stderr.
     final_error_text = ""
     final_error_status: int | None = None
+    # AUP-safeguard stage (``Details: `[reasoning_extraction]```), parsed from
+    # the error text BEFORE it is truncated for logging. Empty for every other
+    # failure — and for a safeguard refusal that carries no Details tag, which
+    # is read as a content-stage refusal.
+    final_error_stage = ""
 
     # Track which content-block indices are thinking blocks so the
     # `content_block_stop` handler only fires `on_thinking_block_stop` for
@@ -2675,7 +2756,7 @@ async def _run_claude_subprocess(
 
     async def consume_stdout() -> None:
         nonlocal final_session_id, final_usage, final_error_text, final_error_status
-        nonlocal first_text_ts
+        nonlocal final_error_stage, first_text_ts
         if proc is None or proc.stdout is None:
             raise RuntimeError("Subprocess stdout pipe is unexpectedly None")
         # Drop the per-line buffer cap so model JSON deltas with embedded
@@ -2753,6 +2834,17 @@ async def _run_claude_subprocess(
                     res = event.get("result")
                     if isinstance(res, str) and res.strip():
                         final_error_text = res.strip()[:500]
+                        # Read the AUP-safeguard stage off the FULL text: the
+                        # ``Details: `[reasoning_extraction]``` tag sits ~350
+                        # chars into that message, close enough to the 500-char
+                        # cap above that one extra sentence from Anthropic would
+                        # truncate it away — and a missing stage silently
+                        # downgrades the turn to "no retry, tell them to
+                        # rephrase", which is the wrong answer for a flag the
+                        # user's text never caused.
+                        stage_hit = _SAFEGUARD_STAGE_RE.search(res)
+                        if stage_hit:
+                            final_error_stage = stage_hit.group(1).lower()
                 continue
 
             # Streaming token deltas live under the "stream_event" wrapper.
@@ -2906,6 +2998,24 @@ async def _run_claude_subprocess(
             # stderr: API errors surface in the result text, but a stale
             # --resume lands "…session ID…" on stderr.
             haystack = f"{final_error_text}\n{stderr_text}".lower()
+            # AUP safeguard refusal — checked FIRST because its message reads
+            # "Try rephrasing the request in a new session", which the stale
+            # check below would otherwise be one wording change away from
+            # claiming as its own (and a "stale" verdict triggers a full
+            # history re-send that fixes nothing here).
+            if any(marker in haystack for marker in _SAFEGUARD_MARKERS):
+                # Prefer the stage parsed from the untruncated result text; the
+                # haystack scan is the fallback for a refusal that arrived on
+                # stderr instead.
+                stage = final_error_stage
+                if not stage:
+                    stage_match = _SAFEGUARD_STAGE_RE.search(haystack)
+                    stage = stage_match.group(1) if stage_match else ""
+                logger.warning(
+                    "claude -p refused by the AUP safeguard classifier (stage=%s)",
+                    stage or "<unknown>",
+                )
+                raise _SafeguardError(err_msg, stage=stage)
             if (
                 "--resume" in haystack
                 or "session id" in haystack
@@ -3767,6 +3877,54 @@ async def handle_chat_message_claude_cli(
                         on_thinking_block_stop=on_thinking_block_stop,
                         timeout=stream_timeout,
                     )
+                elif isinstance(err, _SafeguardError) and err.is_reasoning_stage:
+                    # The AUP classifier fired on the model's own reasoning
+                    # trace, not on anything in this prompt — so unlike the
+                    # stale branch there is nothing to rebuild: same session,
+                    # same prompt, one rung less ``--effort``. A shorter trace
+                    # is less likely to trip the classifier again and the retry
+                    # costs minutes less than a same-depth re-run.
+                    retry_effort = _lower_effort(_CLI_EFFORT)
+                    if retry_effort is None:
+                        raise
+                    logger.warning(
+                        "Claude CLI safeguard flag on reasoning (conv=%s); "
+                        "retrying once at --effort %s",
+                        conversation_id,
+                        retry_effort,
+                    )
+                    retry_argv = _build_claude_argv(
+                        claude_exe,
+                        session_id=session_id,
+                        allow_read_for_images=need_read,
+                        enable_write=write_enabled,
+                        system_prompt_file=system_prompt_file,
+                        replace_system_prompt=replace_system_prompt,
+                        enable_web=web_enabled,
+                        effort=retry_effort,
+                    )
+                    # Same accumulator/stream_start reset as the stale branch:
+                    # the refused attempt may already have streamed text.
+                    full_response = ""
+                    full_thinking = ""
+                    thinking_started = False
+                    thinking_ended = False
+                    await ws.send_json(
+                        {
+                            "type": "stream_start",
+                            "mode": mode_label,
+                            "conversation_id": conversation_id,
+                        }
+                    )
+                    new_session_id, usage = await _run_claude_subprocess(
+                        retry_argv,
+                        stdin_payload=full_prompt,
+                        on_text_delta=on_text,
+                        on_thinking_delta=on_thinking_text,
+                        on_thinking_block_start=on_thinking_block_start,
+                        on_thinking_block_stop=on_thinking_block_stop,
+                        timeout=stream_timeout,
+                    )
                 else:
                     raise
         except asyncio.CancelledError:
@@ -3806,6 +3964,38 @@ async def handle_chat_message_claude_cli(
                 {
                     "type": "error",
                     "message": f"Claude CLI timed out after {stream_timeout}s",
+                    "conversation_id": conversation_id,
+                }
+            )
+            return
+        except _SafeguardError as err:
+            # Anthropic's AUP classifier refused the turn — either up front on
+            # the content, or (reasoning stage) after the lower-effort retry
+            # above already failed a second time. Both are dead ends here, but
+            # the client must be told WHICH: "rephrase" is useless advice for a
+            # flag the user's text never caused. Must precede the generic
+            # ``except RuntimeError`` below (it's a subclass).
+            logger.warning(
+                "Claude CLI refused by the AUP safeguard classifier (conv=%s stage=%s)",
+                conversation_id,
+                err.stage or "<unknown>",
+            )
+            # See the TimeoutError handler: the failed user turn is in the DB
+            # but never landed in the resumed session — drop the session so the
+            # next turn's rebuilt history block carries it.
+            if conversation_id:
+                reset_session(conversation_id)
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": (
+                        "Anthropic's safety classifier flagged this turn's "
+                        "reasoning, not your message — this is transient. "
+                        "Please resend."
+                        if err.is_reasoning_stage
+                        else "Anthropic's safety classifier declined to answer "
+                        "this message. Please rephrase it."
+                    ),
                     "conversation_id": conversation_id,
                 }
             )
@@ -4364,6 +4554,31 @@ async def handle_ai_edit_message_claude_cli(
                 {
                     "type": "error",
                     "message": f"Claude CLI edit timed out after {stream_timeout}s",
+                    "conversation_id": conversation_id,
+                }
+            )
+            return
+        except _SafeguardError as err:
+            # Parity with the chat handler — minus its retry: /edit is a
+            # one-shot fresh session with no accumulator to reset, and the
+            # operator can just re-run the edit. Still classified so the client
+            # gets the real reason instead of "see server logs".
+            logger.warning(
+                "Claude CLI edit refused by the AUP safeguard classifier (conv=%s stage=%s)",
+                conversation_id,
+                err.stage or "<unknown>",
+            )
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": (
+                        "Anthropic's safety classifier flagged this edit's "
+                        "reasoning, not your text — this is transient. "
+                        "Please try the edit again."
+                        if err.is_reasoning_stage
+                        else "Anthropic's safety classifier declined this edit. "
+                        "Please rephrase the instruction."
+                    ),
                     "conversation_id": conversation_id,
                 }
             )

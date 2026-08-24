@@ -1043,6 +1043,198 @@ class TestErrorPathsDropSession:
         assert text.startswith("⚠️")
 
 
+def _safeguard(stage: str = "reasoning_extraction") -> BaseException:
+    """The AUP refusal `claude -p` exits 1 with, as the classifier raises it."""
+    return cli_mod._SafeguardError(
+        "claude -p exit 1: API Error: safeguards flagged this message "
+        "(https://www.anthropic.com/legal/aup)",
+        stage=stage,
+    )
+
+
+class TestSafeguardRetry:
+    """Anthropic's AUP classifier can refuse a turn at two different stages.
+
+    ``[reasoning_extraction]`` fires on the model's own reasoning trace — not
+    on anything the member typed — and Anthropic's own message calls it
+    non-deterministic ("This sometimes happens with safe, normal
+    conversations"). That earns exactly one retry, on a fresh session and one
+    rung down the ``--effort`` ladder, because a shorter trace is what the
+    classifier tripped on. A content-stage flag earns none: re-sending
+    identical text burns another multi-minute turn to fail the same way.
+    """
+
+    @staticmethod
+    def _capture(
+        argvs: list[list[str]],
+        *,
+        raise_stages: list[str | None],
+    ) -> Any:
+        """Fake subprocess that raises a safeguard error per ``raise_stages``.
+
+        ``None`` in the list means "this call succeeds"; calls past the end of
+        the list succeed too.
+        """
+        calls = {"n": 0}
+
+        async def fake_subprocess(
+            argv: list[str],
+            stdin_payload: str,
+            *,
+            on_text_delta: Any,
+            on_thinking_delta: Any,
+            on_thinking_block_start: Any = None,
+            on_thinking_block_stop: Any = None,
+            timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
+        ) -> tuple[str, dict[str, Any] | None]:
+            argvs.append(list(argv))
+            idx = calls["n"]
+            calls["n"] += 1
+            stage = raise_stages[idx] if idx < len(raise_stages) else None
+            if stage is not None:
+                raise _safeguard(stage)
+            await on_text_delta("recovered answer")
+            return "sess-after", None
+
+        return fake_subprocess
+
+    def _patches(self, fake: Any) -> tuple[Any, ...]:
+        return (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_run_claude_subprocess", side_effect=fake),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="/usr/bin/claude",
+            ),
+        )
+
+    @staticmethod
+    def _effort_of(argv: list[str]) -> str:
+        return argv[argv.index("--effort") + 1]
+
+    @pytest.mark.asyncio
+    async def test_streaming_reasoning_flag_retries_one_rung_down(self) -> None:
+        _CHANNEL_SESSIONS[610] = "sess-before"
+        argvs: list[list[str]] = []
+        send_channel, placeholder = _mk_send_channel()
+        p1, p2, p3 = self._patches(self._capture(argvs, raise_stages=["reasoning_extraction"]))
+        with p1, p2, p3:
+            text, _, _ = await call_claude_cli_streaming(
+                contents=_HISTORY_CONTENTS,
+                config_params={},
+                send_channel=send_channel,
+                channel_id=610,
+            )
+        assert len(argvs) == 2, "a reasoning-stage flag must be retried exactly once"
+        assert self._effort_of(argvs[0]) == cli_mod._CLI_EFFORT
+        assert self._effort_of(argvs[1]) == cli_mod._lower_effort(cli_mod._CLI_EFFORT)
+        # Fresh session for the retry — the CLI's own advice, and the refused
+        # turn never landed server-side.
+        assert "--resume" in argvs[0]
+        assert "--resume" not in argvs[1]
+        assert text == "recovered answer"
+        # No ⚠️ notice: the user never sees a failure that recovered.
+        assert send_channel.send.await_count == 1
+        placeholder.edit.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_streaming_content_flag_is_not_retried(self) -> None:
+        _CHANNEL_SESSIONS[611] = "sess-before"
+        argvs: list[list[str]] = []
+        send_channel, _ = _mk_send_channel()
+        p1, p2, p3 = self._patches(self._capture(argvs, raise_stages=[""]))
+        with p1, p2, p3:
+            text, _, _ = await call_claude_cli_streaming(
+                contents=_HISTORY_CONTENTS,
+                config_params={},
+                send_channel=send_channel,
+                channel_id=611,
+            )
+        assert len(argvs) == 1, "an identical re-send would fail identically"
+        assert text == ""
+        assert 611 not in _CHANNEL_SESSIONS
+        notice = send_channel.send.await_args.args[0]
+        # Content stage → "rephrase" is the right advice here (and only here).
+        assert "เรียบเรียง" in notice
+
+    @pytest.mark.asyncio
+    async def test_streaming_repeat_flag_gives_up_without_blaming_the_user(self) -> None:
+        """Flagged twice: the notice must still say it wasn't the member's
+        text — telling them to rephrase a reasoning-stage flag is misleading."""
+        _CHANNEL_SESSIONS[612] = "sess-before"
+        argvs: list[list[str]] = []
+        send_channel, _ = _mk_send_channel()
+        p1, p2, p3 = self._patches(
+            self._capture(argvs, raise_stages=["reasoning_extraction", "reasoning_extraction"])
+        )
+        with p1, p2, p3:
+            text, _, _ = await call_claude_cli_streaming(
+                contents=_HISTORY_CONTENTS,
+                config_params={},
+                send_channel=send_channel,
+                channel_id=612,
+            )
+        assert len(argvs) == 2, "retry is once, not a loop"
+        assert text == ""
+        assert 612 not in _CHANNEL_SESSIONS
+        notice = send_channel.send.await_args.args[0]
+        assert "เรียบเรียง" not in notice
+        assert "ไม่ได้เกิดจากข้อความของคุณ" in notice
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_reasoning_flag_retries_one_rung_down(self) -> None:
+        _CHANNEL_SESSIONS[613] = "sess-before"
+        argvs: list[list[str]] = []
+        p1, p2, p3 = self._patches(self._capture(argvs, raise_stages=["reasoning_extraction"]))
+        with p1, p2, p3:
+            text, _, _ = await call_claude_cli(
+                contents=_HISTORY_CONTENTS,
+                config_params={},
+                channel_id=613,
+            )
+        assert len(argvs) == 2
+        assert self._effort_of(argvs[1]) == cli_mod._lower_effort(cli_mod._CLI_EFFORT)
+        assert "--resume" not in argvs[1]
+        assert text == "recovered answer"
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_content_flag_returns_the_notice(self) -> None:
+        _CHANNEL_SESSIONS[614] = "sess-before"
+        argvs: list[list[str]] = []
+        p1, p2, p3 = self._patches(self._capture(argvs, raise_stages=[""]))
+        with p1, p2, p3:
+            text, _, _ = await call_claude_cli(
+                contents=_HISTORY_CONTENTS,
+                config_params={},
+                channel_id=614,
+            )
+        assert len(argvs) == 1
+        assert 614 not in _CHANNEL_SESSIONS
+        # No channel to post to on this path — the notice IS the return value.
+        assert text.startswith("⚠️")
+        assert "เรียบเรียง" in text
+
+    @pytest.mark.asyncio
+    async def test_floor_effort_skips_the_retry(self, monkeypatch) -> None:
+        """At the bottom rung there is no lower depth to retry at, so the
+        turn must report instead of re-running the same thing."""
+        monkeypatch.setattr(cli_mod, "_CLI_EFFORT", "low")
+        argvs: list[list[str]] = []
+        send_channel, _ = _mk_send_channel()
+        p1, p2, p3 = self._patches(self._capture(argvs, raise_stages=["reasoning_extraction"]))
+        with p1, p2, p3:
+            text, _, _ = await call_claude_cli_streaming(
+                contents=_HISTORY_CONTENTS,
+                config_params={},
+                send_channel=send_channel,
+                channel_id=615,
+            )
+        assert len(argvs) == 1
+        assert text == ""
+
+
 def _hung_subprocess(started: asyncio.Event) -> Any:
     """fake _run_claude_subprocess that blocks until cancelled.
 
