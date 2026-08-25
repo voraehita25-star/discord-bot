@@ -55,7 +55,7 @@ from .imports import (  # noqa: F401 - public re-exports
     set_unrestricted,
     unrestricted_all_enabled,
 )
-from .logic import ChatManager
+from .logic import MAX_CHARACTER_BLOCKS, ChatManager
 from .memory.rag import rag_system
 from .storage import (
     cleanup_cache as cleanup_storage_cache,
@@ -109,6 +109,9 @@ class AI(commands.Cog):
     # Discord message length cap.
     _DISCORD_MAX_MESSAGE_LEN = 2000
 
+    # Cap for the _own_webhook_ids resolution cache (see __init__).
+    _OWN_WEBHOOK_CACHE_MAX = 256
+
     def __init__(self, bot: Bot) -> None:
         self.bot: Bot = bot
         self.chat_manager: ChatManager = ChatManager(bot)
@@ -126,6 +129,10 @@ class AI(commands.Cog):
         # here (like the other shared state) instead of lazily inside the handler
         # so concurrent on_message coroutines can't each create a fresh set.
         self._webhook_forbidden_logged: set[int] = set()
+        # Webhook-id -> is-ours resolution cache for on_raw_message_edit.
+        # A webhook id is a snowflake and never crosses owners, so both outcomes
+        # stay valid forever; the cap just bounds memory on a rare path.
+        self._own_webhook_ids: dict[int, bool] = {}
         # Rate limiter cleanup will be started in cog_load()
 
     @staticmethod
@@ -774,6 +781,21 @@ class AI(commands.Cog):
         author_id = (data.get("author") or {}).get("id")
         if self.bot.user is not None and str(author_id) == str(self.bot.user.id):
             return
+        # A webhook-authored update needs an ownership check before mirroring.
+        # Our own RP webhook messages (the ones ``send_as_webhook`` drives) are
+        # the bot's edits in every sense that matters: when the model edits one
+        # through its ``edit_message`` tool, ``cmd_edit_message`` already
+        # mirrored the change fragment-correctly via
+        # ``replace_message_text_in_history``. Re-mirroring it here would run
+        # ``edit_message_in_history``, whose whole-row swap erases every sibling
+        # character line / chunk of a multi-fragment turn — a row's headline id
+        # IS the last webhook message, so the destructive swap fires exactly on
+        # final-fragment edits. Skip ours; proxied USER messages (Tupperbox/
+        # PluralKit webhooks, which land in single-part rows) keep flowing.
+        if data.get("webhook_id") is not None and await self._edit_from_own_webhook(
+            payload.channel_id, data.get("webhook_id")
+        ):
+            return
         # Distinguish absent (no text-change in this partial → skip) from a real
         # clear-to-empty edit (""). Using ``not new_content`` would conflate the
         # two and drop legitimate empty edits, leaving stale text in memory.
@@ -792,6 +814,49 @@ class AI(commands.Cog):
                 )
         except Exception:
             logger.exception("Failed to sync Discord edit for message %s", payload.message_id)
+
+    async def _edit_from_own_webhook(self, channel_id: int, webhook_id: Any) -> bool:
+        """Whether a webhook-message update targets a webhook the bot created.
+
+        Ownership predicate matches ``cmd_edit_message`` (``webhook.user.id ==
+        bot.id``): only bot-created webhooks drive ``send_as_webhook``, so only
+        those need the skip. Results are cached per webhook id — see the
+        ``__init__`` note for why both outcomes never go stale.
+
+        On any resolution failure this returns False (treated as foreign), which
+        keeps today's mirror behaviour unchanged. That fail-open is safe here
+        for the same reason it is elsewhere: listing webhooks is exactly what
+        ``cmd_edit_message`` must succeed at BEFORE it can produce one of these
+        events, so an unresolvable webhook has no bot-side edit behind it.
+        """
+        try:
+            wid = int(webhook_id)
+        except (TypeError, ValueError):
+            return False
+        bot_user = self.bot.user
+        if bot_user is None:
+            return False
+        cached = self._own_webhook_ids.get(wid)
+        if cached is not None:
+            return cached
+        channel = self.bot.get_channel(channel_id)
+        if channel is not None:
+            # RP webhooks can be driven in threads; webhooks() lives on the
+            # parent TextChannel (same resolution _handle_webhook_message uses).
+            parent = getattr(channel, "parent", None)
+            target = parent if isinstance(parent, discord.TextChannel) else channel
+            if isinstance(target, discord.TextChannel):
+                try:
+                    webhooks = await target.webhooks()
+                except discord.HTTPException:
+                    return False
+                matched = next((w for w in webhooks if w.id == wid), None)
+                is_ours = bool(matched and matched.user and matched.user.id == bot_user.id)
+                if len(self._own_webhook_ids) >= self._OWN_WEBHOOK_CACHE_MAX:
+                    self._own_webhook_ids.clear()
+                self._own_webhook_ids[wid] = is_ours
+                return is_ours
+        return False
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
@@ -1607,15 +1672,21 @@ class AI(commands.Cog):
             split_parts = self._RESEND_CHARACTER_PATTERN.split(content)
             # Cap the number of {{Name}} blocks to prevent runaway webhook
             # spam from a malformed stored message (mirrors logic.py's cap).
-            # Each block produces 2 elements (name + message) plus narrator,
-            # so 60 elements ≈ 30 blocks.
-            if len(split_parts) > 60:
+            # The element cap must be ODD: split returns ``1 + 2 * blocks``
+            # elements (narrator + name/text pairs), so an even cap ends the
+            # list on a NAME whose text was just sliced off — the send loop
+            # skips that dangling name and one block silently vanishes. This is
+            # the same drift logic.py fixed on its own path; derive the cap from
+            # MAX_CHARACTER_BLOCKS so the two cannot diverge again.
+            _max_parts = 1 + 2 * MAX_CHARACTER_BLOCKS
+            if len(split_parts) > _max_parts:
                 logger.warning(
-                    "⚠️ Truncating resend {{Name}} blocks for channel %s: %d parts -> 60",
+                    "⚠️ Truncating resend {{Name}} blocks for channel %s: %d parts -> %d",
                     target_channel_id,
                     len(split_parts),
+                    _max_parts,
                 )
-                split_parts = split_parts[:60]
+                split_parts = split_parts[:_max_parts]
             max_len = self._DISCORD_MAX_MESSAGE_LEN
 
             async def _send_chunked(text: str) -> None:

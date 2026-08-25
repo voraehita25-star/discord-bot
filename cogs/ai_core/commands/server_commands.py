@@ -1373,8 +1373,13 @@ async def cmd_edit_message(_guild, origin_channel, _name, args, user=None):
     except (discord.NotFound, discord.HTTPException) as err:
         # `discord.HTTPException.__str__` can include the raw API response
         # body. Use the shared formatter (which strips internal metadata)
-        # for parity with the rest of the file.
-        await origin_channel.send(_fmt_http_error(err), allowed_mentions=_NO_MENTIONS)
+        # for parity with the rest of the file. The ❌ marker matters beyond
+        # style: the AI-tool caller wraps this channel in _TeeChannel and
+        # decides success by scanning captured lines for failure prefixes —
+        # a bare status string here would report the edit as done.
+        await origin_channel.send(
+            f"❌ แก้ไขข้อความไม่สำเร็จ {_fmt_http_error(err)}", allowed_mentions=_NO_MENTIONS
+        )
 
 
 async def cmd_read_channel(guild, origin_channel, _name, args, user=None):

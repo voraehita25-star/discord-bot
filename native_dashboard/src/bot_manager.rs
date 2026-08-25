@@ -105,6 +105,48 @@ fn resolve_python_on_path() -> Option<String> {
     None
 }
 
+/// Whether a joined, lowercased argv mentions `base_path` as a real path
+/// component boundary rather than as a bare substring.
+///
+/// A raw `cmdline.contains(base_path)` claims every sibling directory whose
+/// name merely EXTENDS ours — `C:\BOT` "matches" `C:\BOT Discord\bot.py`, and
+/// `...\BOT Discord` "matches" `...\BOT Discord-backup\bot.py`. The only loop
+/// caller of `process_belongs_to_us` force-kills what it collects
+/// (`taskkill /F /T`), so that false positive let one checkout's start/stop
+/// kill another checkout's running bot tree; it also let a foreign bot.py be
+/// reported as ours after a PID reuse.
+///
+/// A match therefore requires the occurrence to be followed by a path
+/// separator or to end the argument. Argument boundaries are NOT usable as
+/// terminators here: `base_path` itself may contain spaces (this repo lives at
+/// `C:\BOT Discord`), which is exactly why the joined cmdline is searched
+/// rather than split. Trailing separators on `base_path` are normalized away
+/// first so `C:\BOT\` and `C:\BOT` behave identically.
+fn cmdline_mentions_base_path(cmdline: &str, base_path_str: &str) -> bool {
+    let base = base_path_str.trim_end_matches(['\\', '/']);
+    if base.is_empty() {
+        return false;
+    }
+    let mut from = 0usize;
+    while let Some(offset) = cmdline[from..].find(base) {
+        let start = from + offset;
+        let end = start + base.len();
+        match cmdline[end..].chars().next() {
+            // Ends the argv string, or the next char starts a new path
+            // component — a genuine reference to our directory.
+            None | Some('\\') | Some('/') => return true,
+            _ => {}
+        }
+        // Advance by one char (not one byte) so a multi-byte path stays on a
+        // char boundary and the scan cannot panic on the next slice.
+        from = start + cmdline[start..].chars().next().map_or(1, |c| c.len_utf8());
+        if from >= cmdline.len() {
+            break;
+        }
+    }
+    false
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BotStatus {
     pub is_running: bool,
@@ -349,7 +391,13 @@ impl BotManager {
         if base_path_str.is_empty() {
             return false;
         }
-        if cmdline.contains(base_path_str) {
+        // Component-aware, NOT `cmdline.contains(base_path_str)`: a raw
+        // substring test claims any sibling directory that merely EXTENDS
+        // base_path (`C:\BOT` matching `C:\BOT Discord\bot.py`), and the only
+        // caller of the loop force-kills what it collects — so a second
+        // checkout on the same machine had its running bot tree killed by the
+        // first one's start/stop. Same rationale as the exe fallback below.
+        if cmdline_mentions_base_path(cmdline, base_path_str) {
             return true;
         }
         if process
@@ -1473,6 +1521,51 @@ mod tests {
             bm.process_is_gone(pid),
             "exited+reaped process should report gone",
         );
+    }
+
+    // ------- cmdline base_path boundary matching -------
+
+    #[test]
+    fn cmdline_mentions_base_path_requires_a_component_boundary() {
+        // Real references match: the bot is spawned as `<base>\bot.py`.
+        assert!(cmdline_mentions_base_path(
+            r"c:\python.exe c:\bot discord\bot.py",
+            r"c:\bot discord"
+        ));
+        // Forward slashes and a bare trailing occurrence (cwd-style argv).
+        assert!(cmdline_mentions_base_path(r"python c:/bot/bot.py", r"c:/bot"));
+        assert!(cmdline_mentions_base_path(r"python c:\bot", r"c:\bot"));
+        // A trailing separator on base_path must not change the verdict.
+        assert!(cmdline_mentions_base_path(r"python c:\bot\bot.py", r"c:\bot\"));
+
+        // The bug this guards: a SIBLING directory that merely extends
+        // base_path must NOT be claimed, or the orphan sweep force-kills
+        // another checkout's running bot.
+        assert!(!cmdline_mentions_base_path(
+            r"c:\python.exe c:\bot discord\bot.py",
+            r"c:\bot"
+        ));
+        assert!(!cmdline_mentions_base_path(
+            r"python c:\bot discord-backup\bot.py",
+            r"c:\bot discord"
+        ));
+        // Empty / separator-only base_path stays fail-closed.
+        assert!(!cmdline_mentions_base_path(r"python c:\bot\bot.py", ""));
+        assert!(!cmdline_mentions_base_path(r"python c:\bot\bot.py", r"\"));
+    }
+
+    #[test]
+    fn cmdline_mentions_base_path_scans_past_a_false_prefix_hit() {
+        // The first occurrence is a sibling (no boundary), the second is real:
+        // the scan must keep going rather than stopping at the first miss.
+        assert!(cmdline_mentions_base_path(
+            r"python c:\bot-other\x.py c:\bot\bot.py",
+            r"c:\bot"
+        ));
+        // Multi-byte characters in the path must not panic the char-boundary
+        // advance and must still resolve correctly.
+        assert!(!cmdline_mentions_base_path(r"python c:\บอท discord\bot.py", r"c:\บอท"));
+        assert!(cmdline_mentions_base_path(r"python c:\บอท\bot.py", r"c:\บอท"));
     }
 
     // ------- process_belongs_to_us short-circuit / fail-closed (#27) -------

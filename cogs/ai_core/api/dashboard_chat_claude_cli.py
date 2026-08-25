@@ -4667,7 +4667,10 @@ async def handle_ai_edit_message_claude_cli(
         # rewriting messages in a different conversation.
         try:
             db = get_db()
-            await db.update_dashboard_message(
+            # Returns False (no raise) when the UPDATE matched no row — the
+            # target was deleted/moved while this minutes-long edit ran, since
+            # the manual delete path takes no lock this handler would exclude.
+            updated = await db.update_dashboard_message(
                 target_id_int,
                 new_content,
                 expected_conversation_id=conversation_id,
@@ -4675,13 +4678,25 @@ async def handle_ai_edit_message_claude_cli(
         except Exception:
             logger.exception("Failed to update AI-edited message (CLI backend)")
         else:
-            # The cached --resume session replays the OLD content server-side;
-            # wipe it after a successful rewrite (manual edit/delete already
-            # does this via dashboard_handlers).
-            try:
-                await delete_session_file(conversation_id)
-            except Exception:
-                logger.exception("Failed to reset CLI session after AI edit")
+            if not updated:
+                logger.warning(
+                    "AI edit target %d no longer matches conversation %s — "
+                    "rewrite not persisted; keeping original",
+                    target_id_int,
+                    conversation_id,
+                )
+                # Echo what the DB actually holds: the stream_end below sends
+                # new_content as full_response and the client renders it
+                # unconditionally, so the rewrite would otherwise appear applied.
+                new_content = original_content
+            else:
+                # The cached --resume session replays the OLD content server-side;
+                # wipe it after a successful rewrite (manual edit/delete already
+                # does this via dashboard_handlers).
+                try:
+                    await delete_session_file(conversation_id)
+                except Exception:
+                    logger.exception("Failed to reset CLI session after AI edit")
 
     if usage:
         # `... or 0` (not `.get(k, 0)`): the raw CLI result JSON can carry these

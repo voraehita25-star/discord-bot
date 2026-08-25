@@ -1497,8 +1497,17 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
                 timezone.utc
             ).isoformat(timespec="seconds")
 
+            # Per-message ids of a turn that went out as several messages.
+            # get_ai_history returns them decoded; dropping them here left a
+            # linked/moved turn with only its headline id, so a round-tripped
+            # RP turn could no longer be edited/deleted line by line and its
+            # prompt annotation degraded from "(msgs name=id, …)" to "(msg id)".
+            sent_message_ids = item.get("sent_message_ids")
+
             if content:
-                rows_to_insert.append((role, content, message_id, timestamp, user_id))
+                rows_to_insert.append(
+                    (role, content, message_id, sent_message_ids, timestamp, user_id)
+                )
 
         copied = 0
         if rows_to_insert:
@@ -1514,7 +1523,14 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
                 next_local_id = (row[0] if row else 0) + 1
 
                 insert_rows = []
-                for role, content, message_id, timestamp, user_id in rows_to_insert:
+                for (
+                    role,
+                    content,
+                    message_id,
+                    sent_message_ids,
+                    timestamp,
+                    user_id,
+                ) in rows_to_insert:
                     insert_rows.append(
                         (
                             target_channel_id,
@@ -1522,6 +1538,7 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
                             role,
                             content,
                             message_id,
+                            encode_sent_message_ids(sent_message_ids),
                             timestamp,
                             next_local_id,
                         )
@@ -1538,10 +1555,12 @@ async def copy_history(source_channel_id: int, target_channel_id: int) -> int:
                 # partial index, so they always insert.
                 await conn.executemany(
                     """INSERT INTO ai_history
-                       (channel_id, user_id, role, content, message_id, timestamp, local_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       (channel_id, user_id, role, content, message_id,
+                        sent_message_ids, timestamp, local_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(channel_id, message_id) WHERE message_id IS NOT NULL
-                       DO UPDATE SET content = excluded.content""",
+                       DO UPDATE SET content = excluded.content,
+                                     sent_message_ids = excluded.sent_message_ids""",
                     insert_rows,
                 )
                 await conn.commit()

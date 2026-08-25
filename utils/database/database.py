@@ -62,6 +62,38 @@ DASHBOARD_DEFAULT_AI_PROVIDER = _normalize_dashboard_ai_provider(
 )
 
 
+def _backup_database_files(db_path: Path, backup_path: Path, backup_dir: Path) -> None:
+    """Copy the DB (plus WAL sidecars) to ``backup_path`` and prune old backups.
+
+    Runs on a worker thread — see the call site in ``_init_schema_locked``. All
+    of it is blocking file IO: the copies, the glob/stat sort, and the unlinks.
+
+    WAL mode means recent commits live in -wal/-shm, not the main db file, so
+    copying just the .db yields an inconsistent backup missing the latest
+    transactions. The sidecar copies are best-effort — they may be absent if the
+    DB was checkpointed before the backup.
+    """
+    import shutil
+
+    shutil.copy2(db_path, backup_path)
+    for suffix in ("-wal", "-shm"):
+        sibling = Path(str(db_path) + suffix)
+        if sibling.exists():
+            try:
+                shutil.copy2(sibling, Path(str(backup_path) + suffix))
+            except OSError as e:
+                logger.warning("Pre-migration backup: could not copy %s: %s", sibling.name, e)
+
+    # Keep only last 5 backups. Also delete each pruned backup's -wal/-shm
+    # siblings (copied above): the glob only matches the .db file, so without
+    # this the sidecars would accumulate unbounded.
+    backups = sorted(backup_dir.glob("bot_database_v*.db"), key=lambda p: p.stat().st_mtime)
+    for old_backup in backups[:-5]:
+        old_backup.unlink(missing_ok=True)
+        for suffix in ("-wal", "-shm"):
+            Path(str(old_backup) + suffix).unlink(missing_ok=True)
+
+
 def encode_sent_message_ids(value: Any) -> str | None:
     """Serialize an ``ai_history.sent_message_ids`` list for storage.
 
@@ -1095,37 +1127,19 @@ class Database:
                         f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%fZ')}.db"
                     )
                     backup_path = backup_dir / backup_name
-                    import shutil
 
-                    # WAL mode means recent commits live in -wal/-shm, not the
-                    # main db file. Copying just the .db produces an
-                    # inconsistent backup missing the latest transactions.
-                    # Copy the WAL+SHM siblings too (best-effort — they may
-                    # be absent if the DB was checkpointed before backup).
-                    shutil.copy2(self.db_path, backup_path)
-                    for suffix in ("-wal", "-shm"):
-                        sibling = Path(str(self.db_path) + suffix)
-                        if sibling.exists():
-                            try:
-                                shutil.copy2(sibling, Path(str(backup_path) + suffix))
-                            except OSError as e:
-                                logger.warning(
-                                    "Pre-migration backup: could not copy %s: %s",
-                                    sibling.name,
-                                    e,
-                                )
-                    logger.info("💾 DB backup created before migration: %s", backup_name)
-                    # Keep only last 5 backups. Also delete each pruned
-                    # backup's -wal/-shm siblings (copied above): the glob only
-                    # matches the .db file, so without this the sidecars would
-                    # accumulate unbounded.
-                    backups = sorted(
-                        backup_dir.glob("bot_database_v*.db"), key=lambda p: p.stat().st_mtime
+                    # Copy + prune on a worker thread: this is whole-file IO on
+                    # a production database, and running it inline blocked the
+                    # event loop for its entire duration. Same rule the rest of
+                    # this module already follows for its serialize/write paths
+                    # (``await asyncio.to_thread(output_file.write_text, ...)``).
+                    # Kept as ONE offload so the WAL sidecars are copied right
+                    # after the main file, preserving the consistency rationale
+                    # documented in ``_backup_database_files``.
+                    await asyncio.to_thread(
+                        _backup_database_files, self.db_path, backup_path, backup_dir
                     )
-                    for old_backup in backups[:-5]:
-                        old_backup.unlink(missing_ok=True)
-                        for suffix in ("-wal", "-shm"):
-                            Path(str(old_backup) + suffix).unlink(missing_ok=True)
+                    logger.info("💾 DB backup created before migration: %s", backup_name)
                 applied = await run_migrations(conn)
                 if applied:
                     logger.info("📦 %d migration(s) applied successfully", applied)

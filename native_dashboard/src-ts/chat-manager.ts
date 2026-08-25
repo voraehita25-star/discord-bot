@@ -1141,6 +1141,17 @@ export class ChatManager {
                     console.error(`Server error (${data.scope}):`, errorMsg);
                     errorLogger.log('AI_SERVER_ERROR', errorMsg, JSON.stringify(data));
                     showToast(errorMsg, { type: 'error' });
+                    // …with one exception: a failed load_conversation leaves
+                    // showChatLoading()'s skeleton bubbles in the pane forever.
+                    // handle_load_conversation emits scope-less error frames,
+                    // but ws_dashboard dispatches it through the scoping wrapper
+                    // which stamps scope:'load_conversation' on the way out — so
+                    // the unscoped recovery below is unreachable for it. Clear
+                    // the in-flight load and repaint a usable state here.
+                    if (data.scope === 'load_conversation' && this.pendingConversationLoadId !== null) {
+                        this.pendingConversationLoadId = null;
+                        this.renderMessages();
+                    }
                     break;
                 }
                 console.error('Server error:', errorMsg);
@@ -1253,9 +1264,15 @@ export class ChatManager {
                     // Array.isArray for the same reason as `conversation_documents`
                     // below: a non-array truthy `documents` passes `|| []` and then
                     // throws on .reduce, taking the whole frame handler with it.
-                    const docs = Array.isArray(data.documents)
-                        ? data.documents as Array<{filename: string; file_kind: string; char_count: number}>
-                        : [];
+                    // ...and filter the ELEMENTS too: Array.isArray passes for
+                    // `[null]`, and `d.char_count` then throws out of
+                    // handleMessage, skipping the badge refresh and footprint
+                    // update below. Same element-level guard app.ts uses on its
+                    // own untrusted frame arrays.
+                    const docs = (Array.isArray(data.documents) ? data.documents : []).filter(
+                        (d): d is {filename: string; file_kind: string; char_count: number} =>
+                            !!d && typeof d === 'object',
+                    );
                     if (docs.length === 1) {
                         const d = docs[0];
                         const charCount = typeof d.char_count === 'number' ? d.char_count : 0;
@@ -1303,7 +1320,13 @@ export class ChatManager {
                 // `docs.reduce` two lines down throws out of handleMessage — the
                 // blank-modal failure every field-level guard in this file exists
                 // to prevent, reached one level up.
-                const docs = Array.isArray(data.documents) ? data.documents as ChatFileEntry[] : [];
+                // The element filter matters as much as the array check: a
+                // `[null]` element survives Array.isArray and then throws on
+                // `d.char_count` (here) / `d.file_kind` (in the modal renderer),
+                // blanking the Files modal and skipping the footprint update.
+                const docs = (Array.isArray(data.documents) ? data.documents : []).filter(
+                    (d): d is ChatFileEntry => !!d && typeof d === 'object',
+                );
                 this.renderChatFilesModal(convId, docs);
                 // Feed the persistent-document footprint into the context-window
                 // meter so attached files are reflected on OPEN, before the first
@@ -1341,10 +1364,14 @@ export class ChatManager {
 
             case 'document_memory_content':
                 // Full content arrived for the document currently being
-                // edited — populate the editor form.
-                this.hydrateChatFileEditor(
-                    data.document as ChatFileEntry & { extracted_text: string },
-                );
+                // edited — populate the editor form. Guard the cast: the
+                // hydrator dereferences `doc.id` on its first line, so an
+                // absent/null `document` field would throw out of handleMessage.
+                if (data.document && typeof data.document === 'object') {
+                    this.hydrateChatFileEditor(
+                        data.document as ChatFileEntry & { extracted_text: string },
+                    );
+                }
                 break;
 
             case 'document_memory_updated':
@@ -2640,8 +2667,21 @@ export class ChatManager {
             btn.addEventListener('click', async () => {
                 const idx = parseInt((btn as HTMLElement).dataset.msgIdx || '-1', 10);
                 if (idx >= 0) {
+                    // Capture the message OBJECT before the dialog: the array can
+                    // shift while the confirm is up (a stream ending pushes and
+                    // trimLocalMessages() slices off the front past 200), and a
+                    // captured index would then delete the NEIGHBOUR plus its
+                    // pair — permanently, server-side. Re-resolve after the await
+                    // like finalizeStreamingMessage and HistoryManager already do.
+                    const target = this.messages[idx];
                     const confirmed = await showConfirmDialog('Delete this message?');
-                    if (confirmed) this.deleteMessage(idx);
+                    if (!confirmed) return;
+                    const currentIdx = target ? this.messages.indexOf(target) : -1;
+                    if (currentIdx < 0) {
+                        showToast('Message list changed — nothing deleted', { type: 'error' });
+                        return;
+                    }
+                    this.deleteMessage(currentIdx);
                 }
             });
         });
@@ -3749,21 +3789,38 @@ export class ChatManager {
             textarea.style.height = Math.min(textarea.scrollHeight, 300) + 'px';
         }
 
+        // The editor legitimately stays open across turns, and the array shifts
+        // underneath it (a stream ending pushes and trimLocalMessages() slices
+        // off the front past 200). Resolve the CURRENT index of the message this
+        // editor was opened on at click time — the captured msgIdx would target
+        // whatever slid into that slot. Same pattern as finalizeStreamingMessage.
+        const resolveIdx = (): number => this.messages.indexOf(msg);
+
         // Save button (edit only, no regenerate)
         contentEl.querySelector('.edit-save-btn')?.addEventListener('click', () => {
             const newContent = (contentEl.querySelector('.edit-textarea') as HTMLTextAreaElement)?.value?.trim();
+            const currentIdx = resolveIdx();
+            if (currentIdx < 0) {
+                showToast('Message list changed — edit not saved', { type: 'error' });
+                return;
+            }
             if (newContent && newContent !== originalContent) {
-                this.saveEdit(msgIdx, newContent, false);
+                this.saveEdit(currentIdx, newContent, false);
             } else {
-                this.cancelEdit(msgIdx, originalContent);
+                this.cancelEdit(currentIdx, originalContent);
             }
         });
 
         // Save & Regenerate button (edit + regenerate AI response)
         contentEl.querySelector('.edit-save-regen-btn')?.addEventListener('click', () => {
             const newContent = (contentEl.querySelector('.edit-textarea') as HTMLTextAreaElement)?.value?.trim();
+            const currentIdx = resolveIdx();
+            if (currentIdx < 0) {
+                showToast('Message list changed — edit not saved', { type: 'error' });
+                return;
+            }
             if (newContent) {
-                this.saveEdit(msgIdx, newContent, true);
+                this.saveEdit(currentIdx, newContent, true);
             }
         });
 

@@ -68,7 +68,19 @@ def reclaim_dotenv_overrides(
     except ImportError:  # pragma: no cover - python-dotenv is a hard dependency
         return {}
 
-    path = str(dotenv_path) if dotenv_path is not None else find_dotenv(usecwd=True)
+    if dotenv_path is not None:
+        path = str(dotenv_path)
+    else:
+        # Resolve the SAME file ``load_dotenv()`` did. Its default discovery is
+        # frame-based (it walks up from the CALLING module's directory), while
+        # ``find_dotenv(usecwd=True)`` walks up from the process CWD — so a bot
+        # launched from an unrelated directory reclaimed nothing (the pin
+        # silently no-opped and the inherited value won, the exact failure this
+        # function exists to prevent) or, worse, imported a stranger's .env.
+        # The .env sits beside this module, so anchor on that and fall back to
+        # the CWD walk only if it is absent.
+        anchored = Path(__file__).with_name(".env")
+        path = str(anchored) if anchored.is_file() else find_dotenv(usecwd=True)
     if not path:
         return {}
 

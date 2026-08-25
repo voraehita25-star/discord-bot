@@ -1904,7 +1904,10 @@ async def handle_ai_edit_message_claude(
         if final_content and final_content.strip():
             try:
                 db = _get_db()
-                await db.update_dashboard_message(
+                # Returns False (no raise) when the UPDATE matched no row — the
+                # target was deleted/moved while this edit ran. Read it, or the
+                # rewrite is reported as applied while the DB kept the original.
+                updated = await db.update_dashboard_message(
                     target_message_id_int,
                     final_content,
                     expected_conversation_id=conversation_id,
@@ -1912,17 +1915,28 @@ async def handle_ai_edit_message_claude(
             except Exception as e:
                 logger.warning("Failed to update AI-edited message in DB: %s", e)
             else:
-                # After rewriting a DB row the cached --resume session replays
-                # the OLD content server-side; wipe it so a later CLI-backend
-                # turn doesn't resume pre-edit state. Both sibling backends
-                # (gemini dashboard_chat.py, CLI dashboard_chat_claude_cli.py)
-                # already do this; the SDK path was the only one that didn't.
-                try:
-                    from .dashboard_chat_claude_cli import delete_session_file
+                if not updated:
+                    logger.warning(
+                        "AI edit target %s no longer matches conversation %s — "
+                        "rewrite not persisted; keeping original",
+                        target_message_id_int,
+                        conversation_id,
+                    )
+                    # Echo the persisted state, not the discarded rewrite: the
+                    # client renders full_response unconditionally.
+                    final_content = original_content
+                else:
+                    # After rewriting a DB row the cached --resume session replays
+                    # the OLD content server-side; wipe it so a later CLI-backend
+                    # turn doesn't resume pre-edit state. Both sibling backends
+                    # (gemini dashboard_chat.py, CLI dashboard_chat_claude_cli.py)
+                    # already do this; the SDK path was the only one that didn't.
+                    try:
+                        from .dashboard_chat_claude_cli import delete_session_file
 
-                    await delete_session_file(conversation_id)
-                except Exception:
-                    logger.exception("Failed to reset CLI session after SDK AI edit")
+                        await delete_session_file(conversation_id)
+                    except Exception:
+                        logger.exception("Failed to reset CLI session after SDK AI edit")
         else:
             if full_response:
                 logger.warning(

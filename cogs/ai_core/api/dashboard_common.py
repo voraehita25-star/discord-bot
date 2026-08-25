@@ -61,10 +61,33 @@ def normalize_timestamp_to_bangkok(raw: Any) -> str:
 # duplicated copies previously drifted into the same bug (persisting raw markup
 # on a failed partial edit); a single source of truth prevents a recurrence.
 # ---------------------------------------------------------------------------
+# Both terminators are anchored to a line of their own (``^>>>`` with nothing
+# but trailing blanks after it). Without that anchor the lazy body groups ended
+# at the FIRST ``>>>`` anywhere in the text, so a REPLACE body carrying a
+# markdown deep-quote (``>>> quoted``) or a mid-line ``>>>`` was silently cut
+# there and the truncated result was persisted over the user's message.
 _SEARCH_REPLACE_RE = _re.compile(
-    r"<<<SEARCH\s*\n(.*?)\n?>>>\s*\n<<<REPLACE\s*\n(.*?)\n?>>>",
-    _re.DOTALL,
+    r"<<<SEARCH[ \t]*\n(.*?)\n?^>>>[ \t]*$\s*?\n<<<REPLACE[ \t]*\n(.*?)\n?^>>>[ \t]*$",
+    _re.DOTALL | _re.MULTILINE,
 )
+
+# A ``>>>`` alone on a line OUTSIDE every parsed block. The anchored pattern
+# cannot tell such a line apart from a real terminator, so its presence makes
+# the parse ambiguous — see apply_search_replace.
+_STRAY_TERMINATOR_RE = _re.compile(r"^>>>[ \t]*$", _re.MULTILINE)
+
+
+def _unmatched_spans(matches: list, total_len: int) -> list[tuple[int, int]]:
+    """The ``[start, end)`` regions of a reply that no patch block consumed."""
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for m in matches:
+        if m.start() > cursor:
+            spans.append((cursor, m.start()))
+        cursor = m.end()
+    if cursor < total_len:
+        spans.append((cursor, total_len))
+    return spans
 
 
 def apply_search_replace(original: str, ai_response: str) -> str:
@@ -78,6 +101,17 @@ def apply_search_replace(original: str, ai_response: str) -> str:
     matches = list(_SEARCH_REPLACE_RE.finditer(ai_response))
     if not matches:
         return ai_response
+
+    # A stray terminator outside the parsed blocks means the reply's ``>>>``
+    # lines are ambiguous: a block may have ended early, and applying it would
+    # persist a truncated body. Preserve the original instead — the same call
+    # this function already makes when no SEARCH text matches.
+    leftover = "".join(
+        ai_response[start:end] for start, end in _unmatched_spans(matches, len(ai_response))
+    )
+    if _STRAY_TERMINATOR_RE.search(leftover):
+        logger.warning("📝 AI Edit: ambiguous '>>>' outside patch blocks; preserving original")
+        return original
 
     result = original
     applied = 0

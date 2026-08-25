@@ -94,6 +94,13 @@ class _ServiceHostResolver(aiohttp.abc.AbstractResolver):
         await self._guard.close()
 
 
+# Max URLs the Go service accepts in one /fetch/batch call. Its handler rejects
+# anything larger with a text/plain 400 that this client's resp.json() cannot
+# parse, so the client chunks to this size rather than discovering the limit as
+# a whole-batch failure. Keep in sync with go_services/url_fetcher/main.go.
+_SERVICE_MAX_BATCH = 20
+
+
 class URLFetcherClient:
     """
     Client for Go URL Fetcher service with fallback to aiohttp.
@@ -469,14 +476,30 @@ class URLFetcherClient:
             }
 
         try:
-            payload: dict[str, Any] = {"urls": safe_urls}
-            if timeout:
-                payload["timeout"] = timeout
-
             if self._session is None:
                 raise RuntimeError("URLFetcherClient must be used as an async context manager")
-            async with self._session.post(f"{self.base_url}/fetch/batch", json=payload) as resp:
-                service_response = await resp.json()
+
+            # Chunk to the Go handler's cap: it rejects >_SERVICE_MAX_BATCH URLs
+            # with a text/plain HTTP 400, which resp.json() turns into a
+            # ContentTypeError — failing the WHOLE batch (and marking the service
+            # unavailable) over a limit the client can simply respect. Same
+            # treatment health_client gives the sidecar's /metrics/batch cap.
+            service_response: dict[str, Any] = {
+                "results": [],
+                "success_count": 0,
+                "error_count": 0,
+                "total_time_ms": 0,
+            }
+            for i in range(0, len(safe_urls), _SERVICE_MAX_BATCH):
+                payload: dict[str, Any] = {"urls": safe_urls[i : i + _SERVICE_MAX_BATCH]}
+                if timeout:
+                    payload["timeout"] = timeout
+                async with self._session.post(f"{self.base_url}/fetch/batch", json=payload) as resp:
+                    chunk_response = await resp.json()
+                service_response["results"].extend(chunk_response.get("results", []))
+                service_response["success_count"] += chunk_response.get("success_count", 0)
+                service_response["error_count"] += chunk_response.get("error_count", 0)
+                service_response["total_time_ms"] += chunk_response.get("total_time_ms", 0)
             # Merge blocked entries back in so callers see a 1:1 mapping
             # with their original input list.
             if blocked_results:

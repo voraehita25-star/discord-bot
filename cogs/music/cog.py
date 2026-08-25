@@ -2202,6 +2202,23 @@ class Music(commands.Cog):
                     # Use search_source to get info first
                     info = await YTDLSource.search_source(query, loop=asyncio.get_running_loop())
                     if info:
+                        # Re-check capacity: the check above happened BEFORE the
+                        # multi-second search_source await, so two concurrent
+                        # !play invocations could both pass it at 499 and both
+                        # append, pushing the deque past MAX_QUEUE_SIZE. Every
+                        # other enqueue path (QueueManager.add_to_queue, the
+                        # Spotify handlers) holds the cap; this one has to
+                        # re-assert it now that no await stands before the append.
+                        if len(queue) >= MAX_QUEUE_SIZE:
+                            embed = discord.Embed(
+                                description=(
+                                    f"{Emojis.CROSS} Queue is full (max {MAX_QUEUE_SIZE} tracks)"
+                                ),
+                                color=Colors.ERROR,
+                            )
+                            await ctx.send(embed=embed)
+                            return
+
                         title = info.get("title", "Unknown Title")
                         url = info.get("webpage_url", query)
                         thumbnail = info.get("thumbnail", None)
