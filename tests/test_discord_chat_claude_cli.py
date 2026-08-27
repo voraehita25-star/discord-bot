@@ -1886,7 +1886,10 @@ class TestCliIdentityOverride:
         assert _IDENTITY_OVERRIDE not in _build_system_prompt("")
 
     def test_discord_flatten_prompt_prepends_identity_override(self):
-        from cogs.ai_core.api.dashboard_chat_claude_cli import _IDENTITY_OVERRIDE
+        from cogs.ai_core.api.dashboard_chat_claude_cli import (
+            _IDENTITY_DEFERRAL,
+            _IDENTITY_OVERRIDE,
+        )
         from cogs.ai_core.api.discord_chat_claude_cli import _flatten_contents_to_prompt
 
         prompt = _flatten_contents_to_prompt(
@@ -1895,6 +1898,117 @@ class TestCliIdentityOverride:
         )
         assert _IDENTITY_OVERRIDE in prompt
         assert prompt.index(_IDENTITY_OVERRIDE) < prompt.index("SomeCharacter")
+        # Append depth only: the deferral is for turns whose argv installs the
+        # persona file AS the system prompt.
+        assert _IDENTITY_DEFERRAL not in prompt
+
+    def test_discord_flatten_prompt_defers_identity_when_persona_is_system_prompt(self):
+        """At replace depth the body must NOT claim identity for itself.
+
+        --system-prompt-file makes the persona file the model's whole system
+        prompt, and _IDENTITY_OVERRIDE ("your identity comes ONLY from the
+        section(s) below") then points at the wrong target: it disowns the very
+        file the argv installed. Measured on CLI 2.1.247 / Opus 5 with a
+        two-persona probe, the model answered as the BODY persona and the
+        system-prompt persona was gone.
+        """
+        from cogs.ai_core.api.dashboard_chat_claude_cli import (
+            _IDENTITY_DEFERRAL,
+            _IDENTITY_OVERRIDE,
+        )
+        from cogs.ai_core.api.discord_chat_claude_cli import _flatten_contents_to_prompt
+
+        prompt = _flatten_contents_to_prompt(
+            [{"role": "user", "parts": ["hi"]}],
+            "You are SomeCharacter.",
+            persona_in_system_prompt=True,
+        )
+        assert _IDENTITY_OVERRIDE not in prompt
+        assert _IDENTITY_DEFERRAL in prompt
+        assert prompt.index(_IDENTITY_DEFERRAL) < prompt.index("SomeCharacter")
+        # The guild instruction still goes out — as context and format rules
+        # (the RP {{Name}} format the webhook pipeline parses lives in it), under
+        # a header that says plainly it is not an identity.
+        assert "# Context & format rules (NOT your identity)" in prompt
+        assert "# System" not in prompt
+        assert "You are SomeCharacter." in prompt
+
+    @pytest.mark.asyncio
+    async def test_body_directive_matches_the_argv_persona_flag(self) -> None:
+        """argv and body must agree on where identity comes from.
+
+        They are resolved from ONE call per attempt precisely so they cannot
+        disagree: a turn that ships --system-prompt-file with an
+        _IDENTITY_OVERRIDE body throws the persona file away, and a turn with no
+        persona file but a deferral body points identity at Claude Code's
+        built-in coding-assistant prompt.
+        """
+        from cogs.ai_core.api.dashboard_chat_claude_cli import (
+            _IDENTITY_DEFERRAL,
+            _IDENTITY_OVERRIDE,
+        )
+
+        captured_argv: list[str] = []
+        captured_prompts: list[str] = []
+        placeholder = MagicMock()
+        placeholder.edit = AsyncMock()
+        placeholder.delete = AsyncMock()
+        send_channel = MagicMock()
+        send_channel.send = AsyncMock(return_value=placeholder)
+
+        async def fake_subprocess(
+            argv: list[str],
+            stdin_payload: str,
+            *,
+            on_text_delta: Any,
+            on_thinking_delta: Any,
+            on_thinking_block_start: Any = None,
+            on_thinking_block_stop: Any = None,
+            timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
+        ) -> tuple[str, dict[str, Any] | None]:
+            captured_argv.extend(argv)
+            captured_prompts.append(stdin_payload)
+            await on_text_delta("ok")
+            return "sess-pairing", None
+
+        async def run_turn(channel_id: int) -> None:
+            captured_argv.clear()
+            captured_prompts.clear()
+            with (
+                patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+                patch.object(cli_mod, "_run_claude_subprocess", side_effect=fake_subprocess),
+                patch(
+                    "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                    return_value="/usr/bin/claude",
+                ),
+            ):
+                await call_claude_cli_streaming(
+                    contents=[{"role": "user", "parts": ["hi"]}],
+                    config_params={"system_instruction": "be brief"},
+                    send_channel=send_channel,
+                    channel_id=channel_id,
+                )
+
+        # always mode: the file IS the system prompt → body defers to it.
+        with patch.dict(os.environ, {"DISCORD_CLI_UNRESTRICTED_MODE": "always"}):
+            await run_turn(9101)
+        assert "--system-prompt-file" in captured_argv
+        assert _IDENTITY_DEFERRAL in captured_prompts[0]
+        assert _IDENTITY_OVERRIDE not in captured_prompts[0]
+
+        # gated mode + a normal channel: no persona file → the body keeps its
+        # own identity directive, because Claude Code's default is back in front.
+        with (
+            patch.dict(os.environ, {"DISCORD_CLI_UNRESTRICTED_MODE": "gated"}),
+            patch("cogs.ai_core.imports.is_unrestricted", return_value=False),
+        ):
+            await run_turn(9102)
+        assert "--system-prompt-file" not in captured_argv
+        assert "--append-system-prompt-file" not in captured_argv
+        assert _IDENTITY_OVERRIDE in captured_prompts[0]
+        assert _IDENTITY_DEFERRAL not in captured_prompts[0]
 
 
 class TestResolveDiscordSystemPromptFile:

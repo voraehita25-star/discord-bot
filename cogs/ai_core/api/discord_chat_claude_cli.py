@@ -52,6 +52,7 @@ from discord.ext import commands
 from .dashboard_chat_claude_cli import (
     _CLI_EFFORT,
     _CLI_WEB_TOOLS_ENABLED,
+    _IDENTITY_DEFERRAL,
     _IDENTITY_OVERRIDE,
     _PENDING_SESSION_CLEANUPS,
     _SESSION_ID_PATTERN,
@@ -60,6 +61,7 @@ from .dashboard_chat_claude_cli import (
     _build_claude_argv,
     _lower_effort,
     _OverloadedError,
+    _persona_depth_replaces,
     _prompt_max_chars_from_env,
     _run_claude_subprocess,
     _SafeguardError,
@@ -545,6 +547,7 @@ def _flatten_contents_to_prompt(
     system_instruction: str,
     include_history: bool = True,
     tools_note: str = "",
+    persona_in_system_prompt: bool = False,
 ) -> str:
     """Build the single prompt string fed to ``claude -p`` via stdin.
 
@@ -577,6 +580,18 @@ def _flatten_contents_to_prompt(
     stale persona claims (the Gemini-era "Google Search is automatically
     enabled"), and — like the persona — is re-sent on resumed turns so the
     model never loses track of what it can call mid-conversation.
+
+    ``persona_in_system_prompt`` says whether THIS turn's argv installs a
+    persona file with ``--system-prompt-file`` (see
+    :func:`_resolve_discord_system_prompt_file` and ``_persona_depth_replaces``).
+    It picks which directive opens the body: ``_IDENTITY_OVERRIDE``, which
+    claims the body as the model's only identity source, or
+    ``_IDENTITY_DEFERRAL``, which hands identity to the system prompt and
+    demotes ``system_instruction`` to context and format rules. Getting this
+    wrong is not cosmetic — the body directive beats the system prompt in
+    practice, so the override wording silently discards the persona file the
+    argv just installed. Callers must derive it from the same resolved path they
+    hand to :func:`_build_claude_argv`, never re-resolve it here.
     """
     parts: list[str] = []
 
@@ -587,11 +602,21 @@ def _flatten_contents_to_prompt(
         return ""
 
     if system_instruction:
-        # Drop Claude Code's coding-assistant default identity before the persona
-        # (see _IDENTITY_OVERRIDE) so the bot stays in character on the CLI backend.
-        parts.append(_IDENTITY_OVERRIDE)
-        parts.append("")
-        parts.append("# System")
+        if persona_in_system_prompt:
+            # A persona file IS the system prompt this turn. Identity belongs to
+            # it; what follows here is the guild's world data and output-format
+            # rules, so the header says so explicitly — a bare "# System" over a
+            # character sheet reads as a competing persona and wins.
+            parts.append(_IDENTITY_DEFERRAL)
+            parts.append("")
+            parts.append("# Context & format rules (NOT your identity)")
+        else:
+            # Append depth (or no persona file): Claude Code's coding-assistant
+            # default still leads the system prompt, so drop it before the
+            # persona (see _IDENTITY_OVERRIDE) to stay in character.
+            parts.append(_IDENTITY_OVERRIDE)
+            parts.append("")
+            parts.append("# System")
         parts.append(system_instruction.strip())
         parts.append("")
 
@@ -1176,6 +1201,13 @@ async def call_claude_cli_streaming(
             # clears session_id — gets the full flattened history. The lore
             # block follows the same rule on a slower clock (_lore_due_this_turn).
             send_lore = lore_due or session_id is None
+            # Resolved ONCE per attempt and handed to BOTH the prompt body and
+            # the argv below. The file is re-resolved every turn (it can be
+            # edited or removed while the bot runs), so two independent calls
+            # could disagree mid-turn — and a body that opens with the wrong
+            # identity directive silently discards the persona the argv just
+            # installed, which is the exact failure this pairing prevents.
+            system_prompt_file = _resolve_discord_system_prompt_file(channel_id)
             prompt = _flatten_contents_to_prompt(
                 contents,
                 # Stripped lazily: on a lore-carrying turn (every fresh session,
@@ -1187,6 +1219,14 @@ async def call_claude_cli_streaming(
                 else _without_server_lore(system_instruction, server_lore),
                 include_history=session_id is None,
                 tools_note=tools_note,
+                # True whenever the argv installs the persona file AS the system
+                # prompt (--system-prompt-file). Then identity is the file's and
+                # system_instruction is demoted to context/format rules; at
+                # append depth (CLI_PERSONA_DEPTH=append) or with no file at all
+                # the body keeps its own identity directive.
+                persona_in_system_prompt=(
+                    system_prompt_file is not None and _persona_depth_replaces()
+                ),
             )
             if (
                 session_id is None
@@ -1219,15 +1259,17 @@ async def call_claude_cli_streaming(
                 # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the
                 # module-level constants for the rationale.
                 model=_DISCORD_CLI_MODEL,
-                system_prompt_file=_resolve_discord_system_prompt_file(channel_id),
+                system_prompt_file=system_prompt_file,
                 # The override REPLACES Claude Code's built-in system prompt
                 # rather than trailing it (see _system_prompt_flag). Appending
                 # left the built-in identity in front, and it won: the model
                 # introduced itself as a coding assistant no matter what the
                 # override said. Safe here because everything this path needs
-                # besides identity — the persona body, the tools declaration,
-                # the timestamp convention — travels in the prompt body, not in
-                # the system prompt being replaced.
+                # besides identity — the guild's world data, the tools
+                # declaration, the timestamp convention — travels in the prompt
+                # body, not in the system prompt being replaced. Identity is the
+                # replaced prompt's alone, and the body says so: at this depth it
+                # opens with _IDENTITY_DEFERRAL instead of _IDENTITY_OVERRIDE.
                 replace_system_prompt=True,
             )
             try:
@@ -1595,6 +1637,13 @@ async def call_claude_cli(
             # attempt-2 stale retry) re-send the full flattened history, and
             # the lore block follows on its own slower clock.
             send_lore = lore_due or session_id is None
+            # Resolved ONCE per attempt and handed to BOTH the prompt body and
+            # the argv below. The file is re-resolved every turn (it can be
+            # edited or removed while the bot runs), so two independent calls
+            # could disagree mid-turn — and a body that opens with the wrong
+            # identity directive silently discards the persona the argv just
+            # installed, which is the exact failure this pairing prevents.
+            system_prompt_file = _resolve_discord_system_prompt_file(channel_id)
             prompt = _flatten_contents_to_prompt(
                 contents,
                 # Stripped lazily: on a lore-carrying turn (every fresh session,
@@ -1606,6 +1655,14 @@ async def call_claude_cli(
                 else _without_server_lore(system_instruction, server_lore),
                 include_history=session_id is None,
                 tools_note=tools_note,
+                # True whenever the argv installs the persona file AS the system
+                # prompt (--system-prompt-file). Then identity is the file's and
+                # system_instruction is demoted to context/format rules; at
+                # append depth (CLI_PERSONA_DEPTH=append) or with no file at all
+                # the body keeps its own identity directive.
+                persona_in_system_prompt=(
+                    system_prompt_file is not None and _persona_depth_replaces()
+                ),
             )
             if (
                 session_id is None
@@ -1646,15 +1703,17 @@ async def call_claude_cli(
                 # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the
                 # module-level constants for the rationale.
                 model=_DISCORD_CLI_MODEL,
-                system_prompt_file=_resolve_discord_system_prompt_file(channel_id),
+                system_prompt_file=system_prompt_file,
                 # The override REPLACES Claude Code's built-in system prompt
                 # rather than trailing it (see _system_prompt_flag). Appending
                 # left the built-in identity in front, and it won: the model
                 # introduced itself as a coding assistant no matter what the
                 # override said. Safe here because everything this path needs
-                # besides identity — the persona body, the tools declaration,
-                # the timestamp convention — travels in the prompt body, not in
-                # the system prompt being replaced.
+                # besides identity — the guild's world data, the tools
+                # declaration, the timestamp convention — travels in the prompt
+                # body, not in the system prompt being replaced. Identity is the
+                # replaced prompt's alone, and the body says so: at this depth it
+                # opens with _IDENTITY_DEFERRAL instead of _IDENTITY_OVERRIDE.
                 replace_system_prompt=True,
             )
             try:

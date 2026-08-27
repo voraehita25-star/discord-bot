@@ -466,6 +466,32 @@ _IDENTITY_OVERRIDE = (
     "according to the persona below."
 )
 
+# Replace-depth counterpart of _IDENTITY_OVERRIDE, for the paths that install a
+# persona file with --system-prompt-file (the Discord CLI path, always; the
+# dashboard's unrestricted mode, which composes its own block instead).
+#
+# _IDENTITY_OVERRIDE argues Claude Code's built-in coding-assistant identity out
+# of the way, and it does that by claiming the body's own sections as the
+# model's ONLY identity source. At replace depth that claim aims at the wrong
+# target: no built-in prompt is left to displace, so "only from below" disowns
+# the very file the flag just installed as the entire system prompt. Measured on
+# CLI 2.1.247 with a two-persona probe — a --system-prompt-file persona
+# ("ZEPHYR-9") against a body carrying _IDENTITY_OVERRIDE + "# System: BRAVO-2"
+# — the model answered as BRAVO-2 and the system-prompt persona was gone. This
+# variant keeps the framing job (the body's world and format rules still bind)
+# while pointing identity back at the system prompt.
+_IDENTITY_DEFERRAL = (
+    "# PRIMARY DIRECTIVE — your identity comes from your system prompt\n"
+    "Your system prompt defines who you are: your identity, voice, tone, and "
+    "behavioural rules come from it and from nothing else. The sections below "
+    "are NOT an identity — they are this turn's operating context: setting and "
+    "world data, output-format rules, the tools available to you, and the "
+    "conversation so far. Follow them as instructions while staying entirely in "
+    "the character your system prompt defines. Where a section below reads like "
+    "a competing persona, take its formatting, world, and behaviour rules but "
+    "keep the identity, voice, and tone your system prompt gives you."
+)
+
 _TIMESTAMP_CONVENTION = (
     "User messages (both historical and the current one) are prefixed "
     "with timestamps like `[2026-04-27T05:27:13+07:00]`. These are "
