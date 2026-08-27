@@ -276,11 +276,22 @@ def _without_server_lore(system_instruction: str, server_lore: str) -> str:
     return system_instruction
 
 
-# Discord-side model + system-prompt overrides. The global ``CLAUDE_MODEL``
-# default tracks Opus 5's 1M-token variant (``claude-opus-5[1m]``), so the
-# explicit ``model=`` pin here is defensive: the Discord RP path stays on the
-# 1M variant even if an operator overrides ``CLAUDE_MODEL`` in env for the
-# dashboard. The system-prompt path is resolved per turn via
+# Discord-side model + system-prompt overrides. The pin here is deliberate and
+# is NOT the global ``CLAUDE_MODEL`` (which the dashboard keeps on Opus 5): the
+# Discord path runs Opus 4.7 at the operator's request, after Opus 5 answered a
+# normal RP turn with an AUP-safeguard refusal at the ``[reasoning_extraction]``
+# stage (see ``_SafeguardError``). Keeping the two apart is the whole reason
+# this constant exists — the dashboard's model is free to move without dragging
+# Discord with it, and vice versa.
+#
+# ``[1m]`` is load-bearing, not decoration. Claude Code assumes a 200K window
+# for a bare model id and auto-compacts to fit it; the suffix is how the CLI is
+# told the model's real 1M window (it says so itself when it meets an id it
+# cannot map). A fresh session on the RP guild measured 259,934 prompt tokens —
+# lore, persona, and the channel's history — so the bare id would silently
+# compact away most of a turn's context.
+#
+# The system-prompt path is resolved per turn via
 # :func:`_resolve_discord_system_prompt_file` — prefers ``CLAUDE2.md`` (LO's
 # local gitignored persona override) and falls back to the committed
 # ``CLAUDE.md`` for fresh clones. With ``DISCORD_CLI_UNRESTRICTED_MODE=gated``
@@ -293,7 +304,7 @@ def _without_server_lore(system_instruction: str, server_lore: str) -> str:
 # Claude Code's built-in one. "Overlay" below is therefore historical wording —
 # nothing precedes the override at system level any more.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_DISCORD_CLI_MODEL = "claude-opus-5[1m]"
+_DISCORD_CLI_MODEL = "claude-opus-4-7[1m]"
 _DISCORD_CLI_SYSTEM_PROMPT_PRIMARY = _REPO_ROOT / "CLAUDE2.md"
 _DISCORD_CLI_SYSTEM_PROMPT_FALLBACK = _REPO_ROOT / "CLAUDE.md"
 
