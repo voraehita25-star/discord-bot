@@ -2010,6 +2010,78 @@ class TestCliIdentityOverride:
         assert _IDENTITY_OVERRIDE in captured_prompts[0]
         assert _IDENTITY_DEFERRAL not in captured_prompts[0]
 
+    @pytest.mark.asyncio
+    async def test_safeguard_retry_still_carries_the_persona(self) -> None:
+        """The [reasoning_extraction] retry must not drop CLAUDE2.md.
+
+        The retry rebuilds the argv from scratch on a fresh session at one rung
+        less --effort. Only those two things may change: a recovery turn that
+        silently ran without the persona would answer as a different bot than
+        the turn it is recovering, which reads as "the override was ignored".
+        """
+        from cogs.ai_core.api.dashboard_chat_claude_cli import (
+            _CLI_EFFORT,
+            _IDENTITY_DEFERRAL,
+            _lower_effort,
+            _SafeguardError,
+        )
+
+        attempts: list[dict[str, Any]] = []
+        placeholder = MagicMock()
+        placeholder.edit = AsyncMock()
+        placeholder.delete = AsyncMock()
+        send_channel = MagicMock()
+        send_channel.send = AsyncMock(return_value=placeholder)
+
+        async def fake_subprocess(
+            argv: list[str],
+            stdin_payload: str,
+            *,
+            on_text_delta: Any,
+            on_thinking_delta: Any,
+            on_thinking_block_start: Any = None,
+            on_thinking_block_stop: Any = None,
+            timeout: float,
+            extra_env: Any = None,
+            proc: Any = None,
+        ) -> tuple[str, dict[str, Any] | None]:
+            attempts.append({"argv": list(argv), "prompt": stdin_payload})
+            if len(attempts) == 1:
+                raise _SafeguardError(
+                    "API Error: safeguards flagged this message",
+                    stage="reasoning_extraction",
+                )
+            await on_text_delta("recovered")
+            return "sess-after-safeguard", None
+
+        with (
+            patch.dict(os.environ, {"DISCORD_CLI_UNRESTRICTED_MODE": "always"}),
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch.object(cli_mod, "_run_claude_subprocess", side_effect=fake_subprocess),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="/usr/bin/claude",
+            ),
+        ):
+            await call_claude_cli_streaming(
+                contents=[{"role": "user", "parts": ["hi"]}],
+                config_params={"system_instruction": "be brief"},
+                send_channel=send_channel,
+                channel_id=9103,
+            )
+
+        assert len(attempts) == 2, "the reasoning-stage flag must be retried once"
+        for i, got in enumerate(attempts):
+            argv = got["argv"]
+            assert "--system-prompt-file" in argv, f"attempt {i + 1} lost the persona file"
+            target = argv[argv.index("--system-prompt-file") + 1]
+            assert target.endswith(("CLAUDE2.md", "CLAUDE.md")), target
+            assert _IDENTITY_DEFERRAL in got["prompt"], f"attempt {i + 1} lost the deferral"
+        # Only the effort tier and the session may differ between the two.
+        first, second = attempts[0]["argv"], attempts[1]["argv"]
+        assert first[first.index("--effort") + 1] == _CLI_EFFORT
+        assert second[second.index("--effort") + 1] == _lower_effort(_CLI_EFFORT)
+
 
 class TestResolveDiscordSystemPromptFile:
     """CLAUDE2.md overlay resolution + the DISCORD_CLI_UNRESTRICTED_MODE gate."""
