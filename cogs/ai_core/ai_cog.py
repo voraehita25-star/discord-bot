@@ -175,6 +175,29 @@ class AI(commands.Cog):
             return channel
         return None
 
+    @staticmethod
+    def _session_channel_id(guild_id: int | None, channel_id: int) -> int:
+        """The channel id a turn's SESSION and history rows are keyed under.
+
+        Everywhere except the RP guild that is just ``channel_id``. On the RP
+        guild the COMMAND channel is input-only and the reply is redirected to
+        OUTPUT, so ``process_chat`` keys the session — and every stored row —
+        under the OUTPUT id while the user's own message lives in COMMAND.
+
+        Five commands already open-coded this exact redirect (``!reset_ai``,
+        ``!thinking``, ``!streaming``, ``!resend``, ``!channel_ratelimit``), which
+        is the shape that drifts. They all route through here now, and so do the
+        three raw mirror handlers that were MISSING it: ``on_raw_message_delete``,
+        ``on_raw_bulk_message_delete`` and ``on_raw_message_edit`` all keyed on
+        ``payload.channel_id``, so deleting or editing a ``!chat`` message in the
+        RP COMMAND channel searched COMMAND's history and found nothing — the row
+        was under OUTPUT. The "memory mirrors what is actually visible"
+        guarantee was simply absent on the one guild that uses the redirect.
+        """
+        if guild_id == GUILD_ID_RP and channel_id == CHANNEL_ID_RP_COMMAND:
+            return CHANNEL_ID_RP_OUTPUT
+        return channel_id
+
     def _restricted_guild_blocks(self, guild_id: int | None, channel_id: int) -> bool:
         """Whether ``GUILD_ID_RESTRICTED``'s single-channel rule forbids this channel.
 
@@ -673,8 +696,7 @@ class AI(commands.Cog):
         # — same redirect as !thinking / !streaming / !resend. Without it the
         # wipe hit the unused COMMAND-channel session and the real memory,
         # DB history, and Claude --resume session all survived.
-        if ctx.guild and ctx.guild.id == GUILD_ID_RP and ctx.channel.id == CHANNEL_ID_RP_COMMAND:
-            channel_id = CHANNEL_ID_RP_OUTPUT
+        channel_id = self._session_channel_id(ctx.guild.id if ctx.guild else None, ctx.channel.id)
 
         # Wait (bounded) for an in-flight generation to finish so its final
         # save_history / CLI session write lands *before* the wipe instead of
@@ -819,14 +841,18 @@ class AI(commands.Cog):
         try:
             cached = getattr(payload, "cached_message", None)
             deleted_content = getattr(cached, "content", None) if cached is not None else None
+            # The row lives under the SESSION channel, which is not the channel
+            # the message was deleted from on the RP guild — see
+            # _session_channel_id.
+            session_channel_id = self._session_channel_id(payload.guild_id, payload.channel_id)
             removed = await self.chat_manager.remove_message_from_history(
-                payload.channel_id, payload.message_id, deleted_content
+                session_channel_id, payload.message_id, deleted_content
             )
             if removed:
                 logger.info(
                     "🗑️ Synced Discord delete → forgot message %s in channel %s",
                     payload.message_id,
-                    payload.channel_id,
+                    session_channel_id,
                 )
         except Exception:
             logger.exception("Failed to sync Discord delete for message %s", payload.message_id)
@@ -843,10 +869,12 @@ class AI(commands.Cog):
             for cached_msg in (getattr(payload, "cached_messages", None) or [])
             if getattr(cached_msg, "id", None) is not None
         }
+        # Same session-channel resolution as the single-delete listener.
+        session_channel_id = self._session_channel_id(payload.guild_id, payload.channel_id)
         for message_id in payload.message_ids:
             try:
                 await self.chat_manager.remove_message_from_history(
-                    payload.channel_id, message_id, cached_by_id.get(message_id)
+                    session_channel_id, message_id, cached_by_id.get(message_id)
                 )
             except Exception:
                 logger.exception("Failed to sync bulk Discord delete for message %s", message_id)
@@ -891,14 +919,17 @@ class AI(commands.Cog):
         if new_content is None:
             return
         try:
+            # As with the delete listeners: on the RP guild the edited message is
+            # in COMMAND while its row is keyed under OUTPUT.
+            session_channel_id = self._session_channel_id(payload.guild_id, payload.channel_id)
             updated = await self.chat_manager.edit_message_in_history(
-                payload.channel_id, payload.message_id, new_content
+                session_channel_id, payload.message_id, new_content
             )
             if updated:
                 logger.info(
                     "✏️ Synced Discord edit → updated message %s in channel %s",
                     payload.message_id,
-                    payload.channel_id,
+                    session_channel_id,
                 )
         except Exception:
             logger.exception("Failed to sync Discord edit for message %s", payload.message_id)
@@ -1409,10 +1440,9 @@ class AI(commands.Cog):
             return
 
         # Determine target channel (support RP redirection)
-        target_channel_id = ctx.channel.id
-        if ctx.guild and ctx.guild.id == GUILD_ID_RP:
-            if ctx.channel.id == CHANNEL_ID_RP_COMMAND:
-                target_channel_id = CHANNEL_ID_RP_OUTPUT
+        target_channel_id = self._session_channel_id(
+            ctx.guild.id if ctx.guild else None, ctx.channel.id
+        )
 
         # Get current session to check status. Pass the guild so a session
         # CREATED here for the RP output channel gets the RP persona + lore
@@ -1478,10 +1508,9 @@ class AI(commands.Cog):
         This provides a more responsive experience but disables thinking mode.
         """
         # Determine target channel
-        target_channel_id = ctx.channel.id
-        if ctx.guild and ctx.guild.id == GUILD_ID_RP:
-            if ctx.channel.id == CHANNEL_ID_RP_COMMAND:
-                target_channel_id = CHANNEL_ID_RP_OUTPUT
+        target_channel_id = self._session_channel_id(
+            ctx.guild.id if ctx.guild else None, ctx.channel.id
+        )
 
         current_state = self.chat_manager.is_streaming_enabled(target_channel_id)
 
@@ -1700,10 +1729,9 @@ class AI(commands.Cog):
             !resend 189   - Resend message with local_id 189
         """
         # Determine target channel for RP redirection
-        target_channel_id = ctx.channel.id
-        if ctx.guild and ctx.guild.id == GUILD_ID_RP:
-            if ctx.channel.id == CHANNEL_ID_RP_COMMAND:
-                target_channel_id = CHANNEL_ID_RP_OUTPUT
+        target_channel_id = self._session_channel_id(
+            ctx.guild.id if ctx.guild else None, ctx.channel.id
+        )
 
         # Get chat session (guild-aware so a freshly created RP session gets
         # the RP persona instead of the default instruction)
@@ -2182,8 +2210,7 @@ class AI(commands.Cog):
         channel_id = ctx.channel.id
         # Same RP redirect as !thinking / !streaming / !reset_ai — sessions in
         # the RP guild are keyed under the OUTPUT channel id.
-        if ctx.guild and ctx.guild.id == GUILD_ID_RP and ctx.channel.id == CHANNEL_ID_RP_COMMAND:
-            channel_id = CHANNEL_ID_RP_OUTPUT
+        channel_id = self._session_channel_id(ctx.guild.id if ctx.guild else None, ctx.channel.id)
 
         chat_data = self.chat_manager.chats.get(channel_id)
         if chat_data is None:
