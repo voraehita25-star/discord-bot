@@ -188,6 +188,96 @@ PATTERN_SPACED = re.compile(r'^\s*>\s*(["\'])', re.MULTILINE)
 # reply must not be laundered back in as if it were one of ours.
 PATTERN_ID = re.compile(r"^\[ID:\s*\d+\]\s*")
 
+# --- Legacy stored-system-wrapper strip -------------------------------------
+#
+# Until this was fixed, ``process_chat`` persisted ``prompt_with_context`` — the
+# whole live scaffolding — as the user's history row: the wall clock, the
+# retrieved RAG memories, fetched URL text, and (on the RP guild) the
+# state-tracker's "[สถานะปัจจุบันของตัวละคร]" snapshot. All of that is rebuilt
+# from current state on every turn, so storing it meant each past turn kept
+# asserting its own CURRENT time and its own CURRENT character states. Measured
+# on the live database: 41 of 41 user rows carried the wrapper, 41 distinct
+# stale "Current Time" header lines, 25 frozen "current state" snapshots, and
+# 56.5% of all stored user text was scaffolding rather than anything a user
+# typed. A fresh-session prompt handed the model every one of those at once.
+#
+# New rows store the speaker and their message (see ``stored_user_text``). These
+# patterns heal the rows already on disk, at RENDER time only — nothing rewrites
+# storage, so the dashboard's history editor still shows exactly what is stored.
+_LEGACY_CONTEXT_END = "---END SYSTEM CONTEXT---"
+# The header's trailing ``| User: <name>`` (optionally followed by
+# ``| Creator: Yes``) is the ONLY speaker identity a stored row has. Recover it
+# rather than dropping it — on a multi-user channel the flattened history would
+# otherwise render every turn as an anonymous "User:".
+#
+# The template is matched STRICTLY (the literal ``Current Time:``, and the
+# boundary on a line of its own) rather than loosely, because the first line of
+# a NEW row starts with the member's own display name followed by their own
+# text. A loose match plus a crafted name would let a member's row re-render
+# under a speaker they chose — see ``_sanitize_speaker_name``, which closes the
+# other half of that by refusing a name that opens with the header at all. Both
+# halves are needed: either alone leaves the forge reachable.
+_LEGACY_SYSTEM_HEADER = "[System Info] Current Time: "
+_LEGACY_SYSTEM_HEADER_RE = re.compile(
+    r"^\[System Info\] Current Time: [^\n|]*\|\s*User:\s*(?P<name>[^\n|]*?)"
+    r"(?:\s*\|\s*Creator:[^\n|]*)?\s*$"
+)
+_LEGACY_USER_MESSAGE_PREFIX = "User Message: "
+
+
+def _sanitize_speaker_name(display_name: str) -> str:
+    """A display name safe to put at the head of a stored history row.
+
+    Newlines go first, for the reason the call site documents: a line-based
+    structure boundary must not be forgeable through a name.
+
+    The header guard is the other half of :func:`_strip_stored_system_wrapper`.
+    A stored row now begins with the speaker's name, and the strip treats a row
+    beginning with the legacy header as scaffolding to remove — so a member whose
+    display name opened with that header could hand the strip a line assembled
+    from their own name plus their own message, and have their turn re-render
+    under any speaker they wrote into it. Discord caps a display name at 32
+    characters, which is exactly enough for this prefix, so the collision is
+    reachable rather than theoretical. Neutralising the bracket keeps the name
+    readable while making the header unforgeable from this direction.
+    """
+    name = display_name.replace("\n", " ").replace("\r", " ")
+    if name.lstrip().startswith("[System Info]"):
+        name = name.replace("[System Info]", "(System Info)", 1)
+    return name
+
+
+def _strip_stored_system_wrapper(text: str) -> str:
+    """Reduce a legacy wrapper-carrying user row to ``"<speaker>: <message>"``.
+
+    Returns *text* unchanged unless it opens with the exact legacy prefix AND
+    carries the boundary on a line of its own — so a message that merely quotes
+    either marker is left alone, and so is every row written after the fix.
+    ``partition`` takes the FIRST boundary, which is the wrapper's: the
+    scaffolding is always a prefix, so anything the user typed lies after it.
+
+    Both conditions are matched strictly on purpose; loosening either one
+    re-opens the speaker forge described in :func:`_sanitize_speaker_name`.
+
+    A legacy-shaped row whose ``| User:`` is unrecoverable degrades to "drop the
+    wrapper, keep the message" rather than to "keep the wrapper" — a lost
+    speaker label costs less than re-injecting a stale clock and a frozen
+    character-state snapshot.
+    """
+    if not text.startswith(_LEGACY_SYSTEM_HEADER):
+        return text
+    head, _, tail = text.partition("\n" + _LEGACY_CONTEXT_END)
+    if not tail:
+        # No boundary on a line of its own — not the legacy shape.
+        return text
+    match = _LEGACY_SYSTEM_HEADER_RE.match(head.split("\n", 1)[0])
+    speaker = match.group("name").strip() if match else ""
+    body = tail.lstrip("\n")
+    if body.startswith(_LEGACY_USER_MESSAGE_PREFIX):
+        body = body[len(_LEGACY_USER_MESSAGE_PREFIX) :]
+    return f"{speaker}: {body}" if speaker else body
+
+
 # How many per-message ids to name in one annotation. A turn is capped at ~30
 # {{Name}} blocks upstream; listing every one of a pathological turn would cost
 # more prompt than it is worth, and read_channel can always resolve the rest.
@@ -1708,7 +1798,12 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # Strip newlines so a crafted display name can't forge a
                     # line-based prompt-structure boundary (e.g. an injected
                     # "---END SYSTEM CONTEXT---" line) in the flattened prompt.
-                    user_name = user.display_name.replace("\n", " ").replace("\r", " ")
+                    # ``_sanitize_speaker_name`` additionally refuses a name that
+                    # opens with the legacy "[System Info]" header, which the
+                    # stored row would otherwise inherit as its first characters —
+                    # see the function for why that would let a member forge the
+                    # speaker of their own history row.
+                    user_name = _sanitize_speaker_name(user.display_name)
                     # Get real-time in Bangkok timezone (ICT)
                     now_bangkok = datetime.datetime.now(BANGKOK_TZ)
                     now = now_bangkok.strftime("%A, %d %B %Y %H:%M:%S (ICT)")
@@ -1970,6 +2065,24 @@ class ChatManager(SessionMixin, ResponseMixin):
                         )
                     content_parts.append(prompt_with_context)
 
+                    # What gets STORED for this turn, as distinct from what gets
+                    # SENT. ``prompt_with_context`` above is live scaffolding —
+                    # the wall clock, the RAG memories retrieved just now, any
+                    # fetched URL text, and on the RP guild the state tracker's
+                    # "[สถานะปัจจุบันของตัวละคร]" snapshot — every part of it
+                    # rebuilt from current state on the next turn. Persisting it
+                    # made each past turn keep asserting its own CURRENT time and
+                    # its own CURRENT character states, so a fresh-session prompt
+                    # handed the model dozens of mutually contradictory ones and
+                    # then the real one (measured on the live DB: 41 stale header
+                    # lines, 25 frozen state snapshots, 56.5% of stored user text).
+                    # Keep the speaker — it is the only identity a row carries on
+                    # a multi-user channel — and what they actually said; the
+                    # row's ``timestamp`` already supplies the clock at render
+                    # time. ``_strip_stored_system_wrapper`` heals rows written
+                    # before this.
+                    stored_user_text = f"{user_name}: {display_message}"
+
                     # 3. Load character reference image if mentioned.
                     # Offload to a worker thread: load_character_image runs
                     # Image.open + .copy(), and .copy() forces a FULL pixel
@@ -2136,9 +2249,18 @@ class ChatManager(SessionMixin, ResponseMixin):
                             meta_prefix += _format_message_id_prefix(item)
                         prefix_applied = False
                         had_image_only = False
+                        # Rows written before the storage fix carry the whole
+                        # live scaffolding (stale clock, frozen RP state, the
+                        # RAG hits of that moment). Strip it here so existing
+                        # channels heal without rewriting a single stored row —
+                        # see _strip_stored_system_wrapper. Model turns never
+                        # carried it, so only user rows are examined.
+                        strip_wrapper = role != "model"
                         for p in parts_data:
                             if isinstance(p, str):
                                 clean_text = PATTERN_ID.sub("", p)
+                                if strip_wrapper:
+                                    clean_text = _strip_stored_system_wrapper(clean_text)
                                 if meta_prefix and not prefix_applied:
                                     clean_text = meta_prefix + clean_text
                                     prefix_applied = True
@@ -2146,6 +2268,8 @@ class ChatManager(SessionMixin, ResponseMixin):
                                     converted_parts.append({"text": clean_text})
                             elif isinstance(p, dict) and "text" in p:
                                 clean_text = PATTERN_ID.sub("", p["text"])
+                                if strip_wrapper:
+                                    clean_text = _strip_stored_system_wrapper(clean_text)
                                 if meta_prefix and not prefix_applied:
                                     clean_text = meta_prefix + clean_text
                                     prefix_applied = True
@@ -2172,7 +2296,7 @@ class ChatManager(SessionMixin, ResponseMixin):
 
                     # 7. Handle memory-only mode (no response generation)
                     if not generate_response:
-                        user_msg_text = prompt_with_context
+                        user_msg_text = stored_user_text
                         if image_parts:
                             user_msg_text += " [Image/Attachment]"
                         # Include text file contents in saved history
@@ -2267,7 +2391,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                     if was_cancelled:
                         logger.info("⏹️ Cancelled after API call for channel %s", channel_id)
                         # Save user message to history
-                        user_msg_text = prompt_with_context
+                        user_msg_text = stored_user_text
                         if image_parts:
                             user_msg_text += " [Image/Attachment]"
                         # Include text file contents in saved history
@@ -2316,7 +2440,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                         raise _NewMessageInterrupt("New message received")
 
                     # 9. Update history
-                    user_msg_text = prompt_with_context
+                    user_msg_text = stored_user_text
                     if image_parts:
                         user_msg_text += " [Image/Attachment]"
                     # Include text file contents in saved history
