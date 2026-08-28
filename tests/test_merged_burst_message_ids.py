@@ -160,3 +160,63 @@ class TestTheMergedRowIsAddressable:
         for mid in (101, 102, 103):
             assert _row_covers_message(row, mid), f"message {mid} was left unreachable"
         assert not _row_covers_message(row, 999)
+
+
+class TestTheIdsSurviveStorage:
+    """The stamp is applied at INSERT time (unlike the model side, which
+    back-fills through ``update_message_id`` after the reply is sent), so the
+    batch writer and the loader both have to carry the field or the fix would
+    only hold until the next restart."""
+
+    @pytest.mark.asyncio
+    async def test_the_batch_insert_carries_the_ids(self):
+        from cogs.ai_core.storage import _save_history_db
+
+        sent = [{"name": "user", "id": 101}, {"name": "user", "id": 103}]
+        with patch("cogs.ai_core.storage.db") as mock_db:
+            mock_db.save_ai_messages_batch = AsyncMock()
+            mock_db.get_ai_history = AsyncMock(return_value=[])
+            mock_db.get_ai_history_count = AsyncMock(return_value=1)
+            mock_db.save_ai_metadata = AsyncMock()
+
+            entry = {
+                "role": "user",
+                "parts": ["Tester: a\nb"],
+                "timestamp": "2026-08-28T10:00:00+00:00",
+                "message_id": 103,
+                "user_id": 42,
+                "sent_message_ids": sent,
+            }
+            await _save_history_db(12345, {"history": []}, 100, [entry])
+
+        (batch,), _kwargs = mock_db.save_ai_messages_batch.call_args
+        assert batch[0]["sent_message_ids"] == sent
+
+    @pytest.mark.asyncio
+    async def test_the_loader_carries_them_back(self):
+        """A restart reads through this converter — losing the field here would
+        silently un-address every merged row."""
+        from cogs.ai_core import storage
+
+        sent = [{"name": "user", "id": 101}, {"name": "user", "id": 103}]
+        storage.invalidate_cache(4242)
+        with (
+            patch.object(storage, "DATABASE_AVAILABLE", True),
+            patch.object(storage, "db") as mock_db,
+        ):
+            mock_db.get_ai_history = AsyncMock(
+                return_value=[
+                    {
+                        "role": "user",
+                        "content": "Tester: a\nb",
+                        "timestamp": "2026-08-28T10:00:00+00:00",
+                        "message_id": 103,
+                        "user_id": 42,
+                        "sent_message_ids": sent,
+                    }
+                ]
+            )
+            history = await storage.load_history(MagicMock(), 4242)
+        storage.invalidate_cache(4242)
+
+        assert history[0]["sent_message_ids"] == sent
