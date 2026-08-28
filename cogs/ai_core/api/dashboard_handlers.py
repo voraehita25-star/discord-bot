@@ -739,6 +739,20 @@ async def handle_pin_message(ws: WebSocketResponse, data: dict[str, Any]) -> Non
     """Toggle the pin state of a dashboard message."""
     message_id = data.get("message_id")
     pinned = bool(data.get("pinned", True))
+    # Conversation scope, same contract as handle_edit_message /
+    # handle_delete_message: without it the UPDATE is unscoped and a stale (or
+    # forged) client sitting in conversation B could toggle the pin on any
+    # message id in conversation A. Verified reachable before this guard existed.
+    expected_conv = data.get("conversation_id")
+    if not isinstance(expected_conv, str) or not _validate_conversation_id(expected_conv):
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "MISSING_CONVERSATION",
+                "message": "conversation_id is required",
+            }
+        )
+        return
 
     if not message_id or not DB_AVAILABLE:
         await ws.send_json(
@@ -758,7 +772,9 @@ async def handle_pin_message(ws: WebSocketResponse, data: dict[str, Any]) -> Non
 
     try:
         db = _get_db()
-        updated = await db.update_dashboard_message_pin(message_id_int, pinned)
+        updated = await db.update_dashboard_message_pin(
+            message_id_int, pinned, expected_conversation_id=expected_conv
+        )
         if not updated:
             await ws.send_json(
                 {"type": "error", "code": "MSG_NOT_FOUND", "message": "Message not found"}
@@ -782,6 +798,18 @@ async def handle_like_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
     """Toggle the 'liked' flag on a dashboard message (#20b)."""
     message_id = data.get("message_id")
     liked = bool(data.get("liked", True))
+    # Conversation scope — see handle_pin_message for why the UPDATE must not
+    # run unscoped.
+    expected_conv = data.get("conversation_id")
+    if not isinstance(expected_conv, str) or not _validate_conversation_id(expected_conv):
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "MISSING_CONVERSATION",
+                "message": "conversation_id is required",
+            }
+        )
+        return
 
     if not message_id or not DB_AVAILABLE:
         await ws.send_json(
@@ -801,7 +829,9 @@ async def handle_like_message(ws: WebSocketResponse, data: dict[str, Any]) -> No
 
     try:
         db = _get_db()
-        updated = await db.update_dashboard_message_liked(message_id_int, liked)
+        updated = await db.update_dashboard_message_liked(
+            message_id_int, liked, expected_conversation_id=expected_conv
+        )
         if not updated:
             await ws.send_json(
                 {"type": "error", "code": "MSG_NOT_FOUND", "message": "Message not found"}
@@ -1633,7 +1663,20 @@ async def handle_get_document_memory_content(ws: WebSocketResponse, data: dict[s
 
 async def handle_save_profile(ws: WebSocketResponse, data: dict[str, Any]) -> None:
     """Save user profile."""
-    profile_data = data.get("profile", {})
+    # An ABSENT "profile" key is rejected, not defaulted to {}. The write below
+    # is a whole-row upsert, so an empty dict resets display_name to the "User"
+    # default and NULLs bio + preferences — silent data loss under a success
+    # ack, the exact failure the per-field guards further down exist to prevent.
+    if "profile" not in data:
+        await ws.send_json(
+            {
+                "type": "error",
+                "code": "INVALID_ARG",
+                "message": "profile is required",
+            }
+        )
+        return
+    profile_data = data.get("profile")
 
     # A non-dict "profile" (client sends a string/list/number) would crash the
     # .get() calls below into a generic INTERNAL_ERROR. Reject it explicitly.

@@ -582,6 +582,18 @@ export class ChatManager {
                 this.renderMessages();
                 this.resetContextWindowIndicator();
                 this.listConversations();
+                // `persisted:false` means handle_new_conversation's DB write
+                // failed. The chat still works this session, but every message
+                // save is FK-bound to the row that never landed, so the whole
+                // conversation vanishes on reload. The backend has always
+                // reported this and nothing read it — the user got a normal-
+                // looking chat that silently evaporated.
+                if (data.persisted === false) {
+                    showToast(
+                        'This conversation could not be saved to the database — it will disappear when the bot restarts.',
+                        { type: 'warning', duration: 8000 },
+                    );
+                }
                 this.closeModal();
                 // Land in the composer, not back on the "+ New" button that
                 // opened the dialog. closeModal() restores focus to its trigger
@@ -664,6 +676,19 @@ export class ChatManager {
                 // conversation_loaded frame itself.
                 this.updateChatFilesBadge(0);
                 this.refreshChatFilesBadge();
+                // handle_load_conversation drops the OLDEST messages when the
+                // frame would exceed its wire budget and flags the payload
+                // `truncated`. Nothing read that flag, so a shortened transcript
+                // looked complete — and the composer still sends `messages`
+                // as history, so the user could not tell why the AI had
+                // "forgotten" the start of the thread. The History page already
+                // surfaces its own truncation; this is the chat page's.
+                if (data.truncated === true) {
+                    showToast(
+                        'Older messages in this conversation were too large to load and are not shown.',
+                        { type: 'warning', duration: 7000 },
+                    );
+                }
                 break;
             }
 
@@ -860,7 +885,31 @@ export class ChatManager {
                     this.userScrolledUp = false;  // dead turn — nothing to follow
                     break;
                 }
-                this.finalizeStreamingMessage(typeof data.full_response === 'string' ? data.full_response : '');
+                {
+                    // A turn that produced no text at all (the model answered
+                    // with tool calls only, or the CLI exited without a text
+                    // block) must NOT be finalized into a message: both backends
+                    // gate their assistant-row save on a non-empty response, so
+                    // pushing one here paints a blank bubble with Copy/Edit/
+                    // Delete buttons that vanishes on the next reload — and
+                    // rides into the next turn's `history` as an empty
+                    // assistant reply. Tear the live bubble down and say what
+                    // happened instead.
+                    const finalText = typeof data.full_response === 'string' ? data.full_response : '';
+                    if (finalText) {
+                        this.finalizeStreamingMessage(finalText);
+                    } else {
+                        document.getElementById('streaming-message')?.remove();
+                        this.currentThinking = '';
+                        this.currentMode = '';
+                        showToast(
+                            data.cancelled
+                                ? 'Stopped before the reply started — nothing was saved'
+                                : 'The AI returned an empty reply — try sending again',
+                            { type: 'warning' },
+                        );
+                    }
+                }
                 this.clearStreamBuffers();
                 // Backfill DB IDs so newly-sent messages become editable/deletable
                 if (data.assistant_message_id) {
@@ -894,11 +943,14 @@ export class ChatManager {
                     });
                 }
                 this.setInputEnabled(true);
-                if (data.cancelled) {
+                if (data.cancelled && data.full_response) {
                     // Stopped turn. It took the branch above like any other
                     // stream_end — the partial is finalized and persisted — so
                     // all that is left is telling the user it was cut short
                     // rather than that the model simply stopped talking.
+                    // Gated on a non-empty partial: a stop that landed before
+                    // any text arrived already got the empty-reply notice above,
+                    // and "the reply so far was kept" would be a lie there.
                     showToast('Stopped — the reply so far was kept', { type: 'info' });
                 }
                 this.listConversations();  // Refresh sidebar message count
@@ -2695,18 +2747,23 @@ export class ChatManager {
                 const messageId = parseInt(msgId, 10);
                 if (!Number.isFinite(messageId) || messageId <= 0) return;
                 const nextPinned = el.dataset.pinned !== '1';
+                // `conversation_id` is REQUIRED by handle_pin_message: the
+                // UPDATE is scoped to it so a stale button (or a forged frame)
+                // can't flip the pin on a message in a different conversation.
+                const convId = this.currentConversation?.id ?? null;
+                if (!convId) return;
                 // Send first; only flip locally if the WS is open. send()
                 // shows a toast on disconnected — without this guard the
                 // local state would drift from the server's view.
                 if (!this.connected) {
-                    this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
+                    this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned, conversation_id: convId });
                     return;
                 }
                 // Only flip locally if the frame actually went out — send() can
                 // still return false if the socket closes between the connected
                 // check above and ws.send() (InvalidStateError), which would
                 // otherwise drift the UI from the server until the next refresh.
-                const ok = this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
+                const ok = this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned, conversation_id: convId });
                 if (!ok) return;
                 // Optimistic local update. Use the SAME in-place button update the
                 // ack path uses: a full renderMessages() here rebuilt the whole
@@ -2736,14 +2793,17 @@ export class ChatManager {
                 const messageId = parseInt(msgId, 10);
                 if (!Number.isFinite(messageId) || messageId <= 0) return;
                 const nextLiked = el.dataset.liked !== '1';
+                // Required conversation scope — see the pin handler above.
+                const convId = this.currentConversation?.id ?? null;
+                if (!convId) return;
                 if (!this.connected) {
-                    this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
+                    this.send({ type: 'like_message', message_id: messageId, liked: nextLiked, conversation_id: convId });
                     return;
                 }
                 // Only flip locally if the frame actually went out (see pin
                 // handler above) — a send() that returned false would drift the
                 // UI from the server's view until the next list refresh.
-                const ok = this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
+                const ok = this.send({ type: 'like_message', message_id: messageId, liked: nextLiked, conversation_id: convId });
                 if (!ok) return;
                 // Same in-place update as the pin handler above (and as the
                 // like ack) — the full re-render was pure waste and stole focus.
@@ -3807,7 +3867,8 @@ export class ChatManager {
             if (newContent && newContent !== originalContent) {
                 this.saveEdit(currentIdx, newContent, false);
             } else {
-                this.cancelEdit(currentIdx, originalContent);
+                // Restore by ELEMENT, not by index — see `cancel` below.
+                this.restoreEditedBubble(msgEl, originalContent);
             }
         });
 
@@ -3824,15 +3885,25 @@ export class ChatManager {
             }
         });
 
-        // Cancel button
-        contentEl.querySelector('.edit-cancel-btn')?.addEventListener('click', () => {
-            this.cancelEdit(msgIdx, originalContent);
-        });
+        // Cancel restores by ELEMENT, never by index. Cancelling is a pure DOM
+        // operation, but cancelEdit(idx) re-derives the element from
+        // `idx - visibleStartIdx` — a mapping that is only valid as of the last
+        // renderMessages(). Both halves of it can go stale independently: the
+        // ARRAY index shifts when a stream ends and trimLocalMessages() slices
+        // off the front past 200, while `visibleStartIdx` does not move until
+        // the next render. So neither the captured msgIdx nor a freshly
+        // resolved one is reliably the right DOM slot, and picking the wrong
+        // one repaints the NEIGHBOUR's bubble with this message's text. `msgEl`
+        // is the element this editor was actually opened on; if a re-render has
+        // since replaced it, the node is detached and the click that got us
+        // here could not have fired.
+        const cancel = (): void => this.restoreEditedBubble(msgEl, originalContent);
+        contentEl.querySelector('.edit-cancel-btn')?.addEventListener('click', cancel);
 
         // Escape key to cancel
         textarea?.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
-                this.cancelEdit(msgIdx, originalContent);
+                cancel();
             }
         });
     }
@@ -3878,7 +3949,16 @@ export class ChatManager {
         // translate the absolute index into the local DOM index.
         const msgEl = msgElements[msgIdx - this.visibleStartIdx];
         if (!msgEl) return;
+        this.restoreEditedBubble(msgEl, originalContent);
+    }
 
+    /** Put one message bubble back into its normal (non-editing) state.
+     *
+     *  Element-addressed, so callers that already hold the node never have to
+     *  round-trip through an index whose DOM mapping may have gone stale (see
+     *  the `cancel` closure in startEditMessage). cancelEdit() is the
+     *  index-addressed wrapper for the call sites that only have one. */
+    private restoreEditedBubble(msgEl: Element, originalContent: string): void {
         const contentEl = msgEl.querySelector('.message-content');
         const actionsEl = msgEl.querySelector('.message-actions');
         if (contentEl) {
@@ -3946,8 +4026,15 @@ export class ChatManager {
         // Build history from messages before the edited message
         // Strip unnecessary fields (images/thinking/mode) to reduce payload size,
         // but keep `created_at` so the backend retains per-message timing.
+        // `.filter(m => !m.failed)` for the same reason sendMessage() does it:
+        // an abandoned failed-send bubble stays in this.messages (so its inline
+        // Retry still works) but was NEVER delivered, so replaying it here
+        // hands the backend a user turn with no assistant reply — a phantom
+        // turn the model then answers around. This path rebuilds the whole
+        // history block (edit_message wipes the CLI --resume session), so the
+        // phantom really does reach the prompt.
         const editedIdx = this.messages.indexOf(editedMsg);
-        const historyToSend = this.messages.slice(0, editedIdx).map(m => ({
+        const historyToSend = this.messages.slice(0, editedIdx).filter(m => !m.failed).map(m => ({
             role: m.role,
             content: m.content,
             created_at: m.created_at,

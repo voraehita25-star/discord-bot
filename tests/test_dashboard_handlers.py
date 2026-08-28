@@ -706,7 +706,7 @@ class TestPinMessage:
         from cogs.ai_core.api.dashboard_handlers import handle_pin_message
 
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True):
-            await handle_pin_message(ws, {})
+            await handle_pin_message(ws, {"conversation_id": "conv-1"})
         assert ws.last()["code"] == "CANNOT_PIN"
 
     @pytest.mark.asyncio
@@ -717,7 +717,9 @@ class TestPinMessage:
             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
         ):
-            await handle_pin_message(ws, {"message_id": "not-a-number"})
+            await handle_pin_message(
+                ws, {"message_id": "not-a-number", "conversation_id": "conv-1"}
+            )
         assert ws.last()["code"] == "INVALID_ID"
 
     @pytest.mark.asyncio
@@ -725,7 +727,9 @@ class TestPinMessage:
         from cogs.ai_core.api.dashboard_handlers import handle_pin_message
 
         with patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", False):
-            await handle_pin_message(ws, {"message_id": "1", "pinned": True})
+            await handle_pin_message(
+                ws, {"message_id": "1", "pinned": True, "conversation_id": "conv-1"}
+            )
         assert ws.last()["code"] == "CANNOT_PIN"
 
     @pytest.mark.asyncio
@@ -737,7 +741,9 @@ class TestPinMessage:
             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
         ):
-            await handle_pin_message(ws, {"message_id": "999", "pinned": True})
+            await handle_pin_message(
+                ws, {"message_id": "999", "pinned": True, "conversation_id": "conv-1"}
+            )
         assert ws.last()["code"] == "MSG_NOT_FOUND"
 
     @pytest.mark.asyncio
@@ -748,12 +754,16 @@ class TestPinMessage:
             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
         ):
-            await handle_pin_message(ws, {"message_id": "42", "pinned": True})
+            await handle_pin_message(
+                ws, {"message_id": "42", "pinned": True, "conversation_id": "conv-1"}
+            )
         last = ws.last()
         assert last["type"] == "message_pinned"
         assert last["pinned"] is True
         assert last["message_id"] == "42"
-        mock_db.update_dashboard_message_pin.assert_awaited_once_with(42, True)
+        mock_db.update_dashboard_message_pin.assert_awaited_once_with(
+            42, True, expected_conversation_id="conv-1"
+        )
 
     @pytest.mark.asyncio
     async def test_unpin_success(self, ws, mock_db):
@@ -763,9 +773,13 @@ class TestPinMessage:
             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
         ):
-            await handle_pin_message(ws, {"message_id": "42", "pinned": False})
+            await handle_pin_message(
+                ws, {"message_id": "42", "pinned": False, "conversation_id": "conv-1"}
+            )
         assert ws.last()["pinned"] is False
-        mock_db.update_dashboard_message_pin.assert_awaited_once_with(42, False)
+        mock_db.update_dashboard_message_pin.assert_awaited_once_with(
+            42, False, expected_conversation_id="conv-1"
+        )
 
     @pytest.mark.asyncio
     async def test_defaults_to_pinned_true_when_omitted(self, ws, mock_db):
@@ -776,8 +790,10 @@ class TestPinMessage:
             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
         ):
-            await handle_pin_message(ws, {"message_id": "42"})
-        mock_db.update_dashboard_message_pin.assert_awaited_once_with(42, True)
+            await handle_pin_message(ws, {"message_id": "42", "conversation_id": "conv-1"})
+        mock_db.update_dashboard_message_pin.assert_awaited_once_with(
+            42, True, expected_conversation_id="conv-1"
+        )
 
     @pytest.mark.asyncio
     async def test_db_error(self, ws, mock_db):
@@ -788,8 +804,103 @@ class TestPinMessage:
             patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
             patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
         ):
-            await handle_pin_message(ws, {"message_id": "42", "pinned": True})
+            await handle_pin_message(
+                ws, {"message_id": "42", "pinned": True, "conversation_id": "conv-1"}
+            )
         assert ws.last()["code"] == "INTERNAL_ERROR"
+
+
+class TestPinLikeConversationScope:
+    """pin/like must be scoped to a conversation like edit/delete.
+
+    Before this guard the UPDATE ran on the message id alone, so a client
+    sitting in conversation B could toggle the pin/like on any message in
+    conversation A (reproduced end-to-end against a real SQLite DB).
+    """
+
+    @pytest.mark.asyncio
+    async def test_pin_without_conversation_id_rejected(self, ws, mock_db):
+        from cogs.ai_core.api.dashboard_handlers import handle_pin_message
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_pin_message(ws, {"message_id": "42", "pinned": True})
+        assert ws.last()["code"] == "MISSING_CONVERSATION"
+        mock_db.update_dashboard_message_pin.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pin_with_malformed_conversation_id_rejected(self, ws, mock_db):
+        from cogs.ai_core.api.dashboard_handlers import handle_pin_message
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_pin_message(
+                ws, {"message_id": "42", "pinned": True, "conversation_id": {"$ne": 1}}
+            )
+        assert ws.last()["code"] == "MISSING_CONVERSATION"
+        mock_db.update_dashboard_message_pin.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pin_forwards_scope_to_db(self, ws, mock_db):
+        from cogs.ai_core.api.dashboard_handlers import handle_pin_message
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_pin_message(
+                ws, {"message_id": "42", "pinned": True, "conversation_id": "conv-a"}
+            )
+        mock_db.update_dashboard_message_pin.assert_awaited_once_with(
+            42, True, expected_conversation_id="conv-a"
+        )
+
+    @pytest.mark.asyncio
+    async def test_pin_wrong_conversation_reports_not_found(self, ws, mock_db):
+        """A scoped UPDATE that matches no row is the cross-conversation case."""
+        from cogs.ai_core.api.dashboard_handlers import handle_pin_message
+
+        mock_db.update_dashboard_message_pin.return_value = False
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_pin_message(
+                ws, {"message_id": "42", "pinned": True, "conversation_id": "conv-b"}
+            )
+        assert ws.last()["code"] == "MSG_NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_like_without_conversation_id_rejected(self, ws, mock_db):
+        from cogs.ai_core.api.dashboard_handlers import handle_like_message
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_like_message(ws, {"message_id": "42", "liked": True})
+        assert ws.last()["code"] == "MISSING_CONVERSATION"
+        mock_db.update_dashboard_message_liked.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_like_forwards_scope_to_db(self, ws, mock_db):
+        from cogs.ai_core.api.dashboard_handlers import handle_like_message
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_like_message(
+                ws, {"message_id": "7", "liked": False, "conversation_id": "conv-a"}
+            )
+        mock_db.update_dashboard_message_liked.assert_awaited_once_with(
+            7, False, expected_conversation_id="conv-a"
+        )
+        assert ws.last()["type"] == "message_liked"
 
 
 # ===================================================================
@@ -821,6 +932,24 @@ class TestGetProfile:
 
 
 class TestSaveProfile:
+    @pytest.mark.asyncio
+    async def test_missing_profile_key_rejected(self, ws, mock_db):
+        """An absent `profile` key must NOT be treated as an empty profile.
+
+        The DB write is a whole-row upsert, so `{}` resets display_name to the
+        "User" default and NULLs bio + preferences — silent data loss under a
+        success ack.
+        """
+        from cogs.ai_core.api.dashboard_handlers import handle_save_profile
+
+        with (
+            patch("cogs.ai_core.api.dashboard_handlers._get_db", return_value=mock_db),
+            patch("cogs.ai_core.api.dashboard_handlers.DB_AVAILABLE", True),
+        ):
+            await handle_save_profile(ws, {"type": "save_profile"})
+        assert ws.last()["code"] == "INVALID_ARG"
+        mock_db.save_dashboard_user_profile.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_db_unavailable(self, ws):
         from cogs.ai_core.api.dashboard_handlers import handle_save_profile

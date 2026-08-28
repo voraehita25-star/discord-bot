@@ -148,7 +148,9 @@ export class WebSocketClient {
             return;
         }
 
-        if (this.reconnectTimeout) {
+        // `!== null`, not truthiness — a timer id of 0 is valid per spec and a
+        // truthy check would leave it pending. Same rule as disconnect().
+        if (this.reconnectTimeout !== null) {
             clearTimeout(this.reconnectTimeout);
             this.reconnectTimeout = null;
         }
@@ -363,7 +365,8 @@ export class WebSocketClient {
     }
 
     private scheduleReconnect(): void {
-        if (this.reconnectTimeout) {
+        // `!== null` for the same reason as disconnect()/connect().
+        if (this.reconnectTimeout !== null) {
             clearTimeout(this.reconnectTimeout);
             this.reconnectTimeout = null;
         }

@@ -62,7 +62,7 @@ DASHBOARD_DEFAULT_AI_PROVIDER = _normalize_dashboard_ai_provider(
 )
 
 
-def _backup_database_files(db_path: Path, backup_path: Path, backup_dir: Path) -> None:
+def _backup_database_files(db_path: Path | str, backup_path: Path, backup_dir: Path) -> None:
     """Copy the DB (plus WAL sidecars) to ``backup_path`` and prune old backups.
 
     Runs on a worker thread — see the call site in ``_init_schema_locked``. All
@@ -75,6 +75,7 @@ def _backup_database_files(db_path: Path, backup_path: Path, backup_dir: Path) -
     """
     import shutil
 
+    db_path = Path(db_path)
     shutil.copy2(db_path, backup_path)
     for suffix in ("-wal", "-shm"):
         sibling = Path(str(db_path) + suffix)
@@ -3031,13 +3032,32 @@ class Database:
             self._schedule_dashboard_export(conv_to_export)
         return bool(cursor.rowcount > 0)
 
-    async def update_dashboard_message_pin(self, message_id: int, pinned: bool) -> bool:
-        """Pin or unpin a dashboard message. Returns True if the row was updated."""
+    async def update_dashboard_message_pin(
+        self,
+        message_id: int,
+        pinned: bool,
+        *,
+        expected_conversation_id: str | None = None,
+    ) -> bool:
+        """Pin or unpin a dashboard message. Returns True if the row was updated.
+
+        ``expected_conversation_id`` asserts the row belongs to a specific
+        conversation, the same ownership guard ``update_dashboard_message``
+        applies — without it a stale (or forged) client can toggle the pin on
+        any message id in any conversation.
+        """
         async with self.get_write_connection() as conn:
-            cursor = await conn.execute(
-                "UPDATE dashboard_messages SET is_pinned = ? WHERE id = ?",
-                (1 if pinned else 0, message_id),
-            )
+            if expected_conversation_id is not None:
+                cursor = await conn.execute(
+                    "UPDATE dashboard_messages SET is_pinned = ? "
+                    "WHERE id = ? AND conversation_id = ?",
+                    (1 if pinned else 0, message_id, expected_conversation_id),
+                )
+            else:
+                cursor = await conn.execute(
+                    "UPDATE dashboard_messages SET is_pinned = ? WHERE id = ?",
+                    (1 if pinned else 0, message_id),
+                )
             conv_to_export: str | None = None
             if cursor.rowcount > 0:
                 row = await (
@@ -3058,13 +3078,29 @@ class Database:
     # Stored as INTEGER column on dashboard_messages; simpler than a full
     # reactions sub-table since this is a single-user dashboard.
     # ------------------------------------------------------------------
-    async def update_dashboard_message_liked(self, message_id: int, liked: bool) -> bool:
-        """Like/unlike a dashboard message. Returns True if the row was updated."""
+    async def update_dashboard_message_liked(
+        self,
+        message_id: int,
+        liked: bool,
+        *,
+        expected_conversation_id: str | None = None,
+    ) -> bool:
+        """Like/unlike a dashboard message. Returns True if the row was updated.
+
+        ``expected_conversation_id`` is the same ownership guard
+        ``update_dashboard_message_pin`` takes — see its docstring.
+        """
         async with self.get_write_connection() as conn:
-            cursor = await conn.execute(
-                "UPDATE dashboard_messages SET liked = ? WHERE id = ?",
-                (1 if liked else 0, message_id),
-            )
+            if expected_conversation_id is not None:
+                cursor = await conn.execute(
+                    "UPDATE dashboard_messages SET liked = ? WHERE id = ? AND conversation_id = ?",
+                    (1 if liked else 0, message_id, expected_conversation_id),
+                )
+            else:
+                cursor = await conn.execute(
+                    "UPDATE dashboard_messages SET liked = ? WHERE id = ?",
+                    (1 if liked else 0, message_id),
+                )
             conv_to_export: str | None = None
             if cursor.rowcount > 0:
                 row = await (

@@ -523,6 +523,15 @@ export class ChatManager {
                 this.renderMessages();
                 this.resetContextWindowIndicator();
                 this.listConversations();
+                // `persisted:false` means handle_new_conversation's DB write
+                // failed. The chat still works this session, but every message
+                // save is FK-bound to the row that never landed, so the whole
+                // conversation vanishes on reload. The backend has always
+                // reported this and nothing read it — the user got a normal-
+                // looking chat that silently evaporated.
+                if (data.persisted === false) {
+                    showToast('This conversation could not be saved to the database — it will disappear when the bot restarts.', { type: 'warning', duration: 8000 });
+                }
                 this.closeModal();
                 // Land in the composer, not back on the "+ New" button that
                 // opened the dialog. closeModal() restores focus to its trigger
@@ -606,6 +615,16 @@ export class ChatManager {
                 // conversation_loaded frame itself.
                 this.updateChatFilesBadge(0);
                 this.refreshChatFilesBadge();
+                // handle_load_conversation drops the OLDEST messages when the
+                // frame would exceed its wire budget and flags the payload
+                // `truncated`. Nothing read that flag, so a shortened transcript
+                // looked complete — and the composer still sends `messages`
+                // as history, so the user could not tell why the AI had
+                // "forgotten" the start of the thread. The History page already
+                // surfaces its own truncation; this is the chat page's.
+                if (data.truncated === true) {
+                    showToast('Older messages in this conversation were too large to load and are not shown.', { type: 'warning', duration: 7000 });
+                }
                 break;
             }
             case 'stream_start':
@@ -803,7 +822,29 @@ export class ChatManager {
                     this.userScrolledUp = false; // dead turn — nothing to follow
                     break;
                 }
-                this.finalizeStreamingMessage(typeof data.full_response === 'string' ? data.full_response : '');
+                {
+                    // A turn that produced no text at all (the model answered
+                    // with tool calls only, or the CLI exited without a text
+                    // block) must NOT be finalized into a message: both backends
+                    // gate their assistant-row save on a non-empty response, so
+                    // pushing one here paints a blank bubble with Copy/Edit/
+                    // Delete buttons that vanishes on the next reload — and
+                    // rides into the next turn's `history` as an empty
+                    // assistant reply. Tear the live bubble down and say what
+                    // happened instead.
+                    const finalText = typeof data.full_response === 'string' ? data.full_response : '';
+                    if (finalText) {
+                        this.finalizeStreamingMessage(finalText);
+                    }
+                    else {
+                        document.getElementById('streaming-message')?.remove();
+                        this.currentThinking = '';
+                        this.currentMode = '';
+                        showToast(data.cancelled
+                            ? 'Stopped before the reply started — nothing was saved'
+                            : 'The AI returned an empty reply — try sending again', { type: 'warning' });
+                    }
+                }
                 this.clearStreamBuffers();
                 // Backfill DB IDs so newly-sent messages become editable/deletable
                 if (data.assistant_message_id) {
@@ -832,11 +873,14 @@ export class ChatManager {
                     this.updateContextWindowIndicator(data.token_usage);
                 }
                 this.setInputEnabled(true);
-                if (data.cancelled) {
+                if (data.cancelled && data.full_response) {
                     // Stopped turn. It took the branch above like any other
                     // stream_end — the partial is finalized and persisted — so
                     // all that is left is telling the user it was cut short
                     // rather than that the model simply stopped talking.
+                    // Gated on a non-empty partial: a stop that landed before
+                    // any text arrived already got the empty-reply notice above,
+                    // and "the reply so far was kept" would be a lie there.
                     showToast('Stopped — the reply so far was kept', { type: 'info' });
                 }
                 this.listConversations(); // Refresh sidebar message count
@@ -1065,6 +1109,17 @@ export class ChatManager {
                     console.error(`Server error (${data.scope}):`, errorMsg);
                     errorLogger.log('AI_SERVER_ERROR', errorMsg, JSON.stringify(data));
                     showToast(errorMsg, { type: 'error' });
+                    // …with one exception: a failed load_conversation leaves
+                    // showChatLoading()'s skeleton bubbles in the pane forever.
+                    // handle_load_conversation emits scope-less error frames,
+                    // but ws_dashboard dispatches it through the scoping wrapper
+                    // which stamps scope:'load_conversation' on the way out — so
+                    // the unscoped recovery below is unreachable for it. Clear
+                    // the in-flight load and repaint a usable state here.
+                    if (data.scope === 'load_conversation' && this.pendingConversationLoadId !== null) {
+                        this.pendingConversationLoadId = null;
+                        this.renderMessages();
+                    }
                     break;
                 }
                 console.error('Server error:', errorMsg);
@@ -1168,9 +1223,12 @@ export class ChatManager {
                     // Array.isArray for the same reason as `conversation_documents`
                     // below: a non-array truthy `documents` passes `|| []` and then
                     // throws on .reduce, taking the whole frame handler with it.
-                    const docs = Array.isArray(data.documents)
-                        ? data.documents
-                        : [];
+                    // ...and filter the ELEMENTS too: Array.isArray passes for
+                    // `[null]`, and `d.char_count` then throws out of
+                    // handleMessage, skipping the badge refresh and footprint
+                    // update below. Same element-level guard app.ts uses on its
+                    // own untrusted frame arrays.
+                    const docs = (Array.isArray(data.documents) ? data.documents : []).filter((d) => !!d && typeof d === 'object');
                     if (docs.length === 1) {
                         const d = docs[0];
                         const charCount = typeof d.char_count === 'number' ? d.char_count : 0;
@@ -1206,7 +1264,11 @@ export class ChatManager {
                 // `docs.reduce` two lines down throws out of handleMessage — the
                 // blank-modal failure every field-level guard in this file exists
                 // to prevent, reached one level up.
-                const docs = Array.isArray(data.documents) ? data.documents : [];
+                // The element filter matters as much as the array check: a
+                // `[null]` element survives Array.isArray and then throws on
+                // `d.char_count` (here) / `d.file_kind` (in the modal renderer),
+                // blanking the Files modal and skipping the footprint update.
+                const docs = (Array.isArray(data.documents) ? data.documents : []).filter((d) => !!d && typeof d === 'object');
                 this.renderChatFilesModal(convId, docs);
                 // Feed the persistent-document footprint into the context-window
                 // meter so attached files are reflected on OPEN, before the first
@@ -1237,8 +1299,12 @@ export class ChatManager {
                 break;
             case 'document_memory_content':
                 // Full content arrived for the document currently being
-                // edited — populate the editor form.
-                this.hydrateChatFileEditor(data.document);
+                // edited — populate the editor form. Guard the cast: the
+                // hydrator dereferences `doc.id` on its first line, so an
+                // absent/null `document` field would throw out of handleMessage.
+                if (data.document && typeof data.document === 'object') {
+                    this.hydrateChatFileEditor(data.document);
+                }
                 break;
             case 'document_memory_updated':
                 // Server ack for a save. Close editor, refetch the list
@@ -2472,9 +2538,22 @@ export class ChatManager {
             btn.addEventListener('click', async () => {
                 const idx = parseInt(btn.dataset.msgIdx || '-1', 10);
                 if (idx >= 0) {
+                    // Capture the message OBJECT before the dialog: the array can
+                    // shift while the confirm is up (a stream ending pushes and
+                    // trimLocalMessages() slices off the front past 200), and a
+                    // captured index would then delete the NEIGHBOUR plus its
+                    // pair — permanently, server-side. Re-resolve after the await
+                    // like finalizeStreamingMessage and HistoryManager already do.
+                    const target = this.messages[idx];
                     const confirmed = await showConfirmDialog('Delete this message?');
-                    if (confirmed)
-                        this.deleteMessage(idx);
+                    if (!confirmed)
+                        return;
+                    const currentIdx = target ? this.messages.indexOf(target) : -1;
+                    if (currentIdx < 0) {
+                        showToast('Message list changed — nothing deleted', { type: 'error' });
+                        return;
+                    }
+                    this.deleteMessage(currentIdx);
                 }
             });
         });
@@ -2489,18 +2568,24 @@ export class ChatManager {
                 if (!Number.isFinite(messageId) || messageId <= 0)
                     return;
                 const nextPinned = el.dataset.pinned !== '1';
+                // `conversation_id` is REQUIRED by handle_pin_message: the
+                // UPDATE is scoped to it so a stale button (or a forged frame)
+                // can't flip the pin on a message in a different conversation.
+                const convId = this.currentConversation?.id ?? null;
+                if (!convId)
+                    return;
                 // Send first; only flip locally if the WS is open. send()
                 // shows a toast on disconnected — without this guard the
                 // local state would drift from the server's view.
                 if (!this.connected) {
-                    this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
+                    this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned, conversation_id: convId });
                     return;
                 }
                 // Only flip locally if the frame actually went out — send() can
                 // still return false if the socket closes between the connected
                 // check above and ws.send() (InvalidStateError), which would
                 // otherwise drift the UI from the server until the next refresh.
-                const ok = this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned });
+                const ok = this.send({ type: 'pin_message', message_id: messageId, pinned: nextPinned, conversation_id: convId });
                 if (!ok)
                     return;
                 // Optimistic local update. Use the SAME in-place button update the
@@ -2534,14 +2619,18 @@ export class ChatManager {
                 if (!Number.isFinite(messageId) || messageId <= 0)
                     return;
                 const nextLiked = el.dataset.liked !== '1';
+                // Required conversation scope — see the pin handler above.
+                const convId = this.currentConversation?.id ?? null;
+                if (!convId)
+                    return;
                 if (!this.connected) {
-                    this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
+                    this.send({ type: 'like_message', message_id: messageId, liked: nextLiked, conversation_id: convId });
                     return;
                 }
                 // Only flip locally if the frame actually went out (see pin
                 // handler above) — a send() that returned false would drift the
                 // UI from the server's view until the next list refresh.
-                const ok = this.send({ type: 'like_message', message_id: messageId, liked: nextLiked });
+                const ok = this.send({ type: 'like_message', message_id: messageId, liked: nextLiked, conversation_id: convId });
                 if (!ok)
                     return;
                 // Same in-place update as the pin handler above (and as the
@@ -3554,31 +3643,58 @@ export class ChatManager {
             // Auto-resize
             textarea.style.height = Math.min(textarea.scrollHeight, 300) + 'px';
         }
+        // The editor legitimately stays open across turns, and the array shifts
+        // underneath it (a stream ending pushes and trimLocalMessages() slices
+        // off the front past 200). Resolve the CURRENT index of the message this
+        // editor was opened on at click time — the captured msgIdx would target
+        // whatever slid into that slot. Same pattern as finalizeStreamingMessage.
+        const resolveIdx = () => this.messages.indexOf(msg);
         // Save button (edit only, no regenerate)
         contentEl.querySelector('.edit-save-btn')?.addEventListener('click', () => {
             const newContent = contentEl.querySelector('.edit-textarea')?.value?.trim();
+            const currentIdx = resolveIdx();
+            if (currentIdx < 0) {
+                showToast('Message list changed — edit not saved', { type: 'error' });
+                return;
+            }
             if (newContent && newContent !== originalContent) {
-                this.saveEdit(msgIdx, newContent, false);
+                this.saveEdit(currentIdx, newContent, false);
             }
             else {
-                this.cancelEdit(msgIdx, originalContent);
+                // Restore by ELEMENT, not by index — see `cancel` below.
+                this.restoreEditedBubble(msgEl, originalContent);
             }
         });
         // Save & Regenerate button (edit + regenerate AI response)
         contentEl.querySelector('.edit-save-regen-btn')?.addEventListener('click', () => {
             const newContent = contentEl.querySelector('.edit-textarea')?.value?.trim();
+            const currentIdx = resolveIdx();
+            if (currentIdx < 0) {
+                showToast('Message list changed — edit not saved', { type: 'error' });
+                return;
+            }
             if (newContent) {
-                this.saveEdit(msgIdx, newContent, true);
+                this.saveEdit(currentIdx, newContent, true);
             }
         });
-        // Cancel button
-        contentEl.querySelector('.edit-cancel-btn')?.addEventListener('click', () => {
-            this.cancelEdit(msgIdx, originalContent);
-        });
+        // Cancel restores by ELEMENT, never by index. Cancelling is a pure DOM
+        // operation, but cancelEdit(idx) re-derives the element from
+        // `idx - visibleStartIdx` — a mapping that is only valid as of the last
+        // renderMessages(). Both halves of it can go stale independently: the
+        // ARRAY index shifts when a stream ends and trimLocalMessages() slices
+        // off the front past 200, while `visibleStartIdx` does not move until
+        // the next render. So neither the captured msgIdx nor a freshly
+        // resolved one is reliably the right DOM slot, and picking the wrong
+        // one repaints the NEIGHBOUR's bubble with this message's text. `msgEl`
+        // is the element this editor was actually opened on; if a re-render has
+        // since replaced it, the node is detached and the click that got us
+        // here could not have fired.
+        const cancel = () => this.restoreEditedBubble(msgEl, originalContent);
+        contentEl.querySelector('.edit-cancel-btn')?.addEventListener('click', cancel);
         // Escape key to cancel
         textarea?.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
-                this.cancelEdit(msgIdx, originalContent);
+                cancel();
             }
         });
     }
@@ -3624,6 +3740,15 @@ export class ChatManager {
         const msgEl = msgElements[msgIdx - this.visibleStartIdx];
         if (!msgEl)
             return;
+        this.restoreEditedBubble(msgEl, originalContent);
+    }
+    /** Put one message bubble back into its normal (non-editing) state.
+     *
+     *  Element-addressed, so callers that already hold the node never have to
+     *  round-trip through an index whose DOM mapping may have gone stale (see
+     *  the `cancel` closure in startEditMessage). cancelEdit() is the
+     *  index-addressed wrapper for the call sites that only have one. */
+    restoreEditedBubble(msgEl, originalContent) {
         const contentEl = msgEl.querySelector('.message-content');
         const actionsEl = msgEl.querySelector('.message-actions');
         if (contentEl) {
@@ -3690,8 +3815,15 @@ export class ChatManager {
         // Build history from messages before the edited message
         // Strip unnecessary fields (images/thinking/mode) to reduce payload size,
         // but keep `created_at` so the backend retains per-message timing.
+        // `.filter(m => !m.failed)` for the same reason sendMessage() does it:
+        // an abandoned failed-send bubble stays in this.messages (so its inline
+        // Retry still works) but was NEVER delivered, so replaying it here
+        // hands the backend a user turn with no assistant reply — a phantom
+        // turn the model then answers around. This path rebuilds the whole
+        // history block (edit_message wipes the CLI --resume session), so the
+        // phantom really does reach the prompt.
         const editedIdx = this.messages.indexOf(editedMsg);
-        const historyToSend = this.messages.slice(0, editedIdx).map(m => ({
+        const historyToSend = this.messages.slice(0, editedIdx).filter(m => !m.failed).map(m => ({
             role: m.role,
             content: m.content,
             created_at: m.created_at,

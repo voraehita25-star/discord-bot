@@ -112,6 +112,53 @@ async def test_pin_and_unpin_message_persists(fresh_db):
 
 
 @pytest.mark.asyncio
+async def test_pin_scope_blocks_cross_conversation(fresh_db):
+    """`expected_conversation_id` must make the UPDATE a no-op for a foreign id.
+
+    Without the scope the UPDATE matched on message id alone, so a client in
+    conversation B could toggle the pin on a message owned by conversation A.
+    """
+    db = fresh_db
+    for cid, title in (("conv-scope-a", "A"), ("conv-scope-b", "B")):
+        await db.create_dashboard_conversation(
+            cid,
+            title=title,
+            role_preset="general",
+            system_instruction="",
+            thinking_enabled=False,
+        )
+    msg_id = await db.save_dashboard_message("conv-scope-a", "user", "owned by A")
+
+    # Wrong conversation: refused, state unchanged.
+    assert (
+        await db.update_dashboard_message_pin(msg_id, True, expected_conversation_id="conv-scope-b")
+        is False
+    )
+    assert (await db.get_dashboard_messages("conv-scope-a"))[0]["is_pinned"] is False
+    assert (
+        await db.update_dashboard_message_liked(
+            msg_id, True, expected_conversation_id="conv-scope-b"
+        )
+        is False
+    )
+    assert (await db.get_dashboard_messages("conv-scope-a"))[0]["liked"] is False
+
+    # Owning conversation: applied.
+    assert (
+        await db.update_dashboard_message_pin(msg_id, True, expected_conversation_id="conv-scope-a")
+        is True
+    )
+    assert (await db.get_dashboard_messages("conv-scope-a"))[0]["is_pinned"] is True
+    assert (
+        await db.update_dashboard_message_liked(
+            msg_id, True, expected_conversation_id="conv-scope-a"
+        )
+        is True
+    )
+    assert (await db.get_dashboard_messages("conv-scope-a"))[0]["liked"] is True
+
+
+@pytest.mark.asyncio
 async def test_pin_missing_message_returns_false(fresh_db):
     db = fresh_db
     # Pinning a non-existent message must return False and not raise.
