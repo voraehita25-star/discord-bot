@@ -690,12 +690,11 @@ class AI(commands.Cog):
         # ทำให้ owner ไม่เห็นข้อความยืนยันทั้งที่ wipe สำเร็จแล้ว
         if ctx.interaction is not None:
             await ctx.defer()
-        channel_id = ctx.channel.id
         # RP guild: commands are issued in the COMMAND channel but the session
-        # lives under the OUTPUT channel id (logic.py keys by context channel)
-        # — same redirect as !thinking / !streaming / !resend. Without it the
-        # wipe hit the unused COMMAND-channel session and the real memory,
-        # DB history, and Claude --resume session all survived.
+        # lives under the OUTPUT channel id (logic.py keys by context channel).
+        # Without the redirect the wipe hit the unused COMMAND-channel session
+        # and the real memory, DB history, and Claude --resume session all
+        # survived. See _session_channel_id.
         channel_id = self._session_channel_id(ctx.guild.id if ctx.guild else None, ctx.channel.id)
 
         # Wait (bounded) for an in-flight generation to finish so its final
@@ -2207,9 +2206,8 @@ class AI(commands.Cog):
         Usage: !auto_summarize [max_tokens]   (alias: !trim_history)
         Default: 500000 tokens (500K)
         """
-        channel_id = ctx.channel.id
-        # Same RP redirect as !thinking / !streaming / !reset_ai — sessions in
-        # the RP guild are keyed under the OUTPUT channel id.
+        # Sessions in the RP guild are keyed under the OUTPUT channel id —
+        # see _session_channel_id.
         channel_id = self._session_channel_id(ctx.guild.id if ctx.guild else None, ctx.channel.id)
 
         chat_data = self.chat_manager.chats.get(channel_id)
