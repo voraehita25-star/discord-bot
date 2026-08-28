@@ -203,18 +203,14 @@ class TestCliPath:
         assert captured["prompt"] == "the prompt"
 
     @pytest.mark.asyncio
-    async def test_it_does_not_override_the_operators_reasoning_depth(self, monkeypatch):
-        """Reasoning depth is an operator setting; ``_build_claude_argv``'s
-        docstring sanctions exactly one exception (the safeguard retry).
+    async def test_reasoning_depth_is_pinned_deep_by_default(self, monkeypatch):
+        """Extraction writes into long-term memory, so it does not economise on
+        depth — an operator decision, pinned independently of CLAUDE_EFFORT.
 
-        This path pinned ``--effort low`` for a while on the theory that a deep
-        trace would eat the output budget — but the CLI exposes no --max-tokens,
-        so there is no budget to eat, and a measured head-to-head (3 runs each,
-        low vs max) found identical input tokens, overlapping output-token
-        ranges and overlapping wall clock. The override bought nothing and
-        exempted part of the system from CLAUDE_EFFORT, so it is gone.
+        (An earlier ``low`` pin was removed: it rested on a failure mode that
+        needs a ``--max-tokens`` the CLI does not expose, and measured identical
+        input tokens with overlapping output/latency against ``max``.)
         """
-        from cogs.ai_core.api.dashboard_chat_claude_cli import _CLI_EFFORT
         from cogs.ai_core.memory.extraction_backend import complete_text
 
         captured: dict = {}
@@ -223,7 +219,43 @@ class TestCliPath:
         await complete_text(prompt="p", max_tokens=100)
 
         argv = captured["argv"]
+        assert argv[argv.index("--effort") + 1] == "max"
+
+    @pytest.mark.asyncio
+    async def test_the_depth_is_tunable(self, monkeypatch):
+        from cogs.ai_core.memory.extraction_backend import complete_text
+
+        captured: dict = {}
+        self._patch_cli(monkeypatch, chunks=["ok"], captured=captured)
+        monkeypatch.setenv("MEMORY_EXTRACTION_EFFORT", "high")
+
+        await complete_text(prompt="p", max_tokens=100)
+
+        argv = captured["argv"]
+        assert argv[argv.index("--effort") + 1] == "high"
+
+    @pytest.mark.asyncio
+    async def test_inherit_follows_the_operators_setting(self, monkeypatch):
+        """The escape hatch back to "depth is an operator setting"."""
+        from cogs.ai_core.api.dashboard_chat_claude_cli import _CLI_EFFORT
+        from cogs.ai_core.memory.extraction_backend import complete_text
+
+        captured: dict = {}
+        self._patch_cli(monkeypatch, chunks=["ok"], captured=captured)
+        monkeypatch.setenv("MEMORY_EXTRACTION_EFFORT", "inherit")
+
+        await complete_text(prompt="p", max_tokens=100)
+
+        argv = captured["argv"]
         assert argv[argv.index("--effort") + 1] == _CLI_EFFORT
+
+    def test_a_bad_depth_falls_back_to_the_default(self, monkeypatch):
+        from cogs.ai_core.memory.extraction_backend import _extraction_effort
+
+        monkeypatch.setenv("MEMORY_EXTRACTION_EFFORT", "banana")
+        assert _extraction_effort() == "max"
+        monkeypatch.setenv("MEMORY_EXTRACTION_EFFORT", "  XHIGH ")
+        assert _extraction_effort() == "xhigh"
 
     @pytest.mark.asyncio
     async def test_the_transcript_is_unlinked(self, monkeypatch):

@@ -60,29 +60,53 @@ _BACKEND_ENV = "MEMORY_EXTRACTION_BACKEND"
 _MODEL_ENV = "MEMORY_EXTRACTION_MODEL"
 _DEFAULT_CLI_MODEL = "claude-haiku-4-5-20251001"
 
-# NOTE on reasoning depth: this path passes NO ``effort`` override, so the CLI
-# runs extraction at the operator's ``CLAUDE_EFFORT`` like every other turn.
+# Reasoning depth for extraction, pinned at the operator's request rather than
+# inherited from ``CLAUDE_EFFORT``. These are the jobs whose output is written
+# into long-term memory and re-read on every later turn — a fact extracted wrong
+# is wrong for the rest of the conversation's life — so the operator's call is
+# to always give them the deepest setting, independently of what the
+# conversational path is running at.
 #
-# It briefly pinned ``low``, on the reasoning that a deep trace would eat the
-# output budget — the failure ``thinking_off_kwargs`` guards on the SDK path.
-# That reasoning does not transfer: the CLI exposes no ``--max-tokens`` at all
-# (see this package's CLI module docstring), so there is no shared budget for a
-# trace to consume. Measured head-to-head instead, 3 runs each on the same
-# extraction, ``low`` vs this deployment's ``max``:
+# What that costs, measured: 3 runs each of the same extraction at ``low`` vs
+# ``max``.
 #
 #   input tokens   693 vs 693        (identical, as expected)
 #   output tokens  1,056 vs 1,187 mean — ranges 862-1,352 vs 777-1,520
 #   wall clock     8.3-20.8s vs 7.7-14.7s
 #
-# Both dimensions overlap completely; the 1.12x is inside run-to-run noise, and
-# all six runs parsed. So the override bought nothing measurable — while
-# quietly exempting part of the system from ``CLAUDE_EFFORT``. The repo's rule
-# is that reasoning depth is an OPERATOR setting (see CLAUDE.md), and
-# ``_build_claude_argv``'s docstring names exactly one sanctioned exception: the
-# ``[reasoning_extraction]`` safeguard retry. An unmeasurable optimisation does
-# not earn a second one. If extraction ever proves expensive at a realistic
-# conversation size — these runs were 6 messages, the consolidator feeds up to
-# 50 — measure that case and add the knob then.
+# Both dimensions overlap completely and all six runs parsed, so at this sample
+# size ``max`` is not measurably more expensive — and equally, there is no
+# evidence it extracts BETTER. It is a deliberate default, not a demonstrated
+# win; the note is here so nobody reads the pin as an established result.
+#
+# This is a second exception to ``_build_claude_argv``'s "depth is the operator's
+# setting" rule (the first is the ``[reasoning_extraction]`` safeguard retry).
+# It earns one because the operator chose it explicitly and it is visible and
+# tunable here, unlike the earlier ``low`` pin this replaced — which was added on
+# an incorrect premise (that a deep trace would eat the output budget, a failure
+# mode that needs a ``--max-tokens`` the CLI does not expose) and bought nothing.
+_EFFORT_ENV = "MEMORY_EXTRACTION_EFFORT"
+_DEFAULT_EXTRACTION_EFFORT = "max"
+
+
+def _extraction_effort() -> str | None:
+    """Resolve ``MEMORY_EXTRACTION_EFFORT``; ``inherit`` follows CLAUDE_EFFORT.
+
+    Returns ``None`` for ``inherit``, which is how ``_build_claude_argv`` is told
+    "no override" — the turn then runs at ``_CLI_EFFORT`` like any other. An
+    off-ladder value is refused there anyway, but catching it here means the
+    warning names this setting rather than looking like an argv bug.
+    """
+    raw = (os.getenv(_EFFORT_ENV) or "").strip().lower()
+    if not raw:
+        return _DEFAULT_EXTRACTION_EFFORT
+    if raw == "inherit":
+        return None
+    if raw not in ("low", "medium", "high", "xhigh", "max"):
+        logger.warning("Invalid %s=%r; using %s", _EFFORT_ENV, raw, _DEFAULT_EXTRACTION_EFFORT)
+        return _DEFAULT_EXTRACTION_EFFORT
+    return raw
+
 
 # These run in the background, off the turn loop, and each one is a process.
 # Cap how many can be in flight at once so a burst of channels crossing their
@@ -202,7 +226,8 @@ async def _complete_via_cli(prompt: str, *, timeout: float) -> str:
 
     Deliberately the narrowest possible invocation: no ``--resume`` (each
     extraction is independent), no web, no MCP tools, no image Read, and a
-    replacement system prompt that states only the output contract. The transcript the run leaves behind is unlinked afterwards —
+    replacement system prompt that states only the output contract. Reasoning
+    depth is the one thing it does NOT economise on — see ``_extraction_effort``. The transcript the run leaves behind is unlinked afterwards —
     without that, every consolidation would orphan a ``.jsonl`` the way the
     Discord path's forked sessions used to.
     """
@@ -226,7 +251,9 @@ async def _complete_via_cli(prompt: str, *, timeout: float) -> str:
         enable_web=False,
         ai_tool_names=None,
         model=_cli_model(),
-        # No effort override — see the note above the model constants.
+        # Pinned deep by default — these results are written into long-term
+        # memory. See _extraction_effort.
+        effort=_extraction_effort(),
         system_prompt_file=_ensure_system_prompt_file(_EXTRACTION_SYSTEM_PROMPT),
         replace_system_prompt=True,
     )
