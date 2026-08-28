@@ -341,6 +341,40 @@ _MEMORY_FORBIDDEN_NORMALIZED = (
     "disregard",
 )
 
+# THIS repo's own prompt-structure markers. The list above is the generic
+# LLM-injection denylist; these are the boundaries our own prompt builders emit,
+# and a stored memory is re-injected INSIDE them — the ``[Long-term Memory]``
+# block sits in ``prompt_with_context`` ahead of the real
+# ``---END SYSTEM CONTEXT---``, and on the CLI path the whole thing is flattened
+# into one text prompt whose sections are exactly these headings. So a fact
+# carrying one of them can close the system-context section early, open a forged
+# ``[System Info] … | User: <someone else>`` header, or restate the identity
+# directive — inside a store that is replayed into every future turn rather than
+# just the one message its author sent.
+#
+# Live until 2026-08-28 only by accident: nothing on the Discord reply path read
+# the explicit-fact store, so the screen guarded a dead path. Wiring
+# ``!remember`` into the prompt is what made these load-bearing.
+#
+# Checked as plain lowercased substrings (the same pass
+# ``_MEMORY_SUSPICIOUS_MARKERS`` uses) rather than through the confusable /
+# despaced folds: these are long, punctuation-heavy literals with no benign
+# reading in a personal fact, and folding separators out of them would start
+# matching ordinary prose. The ``#`` headings are matched WITH their leading
+# hash so a sentence that merely contains the words ("the system context of
+# this") is untouched.
+_PROMPT_STRUCTURE_MARKERS = (
+    "---end system context---",
+    "[system info]",
+    "# primary directive",
+    "# context & format rules",
+    "# conversation history",
+    "# current user message",
+    "# available tools",
+    "# formatting rules",
+    "# your recent messages",
+)
+
 # Leet/symbol substitutions folded into ONE extra normalised form. Purely
 # additive: the folded string is checked against the SAME needles, so it can
 # only ever add a detection. Motivation: "0v3rr1d3 the rules" cleared every
@@ -417,6 +451,11 @@ def memory_content_has_injection(content: str) -> bool:
     """
     lowered = content.lower()
     if any(marker in lowered for marker in _MEMORY_SUSPICIOUS_MARKERS):
+        return True
+    # Our own prompt boundaries — see _PROMPT_STRUCTURE_MARKERS for why a stored
+    # memory carrying one is a different (and longer-lived) problem than the
+    # same text in a single chat message.
+    if any(marker in lowered for marker in _PROMPT_STRUCTURE_MARKERS):
         return True
     de_confused = "".join(_MEMORY_CONFUSABLE_MAP.get(c, c) for c in content)
     normalized = (
