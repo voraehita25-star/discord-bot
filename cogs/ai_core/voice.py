@@ -121,23 +121,35 @@ def parse_voice_command(message: str) -> tuple[str | None, int | None]:
     """
     msg_lower = message.lower()
 
-    # Join patterns
-    join_patterns = [
-        "เข้ามารอใน",
-        "เข้าไปรอใน",
-        "join vc",
-        "join voice",
-        "เข้า vc",
-        "มารอใน",
-        "เข้าห้อง",
-        "เข้ามาใน",
-    ]
+    # Join phrases that can only mean "join a voice channel" — they name the
+    # voice channel explicitly, so they stand on their own with no id.
+    join_explicit = ["join vc", "join voice", "เข้า vc", "เข้าห้องเสียง", "เข้าช่องเสียง"]
 
-    # Leave patterns. The Thai patterns and multi-word English phrases are
-    # matched as substrings; the bare English word "disconnect" is matched with
-    # word boundaries so a narrative mention ("the bot keeps disconnecting",
-    # "he disconnected") doesn't silently force-disconnect every voice client.
-    leave_patterns = ["ออกจาก vc", "leave vc", "leave voice", "ออกจากห้อง", "ออก vc"]
+    # Join phrases that are also ordinary Thai. "เข้าห้อง" is *enter the room*
+    # ("เข้าห้องน้ำ", "เข้าห้องเรียน"), "เข้ามาใน" is *come into* — the single
+    # most common opening in RP narration — and "มารอใน" is *wait in*. Matched
+    # as bare substrings they turned a DM like "เดี๋ยวเข้าห้องน้ำก่อนนะ" into a
+    # voice-join attempt instead of a reply (measured). They still work, but
+    # only when the message also names a channel id, which is what a real
+    # command carries anyway.
+    join_ambiguous = ["เข้ามารอใน", "เข้าไปรอใน", "มารอใน", "เข้าห้อง", "เข้ามาใน"]
+
+    # Leave patterns. Same rule, and it matters more here because leave is
+    # DESTRUCTIVE — it disconnects every voice client the bot holds — and takes
+    # no channel id, so there is no second signal to confirm intent with. Only
+    # phrases that name the voice channel qualify: bare "ออกจากห้อง" is *left
+    # the room* ("ออกจากห้องน้ำแล้ว", "ออกจากห้องประชุม") and used to force a
+    # disconnect from a passing remark. This is the same narrative-mention
+    # hazard the word-boundary guard on "disconnect" below already covers; the
+    # Thai side was simply never given it.
+    leave_patterns = [
+        "ออกจาก vc",
+        "leave vc",
+        "leave voice",
+        "ออก vc",
+        "ออกจากห้องเสียง",
+        "ออกจากช่องเสียง",
+    ]
 
     # Check for leave
     if any(pattern in msg_lower for pattern in leave_patterns) or re.search(
@@ -145,14 +157,19 @@ def parse_voice_command(message: str) -> tuple[str | None, int | None]:
     ):
         return "leave", None
 
-    # Check for join - extract channel ID
-    for pattern in join_patterns:
-        if pattern in msg_lower:
-            # Try to find channel ID in message
-            channel_match = PATTERN_CHANNEL_ID.search(message)
-            if channel_match:
-                return "join", int(channel_match.group(1))
-            return "join", None
+    # Explicit join: act even without an id, so the caller can ask for one.
+    if any(pattern in msg_lower for pattern in join_explicit):
+        channel_match = PATTERN_CHANNEL_ID.search(message)
+        return "join", int(channel_match.group(1)) if channel_match else None
+
+    # Ambiguous join: the channel id IS the confirmation. Without one the
+    # message falls through and is answered as chat, which is the right outcome
+    # for narration and the recoverable one for a genuine command (say it again
+    # with the id, or use "join vc").
+    if any(pattern in msg_lower for pattern in join_ambiguous):
+        channel_match = PATTERN_CHANNEL_ID.search(message)
+        if channel_match:
+            return "join", int(channel_match.group(1))
 
     return None, None
 

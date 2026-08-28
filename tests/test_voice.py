@@ -302,22 +302,30 @@ class TestParseVoiceCommand:
         assert channel_id is None
 
     def test_parse_join_variants(self):
-        """Test various join patterns."""
+        """Join patterns come in two tiers.
+
+        A phrase that names the voice channel stands on its own. A phrase that
+        is also ordinary Thai ("เข้าห้อง" = enter the room, "เข้ามาใน" = come
+        into) needs the channel id as confirmation — bare, those turned a DM
+        like "เดี๋ยวเข้าห้องน้ำก่อนนะ" into a join attempt. See
+        TestVoiceCommandDoesNotFireOnOrdinaryThai.
+        """
         from cogs.ai_core.voice import parse_voice_command
 
-        patterns = [
-            "เข้าไปรอใน",
-            "join vc",
-            "join voice",
-            "เข้า vc",
-            "มารอใน",
-            "เข้าห้อง",
-            "เข้ามาใน",
-        ]
-
-        for pattern in patterns:
+        explicit = ["join vc", "join voice", "เข้า vc", "เข้าห้องเสียง"]
+        for pattern in explicit:
             action, _ = parse_voice_command(pattern)
             assert action == "join", f"Failed for pattern: {pattern}"
+
+        ambiguous = ["เข้าไปรอใน", "มารอใน", "เข้าห้อง", "เข้ามาใน"]
+        for pattern in ambiguous:
+            assert parse_voice_command(pattern) == (None, None), (
+                f"{pattern!r} is ordinary Thai and must not fire on its own"
+            )
+            action, channel_id = parse_voice_command(f"{pattern} 123456789012345678")
+            assert (action, channel_id) == ("join", 123456789012345678), (
+                f"Failed for pattern with id: {pattern}"
+            )
 
 
 class TestGetVoiceStatus:
@@ -514,3 +522,76 @@ class TestModuleImports:
         assert parse_voice_command is not None
         assert get_voice_status is not None
         assert PATTERN_CHANNEL_ID is not None
+
+
+class TestVoiceCommandDoesNotFireOnOrdinaryThai:
+    """Regression: the join/leave phrase lists were bare substrings, and several
+    of them are ordinary Thai. In the owner's DM — the only path that consults
+    this parser — "เดี๋ยวเข้าห้องน้ำก่อนนะ" became a voice-join attempt and
+    "ออกจากห้องน้ำแล้ว" force-disconnected every voice client the bot held,
+    instead of either being answered as chat.
+
+    This is the same narrative-mention hazard the word-boundary guard on the
+    English "disconnect" already covers; the Thai side was never given it.
+    """
+
+    @staticmethod
+    def _parse(text: str):
+        from cogs.ai_core.voice import parse_voice_command
+
+        return parse_voice_command(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "เดี๋ยวเข้าห้องน้ำก่อนนะ",
+            "เขาเข้าห้องเรียนไปแล้ว",
+            "เธอเข้ามาในห้องอย่างเงียบๆ",
+            "มารอในสวนนะ",
+        ],
+    )
+    def test_narration_is_not_a_join(self, text):
+        assert self._parse(text) == (None, None)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "ออกจากห้องน้ำแล้ว",
+            "พวกเราออกจากห้องประชุมกัน",
+        ],
+    )
+    def test_narration_does_not_force_a_disconnect(self, text):
+        """Leave is destructive and carries no id, so there is no second signal
+        to confirm intent — the phrase itself has to be unambiguous."""
+        assert self._parse(text) == (None, None)
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("join vc", ("join", None)),
+            ("join voice", ("join", None)),
+            ("เข้า vc", ("join", None)),
+            ("เข้าห้องเสียง", ("join", None)),
+            ("join vc 123456789012345678", ("join", 123456789012345678)),
+            ("ออกจาก vc", ("leave", None)),
+            ("leave vc", ("leave", None)),
+            ("ออกจากห้องเสียง", ("leave", None)),
+            ("disconnect", ("leave", None)),
+        ],
+    )
+    def test_explicit_commands_still_work(self, text, expected):
+        assert self._parse(text) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "เข้ามารอใน 123456789012345678",
+            "เข้าไปรอใน 123456789012345678",
+            "เข้าห้อง 123456789012345678",
+            "เข้ามาใน 123456789012345678",
+            "มารอใน 123456789012345678",
+        ],
+    )
+    def test_an_ambiguous_phrase_still_works_when_it_names_a_channel(self, text):
+        """The id is the confirmation — a real command carries one anyway."""
+        assert self._parse(text) == ("join", 123456789012345678)
