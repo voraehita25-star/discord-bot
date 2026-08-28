@@ -23,7 +23,6 @@ try:
 except ImportError:
     ANTHROPIC_AVAILABLE = False
 
-from ..claude_payloads import build_single_user_text_messages
 from ..data.constants import (
     CLAUDE_MODEL,
     CONSOLIDATE_EVERY_N_MESSAGES,
@@ -34,7 +33,6 @@ from ..data.constants import (
     MAX_RECENT_MESSAGES_FOR_EXTRACTION,
     MIN_CONVERSATION_LENGTH,
 )
-from ..data.model_caps import thinking_off_kwargs
 from .entity_memory import EntityFacts, entity_memory
 
 logger = logging.getLogger(__name__)
@@ -195,22 +193,24 @@ class MemoryConsolidator:
         self.max_recent_messages = MAX_RECENT_MESSAGES_FOR_EXTRACTION
 
     def initialize(self, api_key: str) -> bool:
-        """Initialize the Anthropic client.
+        """Initialize the Anthropic SDK client, when there is one to build.
 
-        Skipped under CLAUDE_BACKEND=cli — consolidation is an SDK-only
-        feature (the CLI doesn't expose the same one-shot extraction
-        prompt cleanly), so under CLI mode the consolidator stays inert
-        and ``record_message``/``consolidate`` become no-ops.
+        Returning False no longer means "consolidation is off". Under
+        ``CLAUDE_BACKEND=cli`` — the DEFAULT — there is no SDK client, and this
+        used to end the story: no facts were ever extracted, ``entity_memories``
+        stayed empty, and ``!remember`` was the only writer any long-term store
+        had. Extraction needs a MODEL, not the SDK specifically, so it now runs
+        through ``extraction_backend``, which spawns ``claude -p`` when the SDK
+        is absent. See :attr:`enabled`.
         """
         if not ANTHROPIC_AVAILABLE:
-            logger.warning("anthropic not available for memory consolidation")
+            logger.debug("anthropic SDK unavailable; consolidation will use the CLI backend")
             return False
 
         if os.getenv("CLAUDE_BACKEND", "cli").strip().lower() == "cli":
             logger.info(
-                "🚫 Memory Consolidator disabled (CLAUDE_BACKEND=cli) — "
-                "entity facts will not be extracted; existing entity_memory "
-                "rows remain searchable."
+                "🧠 Memory Consolidator: no SDK client under CLAUDE_BACKEND=cli — "
+                "fact extraction runs through the CLI backend instead."
             )
             return False
 
@@ -228,18 +228,23 @@ class MemoryConsolidator:
 
     @property
     def enabled(self) -> bool:
-        """True only when an SDK client is initialised (consolidation can run).
+        """True when SOME backend can run an extraction — SDK client or CLI.
 
-        Under ``CLAUDE_BACKEND=cli`` (the default) :meth:`initialize` returns
-        early and ``_client`` stays None, so :meth:`consolidate` is a no-op.
         Callers must gate ``record_message`` / ``should_consolidate`` on this:
         otherwise the counter climbs past the threshold, ``should_consolidate``
         stays True forever, and the live turn loop spawns a throwaway
         consolidation task on *every* subsequent message (the counter is only
         reset inside ``_consolidate_locked``'s ``finally``, which the
-        client-None early return at the top of ``consolidate`` never reaches).
+        no-backend early return at the top of ``consolidate`` never reaches).
+
+        This used to be ``self._client is not None``, which under the default
+        ``CLAUDE_BACKEND=cli`` was always False — so the whole subsystem was
+        dead on the shipped configuration. ``MEMORY_EXTRACTION_BACKEND=off``
+        restores that, deliberately.
         """
-        return self._client is not None
+        from .extraction_backend import extraction_available
+
+        return extraction_available(self._client)
 
     def record_message(self, channel_id: int) -> None:
         """Record that a message was processed for this channel."""
@@ -341,7 +346,7 @@ class MemoryConsolidator:
         Extract facts from history and update entity memory.
         Returns number of entities updated.
         """
-        if not self._client or not history:
+        if not history or not self.enabled:
             return 0
 
         # Hold ``_data_lock`` for the read-or-create so a concurrent
@@ -367,10 +372,10 @@ class MemoryConsolidator:
         self, channel_id: int, history: list[dict[str, Any]], guild_id: int | None
     ) -> int:
         # Re-check the precondition under the lock — the public wrapper
-        # already verified ``self._client``, but the lock might have been
-        # held while ``shutdown`` cleared it.
-        client = self._client
-        if client is None:
+        # already verified a backend was available, but the lock might have been
+        # held while ``shutdown`` cleared the SDK client or an operator flipped
+        # ``MEMORY_EXTRACTION_BACKEND=off``.
+        if not self.enabled:
             return 0
 
         # Snapshot the message count we're about to consume BEFORE the long
@@ -408,34 +413,22 @@ class MemoryConsolidator:
             )
             prompt = FACT_EXTRACTION_PROMPT.replace("{conversation}", _wrapped)
 
-            try:
-                # Thinking OFF explicitly: this call must return parseable JSON
-                # within 1000 tokens, and on the generations that think by
-                # default (Opus 5 / Sonnet 5 — the repo default) an omitted
-                # ``thinking`` field means adaptive thinking while max_tokens
-                # caps thinking PLUS visible text. Reasoning consumes the budget
-                # and the JSON arrives truncated, so _parse_extraction fails and
-                # this returns 0 entities on every run.
-                response = await asyncio.wait_for(
-                    client.messages.create(
-                        model=self.model,
-                        max_tokens=1000,
-                        messages=build_single_user_text_messages(prompt),
-                        **thinking_off_kwargs(self.model),
-                    ),
-                    timeout=60.0,  # 60 second timeout
-                )
-            except TimeoutError:
-                logger.warning("Consolidation API call timed out")
-                return 0
+            # Routed through ``extraction_backend`` so this works on BOTH
+            # backends: the SDK client when one exists, a ``claude -p``
+            # subprocess otherwise. It owns the thinking-off handling (max_tokens
+            # caps thinking PLUS visible text on the models that reason by
+            # default, so a trace truncates the JSON), the all-text-blocks join,
+            # and the timeout — and returns "" for every failure, which lands on
+            # the same "nothing extracted this round" path as an empty reply.
+            from .extraction_backend import complete_text
 
-            # Extract text from Claude response. Concatenate ALL text blocks —
-            # Opus 4.7 with thinking mode often emits multiple separate text
-            # blocks for the same logical reply, and stopping at the first
-            # one would silently truncate the JSON extraction payload mid-
-            # output. Mirror the summarizer's join-all approach.
-            response_text = "".join(
-                block.text for block in response.content if block.type == "text"
+            response_text = await complete_text(
+                prompt,
+                max_tokens=1000,
+                timeout=60.0,
+                client=self._client,
+                model=self.model,
+                purpose="fact extraction",
             )
 
             if not response_text:

@@ -125,17 +125,44 @@ class TestMemoryConsolidatorMethods:
         result = consolidator.should_consolidate(channel_id)
         assert result is True
 
-    def test_enabled_reflects_client_state(self):
-        """`enabled` is False until an SDK client is set (CLI mode stays inert)."""
+    def test_enabled_reflects_any_available_backend(self, monkeypatch):
+        """`enabled` asks "is there a MODEL behind me?", not "is there an SDK?".
+
+        It used to be ``self._client is not None``, which under the default
+        CLAUDE_BACKEND=cli was always False — the whole subsystem was dead on
+        the shipped configuration.
+        """
+        from cogs.ai_core.memory import extraction_backend
         from cogs.ai_core.memory.consolidator import MemoryConsolidator
 
+        # conftest pins the suite to sdk-only so nothing can spawn; this test
+        # is about the CLI branch, so opt into auto (with the availability probe
+        # stubbed below, still nothing spawns).
+        monkeypatch.setenv("MEMORY_EXTRACTION_BACKEND", "auto")
         consolidator = MemoryConsolidator()
-        # Fresh instance / CLI mode: no client -> disabled, so the live loop
-        # must not record messages or spawn consolidation tasks.
-        assert consolidator.enabled is False
 
-        consolidator._client = object()  # simulate initialize() in API mode
+        # An SDK client is sufficient on its own.
+        monkeypatch.setattr(extraction_backend, "cli_extraction_available", lambda: False)
+        consolidator._client = object()
         assert consolidator.enabled is True
+
+        # …and so is a working CLI backend, with no client at all.
+        consolidator._client = None
+        assert consolidator.enabled is False
+        monkeypatch.setattr(extraction_backend, "cli_extraction_available", lambda: True)
+        assert consolidator.enabled is True
+
+    def test_the_operator_can_turn_extraction_off(self, monkeypatch):
+        """`MEMORY_EXTRACTION_BACKEND=off` restores the old inert behaviour."""
+        from cogs.ai_core.memory import extraction_backend
+        from cogs.ai_core.memory.consolidator import MemoryConsolidator
+
+        monkeypatch.setattr(extraction_backend, "cli_extraction_available", lambda: True)
+        monkeypatch.setenv("MEMORY_EXTRACTION_BACKEND", "off")
+
+        consolidator = MemoryConsolidator()
+        consolidator._client = object()
+        assert consolidator.enabled is False
 
     def test_should_consolidate_by_time(self):
         """Test should_consolidate returns True when time threshold met."""
@@ -960,16 +987,29 @@ def _make_client_returning(text):
 class TestInitializeGating:
     """Cover initialize() branches: CLI gating, empty key, success, failure."""
 
-    def test_initialize_cli_backend_returns_false(self, monkeypatch):
-        """Under CLAUDE_BACKEND=cli initialize stays inert (no client)."""
+    def test_initialize_builds_no_sdk_client_under_the_cli_backend(self, monkeypatch):
+        """Returning False means "no SDK client", not "consolidation is off".
+
+        Extraction needs a model, not the SDK specifically — it now runs through
+        ``extraction_backend``, which spawns ``claude -p`` when there is no
+        client. ``enabled`` therefore tracks the CLI backend's availability
+        rather than ``_client``.
+        """
+        from cogs.ai_core.memory import extraction_backend
         from cogs.ai_core.memory.consolidator import MemoryConsolidator
 
         monkeypatch.setenv("CLAUDE_BACKEND", "cli")
+        monkeypatch.setenv("MEMORY_EXTRACTION_BACKEND", "auto")
         mc = MemoryConsolidator()
 
         assert mc.initialize("real-looking-key") is False
         assert mc._client is None
-        assert mc.enabled is False
+
+        monkeypatch.setattr(extraction_backend, "cli_extraction_available", lambda: True)
+        assert mc.enabled is True, "the CLI backend is the whole point of this path"
+
+        monkeypatch.setattr(extraction_backend, "cli_extraction_available", lambda: False)
+        assert mc.enabled is False, "no SDK client and no CLI binary means no backend"
 
     def test_initialize_empty_key_returns_false(self, monkeypatch):
         """API mode with a blank key logs an error and returns False."""

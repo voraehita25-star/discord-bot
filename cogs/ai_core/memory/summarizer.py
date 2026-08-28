@@ -73,19 +73,36 @@ class ConversationSummarizer:
         self.client: anthropic.AsyncAnthropic | None = None
         self.model = SUMMARIZATION_MODEL
 
-        # Skip SDK init under CLAUDE_BACKEND=cli — summarization is a
-        # paid-API feature; under CLI mode summarize() will return None
-        # and callers fall back to the raw history.
+        # No SDK client under CLAUDE_BACKEND=cli — but that no longer means no
+        # summarizer. Summarisation needs a model, not the SDK specifically, so
+        # ``summarize`` falls through to a ``claude -p`` subprocess (see
+        # ``extraction_backend``). Without that the default backend had NO
+        # summarizer at all: prompt-side history compression was off, and
+        # ``smart_trim_by_tokens(summarize=True)`` dropped old turns with nothing
+        # standing in for them — which is why the over-limit button has to warn
+        # that trimmed messages are deleted outright.
         if os.getenv("CLAUDE_BACKEND", "cli").strip().lower() == "cli":
             logger.info(
-                "🚫 Conversation summarizer disabled (CLAUDE_BACKEND=cli) — "
-                "long histories will not be auto-compressed."
+                "📝 Conversation summarizer: no SDK client under CLAUDE_BACKEND=cli — "
+                "summaries run through the CLI backend instead."
             )
         elif ANTHROPIC_API_KEY and anthropic is not None:
             try:
                 self.client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
             except Exception:
                 logger.exception("Failed to init Anthropic Client for summarization")
+
+    @property
+    def available(self) -> bool:
+        """Whether SOME backend can produce a summary — SDK client or CLI.
+
+        Callers used to test ``summarizer.client is not None``, which under the
+        default backend was always False. Test this instead;
+        ``MEMORY_EXTRACTION_BACKEND=off`` turns it back off deliberately.
+        """
+        from .extraction_backend import extraction_available
+
+        return extraction_available(self.client)
 
     async def summarize(self, history: list[dict[str, Any]], max_messages: int = 50) -> str | None:
         """Summarize conversation history.
@@ -97,7 +114,7 @@ class ConversationSummarizer:
         Returns:
             Summary string or None if failed.
         """
-        if not self.client or len(history) < 10:
+        if len(history) < 10 or not self.available:
             return None
 
         try:
@@ -140,27 +157,48 @@ class ConversationSummarizer:
                     # the budget and the summary comes back truncated or empty —
                     # which then trips the "empty summary from model" retry
                     # below on every attempt.
-                    response = await asyncio.wait_for(
-                        self.client.messages.create(
-                            model=self.model,
-                            max_tokens=SUMMARIZATION_MAX_OUTPUT_TOKENS,
-                            messages=build_single_user_text_messages(prompt),
-                            **thinking_off_kwargs(self.model),
-                        ),
-                        timeout=60.0,
-                    )
+                    if self.client is not None:
+                        response = await asyncio.wait_for(
+                            self.client.messages.create(
+                                model=self.model,
+                                max_tokens=SUMMARIZATION_MAX_OUTPUT_TOKENS,
+                                messages=build_single_user_text_messages(prompt),
+                                **thinking_off_kwargs(self.model),
+                            ),
+                            timeout=60.0,
+                        )
 
-                    # Concatenate ALL text blocks rather than taking only
-                    # the first. Claude can split a response across
-                    # multiple ``text`` blocks (interrupted by tool_use
-                    # or thinking blocks); the first-only path silently
-                    # truncated the summary in those cases.
-                    text_chunks = [
-                        getattr(block, "text", "")
-                        for block in response.content
-                        if getattr(block, "type", None) == "text" and getattr(block, "text", None)
-                    ]
-                    summary = "\n".join(text_chunks).strip() or None
+                        # Concatenate ALL text blocks rather than taking only
+                        # the first. Claude can split a response across
+                        # multiple ``text`` blocks (interrupted by tool_use
+                        # or thinking blocks); the first-only path silently
+                        # truncated the summary in those cases.
+                        text_chunks = [
+                            getattr(block, "text", "")
+                            for block in response.content
+                            if getattr(block, "type", None) == "text"
+                            and getattr(block, "text", None)
+                        ]
+                        summary = "\n".join(text_chunks).strip() or None
+                    else:
+                        # No SDK client — CLAUDE_BACKEND=cli, the DEFAULT. The
+                        # same prompt through a ``claude -p`` subprocess. This is
+                        # what lets the over-limit "ย่อประวัติแชท" button leave a
+                        # summary behind instead of only deleting, and what
+                        # re-enables prompt-side history compression.
+                        # ``complete_text`` returns "" for every failure, which
+                        # lands on the empty-response retry below rather than
+                        # raising into the SDK-flavoured handlers underneath.
+                        from .extraction_backend import complete_text
+
+                        summary = (
+                            await complete_text(
+                                prompt,
+                                max_tokens=SUMMARIZATION_MAX_OUTPUT_TOKENS,
+                                timeout=60.0,
+                                purpose="summarization",
+                            )
+                        ).strip() or None
 
                     if summary:
                         logger.info("📝 Generated conversation summary: %s...", summary[:50])

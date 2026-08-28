@@ -69,6 +69,34 @@ def closing_create_task_mock():
     return MagicMock(side_effect=_factory)
 
 
+# ==================== No live model calls from the test suite ====================
+
+
+@pytest.fixture(autouse=True)
+def _disable_memory_extraction_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the memory subsystems from spawning a real ``claude -p``.
+
+    ``summarizer`` and ``consolidator`` fall back to a CLI subprocess when there
+    is no Anthropic SDK client — which is the DEFAULT configuration, and the
+    whole point of ``memory/extraction_backend``. Under test that means any code
+    path reaching ``summarize()`` or ``consolidate()`` would spawn a real
+    process, hit the network, spend subscription quota and return
+    non-deterministic text. It is not hypothetical: wiring the backend up made
+    ``test_compress_history_needs_compression`` start producing a genuine
+    Thai-language summary of its own placeholder fixture, and added ~25s to the
+    suite.
+
+    ``sdk`` rather than ``off``: it uses whatever SDK client a test has already
+    mocked onto the subsystem — so every existing test that stubs
+    ``client.messages.create`` keeps working unchanged — while making the CLI
+    fallback unreachable, so nothing can spawn. Tests that want the CLI branch
+    set the env themselves and mock ``_run_claude_subprocess`` (see
+    ``test_memory_extraction_backend.py``); tests that want NO backend at all
+    set ``off``.
+    """
+    monkeypatch.setenv("MEMORY_EXTRACTION_BACKEND", "sdk")
+
+
 # ==================== Database Cleanup ====================
 
 

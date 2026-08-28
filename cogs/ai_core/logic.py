@@ -2251,7 +2251,7 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # length keyed on the source length; recompute only when the
                     # source length differs. Prompt-only semantics are preserved
                     # (compressed is never written back to chat_data["history"]).
-                    if summarizer.client is not None and len(history) > compress_threshold:
+                    if summarizer.available and len(history) > compress_threshold:
                         _cur_len = len(history)
                         _cache = chat_data.get("_compress_cache")
                         if not (isinstance(_cache, dict) and _cache.get("src_len") == _cur_len):
