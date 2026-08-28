@@ -52,6 +52,14 @@ class PendingMessage:
     output_channel: Any | None = None
     generate_response: bool = True
     user_message_id: int | None = None
+    # Set by ``merge_pending_messages`` on the message it returns: every Discord
+    # message id folded into that merged turn, oldest first. ``user_message_id``
+    # can only name one, and a merged turn becomes ONE history row — so without
+    # this the earlier messages of a burst were unreachable by the delete/edit
+    # mirroring and stayed in the AI's memory after being deleted from the
+    # channel. None on a single-message turn, where ``user_message_id`` says it
+    # all. Same shape as the model side's ``sent_message_ids``.
+    merged_message_ids: list[int] | None = None
     timestamp: float = field(default_factory=time.time)
 
 
@@ -343,6 +351,16 @@ class MessageQueue:
                     )
                     merged_attachments = merged_attachments[:_MAX_MERGED_ATTACHMENTS]
                 latest_msg.attachments = merged_attachments
+            # Carry every folded-in message id for the same reason the
+            # attachments are unioned above: the merged turn becomes ONE history
+            # row, and ``user_message_id`` can only name the last message. The
+            # earlier ones were therefore invisible to the Discord delete/edit
+            # mirroring — a user who deleted one of their rapid-fire messages
+            # kept it in the AI's memory, which is exactly what that mirroring
+            # exists to prevent. Oldest first, matching the merged body's order.
+            merged_ids = [m.user_message_id for m in pending if m.user_message_id is not None]
+            if merged_ids:
+                latest_msg.merged_message_ids = merged_ids
             logger.info(
                 "📝 Merged %d pending messages for channel %s",
                 len(pending),

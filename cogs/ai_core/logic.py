@@ -1608,6 +1608,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                 output_channel=latest_msg.output_channel,
                 generate_response=latest_msg.generate_response,
                 user_message_id=latest_msg.user_message_id,
+                # Every id folded into this merged turn, so deleting any ONE of
+                # the burst's messages still reaches the single row it became.
+                merged_message_ids=latest_msg.merged_message_ids,
             )
         # Guarded against a runaway merge bug — only reached when the
         # loop counter runs out without ``has_pending`` ever returning
@@ -1652,8 +1655,17 @@ class ChatManager(SessionMixin, ResponseMixin):
         output_channel: discord.TextChannel | discord.Thread | discord.DMChannel | None = None,
         generate_response: bool = True,
         user_message_id: int | None = None,
+        merged_message_ids: list[int] | None = None,
     ) -> None:
-        """Process chat message and generate AI response."""
+        """Process chat message and generate AI response.
+
+        ``merged_message_ids`` is set only by the pending-queue drain: a burst of
+        rapid messages is merged into ONE turn and therefore ONE history row,
+        which ``user_message_id`` can only address by its last message. Passing
+        the full list lets the row record them all (as ``sent_message_ids``,
+        which ``_row_covers_message`` already reads role-agnostically) so
+        deleting any one of them still mirrors into the AI's memory.
+        """
         # In CLI mode the SDK client stays None but the CLI subprocess
         # path can still answer. Allow either route through this gate;
         # the actual choice happens in ``_call_gemini_api_streaming`` /
@@ -2121,6 +2133,24 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # before this.
                     stored_user_text = f"{user_name}: {display_message}"
 
+                    # A merged burst is ONE row addressable by many Discord
+                    # messages. ``_row_covers_message`` reads ``sent_message_ids``
+                    # regardless of role, and ``remove_message_from_history``
+                    # already knows how to drop one id from a multi-message row
+                    # and re-point the headline — so reusing that field here
+                    # makes the user side work exactly like the model side, with
+                    # no new mechanism. Spread as **{} on a single-message turn
+                    # so those rows keep their existing shape byte for byte.
+                    _merged_ids_field: dict[str, Any] = (
+                        {
+                            "sent_message_ids": [
+                                {"name": "user", "id": mid} for mid in merged_message_ids
+                            ]
+                        }
+                        if merged_message_ids
+                        else {}
+                    )
+
                     # 3. Load character reference image if mentioned.
                     # Offload to a worker thread: load_character_image runs
                     # Image.open + .copy(), and .copy() forces a FULL pixel
@@ -2351,6 +2381,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                             # save path below).
                             "message_id": user_message_id,
                             "user_id": user.id,
+                            # Non-None only on a merged burst — see
+                            # ``merged_message_ids`` in the signature.
+                            **_merged_ids_field,
                         }
                         chat_data["history"].append(new_item)
                         await save_history(
@@ -2448,6 +2481,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                             # without it those rows could never be unlinked.
                             "message_id": user_message_id,
                             "user_id": user.id,
+                            # Non-None only on a merged burst — see
+                            # ``merged_message_ids`` in the signature.
+                            **_merged_ids_field,
                         }
                         chat_data["history"].append(user_item)
                         new_entries.append(user_item)
@@ -2494,6 +2530,9 @@ class ChatManager(SessionMixin, ResponseMixin):
                         "timestamp": current_time,
                         "message_id": user_message_id,
                         "user_id": user.id,
+                        # Non-None only on a merged burst — see
+                        # ``merged_message_ids`` in the signature.
+                        **_merged_ids_field,
                     }
                     chat_data["history"].append(user_item)
                     new_entries.append(user_item)
