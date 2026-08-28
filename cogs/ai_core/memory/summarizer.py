@@ -196,6 +196,12 @@ class ConversationSummarizer:
                                 prompt,
                                 max_tokens=SUMMARIZATION_MAX_OUTPUT_TOKENS,
                                 timeout=60.0,
+                                # The SAME model the SDK branch above uses
+                                # (CLAUDE_SUMMARIZATION_MODEL, falling back to
+                                # CLAUDE_MODEL) — the backend must not silently
+                                # summarise on a different model than the one
+                                # the operator configured.
+                                model=self.model,
                                 purpose="summarization",
                             )
                         ).strip() or None

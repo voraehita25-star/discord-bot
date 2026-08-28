@@ -53,12 +53,31 @@ logger = logging.getLogger(__name__)
 #           on the cli backend: no summaries, no auto-extracted facts)
 _BACKEND_ENV = "MEMORY_EXTRACTION_BACKEND"
 
-# The CLI backend spawns a real ``claude -p`` per call, so the model is a cost
-# knob. Extraction is structured JSON / a few sentences of summary — it wants a
-# fast cheap model, not the Discord persona's Opus. Haiku is the default;
-# override with MEMORY_EXTRACTION_MODEL if a deployment prefers otherwise.
+# Model for the CLI extraction call.
+#
+# The DEFAULT is whatever the caller already resolved — ``CLAUDE_MODEL`` for the
+# consolidator, ``CLAUDE_SUMMARIZATION_MODEL`` (falling back to ``CLAUDE_MODEL``)
+# for the summarizer. That is the model the SDK path uses, i.e. the one the
+# operator actually configured, and it is the polarity that matters here: this
+# module must not quietly substitute its own judgement for a configured setting.
+#
+# It did, briefly, and it cost recall. This defaulted to Haiku on the reasoning
+# that extraction is "structured JSON, so it wants a fast cheap model" — while
+# ``complete_text`` accepted a ``model`` argument, the consolidator passed its
+# own, and the CLI branch dropped it on the floor. Measured on one Thai
+# conversation, 2 runs each:
+#
+#   Haiku 4.5   3 entities (people only; every location missed), 7-10s
+#   Opus 5      7 entities (+ กรุงเทพ / เชียงใหม่ / นิมมานเหมินท์ / ญี่ปุ่น) and more
+#               facts per person (โล: 8 vs 4-6), 12-16s
+#
+# Same order of output tokens either way. So the "cheap model" default was
+# trading away the recall this subsystem exists to produce, for a few seconds,
+# against an operator who had configured Opus 5.
+#
+# ``MEMORY_EXTRACTION_MODEL`` is therefore an opt-OUT for a deployment that wants
+# to economise, not the place the default lives.
 _MODEL_ENV = "MEMORY_EXTRACTION_MODEL"
-_DEFAULT_CLI_MODEL = "claude-haiku-4-5-20251001"
 
 # Reasoning depth for extraction, pinned at the operator's request rather than
 # inherited from ``CLAUDE_EFFORT``. These are the jobs whose output is written
@@ -143,8 +162,21 @@ def _backend_mode() -> str:
     return mode
 
 
-def _cli_model() -> str:
-    return (os.getenv(_MODEL_ENV) or "").strip() or _DEFAULT_CLI_MODEL
+def _cli_model(preferred: str | None = None) -> str:
+    """Resolve the CLI extraction model: env override, else the caller's own.
+
+    ``preferred`` is what the calling subsystem already resolved for its SDK
+    path. Falling back to ``CLAUDE_MODEL`` covers a caller that passes nothing;
+    it is the same value those subsystems would have defaulted to anyway.
+    """
+    override = (os.getenv(_MODEL_ENV) or "").strip()
+    if override:
+        return override
+    if preferred and preferred.strip():
+        return preferred.strip()
+    from ..data.constants import CLAUDE_MODEL
+
+    return CLAUDE_MODEL
 
 
 def _get_cli_slots() -> asyncio.Semaphore:
@@ -221,7 +253,7 @@ async def _complete_via_sdk(
     )
 
 
-async def _complete_via_cli(prompt: str, *, timeout: float) -> str:
+async def _complete_via_cli(prompt: str, *, timeout: float, model: str | None = None) -> str:
     """Spawn one ``claude -p`` for the prompt and return the visible text.
 
     Deliberately the narrowest possible invocation: no ``--resume`` (each
@@ -250,7 +282,7 @@ async def _complete_via_cli(prompt: str, *, timeout: float) -> str:
         allow_edit_tools=False,
         enable_web=False,
         ai_tool_names=None,
-        model=_cli_model(),
+        model=_cli_model(model),
         # Pinned deep by default — these results are written into long-term
         # memory. See _extraction_effort.
         effort=_extraction_effort(),
@@ -303,8 +335,11 @@ async def complete_text(
 ) -> str:
     """Return the model's text for ``prompt``, or ``""`` if no backend answered.
 
-    ``client`` / ``model`` describe the caller's SDK path when it has one;
-    ``max_tokens`` applies to that path only (the CLI has no such flag — its
+    ``model`` is the caller's configured model and is honoured on BOTH branches
+    — the CLI one used to ignore it and substitute a hardcoded cheap model, which
+    silently overrode the operator's ``CLAUDE_MODEL`` and measurably cut recall
+    (see ``_MODEL_ENV``). ``client`` describes the caller's SDK path when it has
+    one; ``max_tokens`` applies to that path only (the CLI has no such flag — its
     output is bounded by the prompt's own instruction and the timeout).
     ``purpose`` only labels log lines.
 
@@ -338,7 +373,7 @@ async def complete_text(
         return ""
 
     try:
-        text = await _complete_via_cli(prompt, timeout=timeout)
+        text = await _complete_via_cli(prompt, timeout=timeout, model=model)
     except TimeoutError:
         logger.warning("%s: CLI extraction timed out after %.0fs", purpose, timeout)
         return ""

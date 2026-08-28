@@ -222,6 +222,46 @@ class TestCliPath:
         assert argv[argv.index("--effort") + 1] == "max"
 
     @pytest.mark.asyncio
+    async def test_it_uses_the_callers_configured_model(self, monkeypatch):
+        """The CLI branch used to ignore ``model`` and hardcode a cheap one.
+
+        That silently overrode the operator's CLAUDE_MODEL and measurably cut
+        recall: on one Thai conversation, Haiku found 3 entities and missed
+        every location where Opus 5 found 7.
+        """
+        from cogs.ai_core.memory.extraction_backend import complete_text
+
+        captured: dict = {}
+        self._patch_cli(monkeypatch, chunks=["ok"], captured=captured)
+        monkeypatch.delenv("MEMORY_EXTRACTION_MODEL", raising=False)
+
+        await complete_text(prompt="p", max_tokens=100, model="claude-opus-5")
+
+        argv = captured["argv"]
+        assert argv[argv.index("--model") + 1] == "claude-opus-5"
+
+    @pytest.mark.asyncio
+    async def test_the_env_is_an_opt_out_not_the_default(self, monkeypatch):
+        from cogs.ai_core.memory.extraction_backend import complete_text
+
+        captured: dict = {}
+        self._patch_cli(monkeypatch, chunks=["ok"], captured=captured)
+        monkeypatch.setenv("MEMORY_EXTRACTION_MODEL", "claude-haiku-4-5-20251001")
+
+        await complete_text(prompt="p", max_tokens=100, model="claude-opus-5")
+
+        argv = captured["argv"]
+        assert argv[argv.index("--model") + 1] == "claude-haiku-4-5-20251001"
+
+    def test_no_caller_model_falls_back_to_claude_model(self, monkeypatch):
+        from cogs.ai_core.data.constants import CLAUDE_MODEL
+        from cogs.ai_core.memory.extraction_backend import _cli_model
+
+        monkeypatch.delenv("MEMORY_EXTRACTION_MODEL", raising=False)
+        assert _cli_model() == CLAUDE_MODEL
+        assert _cli_model("  ") == CLAUDE_MODEL
+
+    @pytest.mark.asyncio
     async def test_the_depth_is_tunable(self, monkeypatch):
         from cogs.ai_core.memory.extraction_backend import complete_text
 
