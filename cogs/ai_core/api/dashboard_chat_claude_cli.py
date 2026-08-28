@@ -1791,13 +1791,26 @@ def _prompt_max_chars_from_env() -> int:
     """Resolve the prompt-size ceiling (characters) for both CLI paths.
 
     ``CLI_PROMPT_MAX_CHARS`` overrides; ``0`` disables clipping entirely.
-    The default (1.2M chars, roughly a full 1M-token window for Thai text
-    at ~1-2 chars/token) is deliberately at the model's PHYSICAL limit, not
-    a quota-saving cap: with delta-on-resume the full history is sent only
-    on fresh sessions, and operators running long-form RP want the entire
-    conversation in context. The clip exists solely so a pathological
-    tens-of-thousands-message channel still gets a working (front-truncated)
-    session instead of a hard context-overflow failure on every fresh attempt.
+    The default sits near the model's PHYSICAL limit, not at a quota-saving cap:
+    with delta-on-resume the full history is sent only on fresh sessions, and
+    operators running long-form RP want the entire conversation in context. The
+    clip exists solely so a pathological tens-of-thousands-message channel still
+    gets a working session instead of a hard context-overflow failure on every
+    fresh attempt.
+
+    The old default of 1,200,000 was justified as "roughly a full 1M-token
+    window for Thai text at ~1-2 chars/token". Measured with cl100k_base against
+    this bot's own stored history — 267,614 chars of Thai RP — the real rate is
+    **1.116** chars/token overall and **1.046** for the Thai itself. So 1.2M
+    chars is ~1,075,000 tokens: about 75,000 OVER the 1M window, before the
+    reply or the system prompt get any room at all. The ceiling meant to prevent
+    context overflow was permitting it, which is why the CLI path already
+    carries a session-drop workaround for exactly that failure (see the
+    unclassified-error branch in ``discord_chat_claude_cli``).
+
+    900,000 is ~806K tokens at the measured mixed rate and ~860K at the pure-Thai
+    rate, leaving real headroom for the response. It is still ~3.4x the largest
+    channel in this deployment, so it does not fire in ordinary use.
     """
     raw = (os.environ.get("CLI_PROMPT_MAX_CHARS") or "").strip()
     if raw:
@@ -1805,7 +1818,7 @@ def _prompt_max_chars_from_env() -> int:
             return max(0, int(raw))
         except ValueError:
             logger.warning("Invalid CLI_PROMPT_MAX_CHARS=%r; using default", raw)
-    return 1_200_000
+    return 900_000
 
 
 # Soft ceiling on the rendered history block, shared semantics with the

@@ -135,7 +135,14 @@ class TestFlattenContentsToPrompt:
         out = _flatten_contents_to_prompt(contents, "")
         assert "[...older context truncated...]" not in out
         assert out.count("X" * 1000) == 500
-        assert cli_mod._DISCORD_PROMPT_MAX_CHARS == 1_200_000
+        # Asserted as a PROPERTY, not a literal: the ceiling has to sit inside
+        # the 1M-token window at the rate Thai actually tokenises (1.116
+        # chars/token measured on the bot's own corpus — the old 1,200,000
+        # implied ~1,075,000 tokens, i.e. over it), while staying far above any
+        # real channel. See test_token_estimation_calibration.py.
+        cap = cli_mod._DISCORD_PROMPT_MAX_CHARS
+        assert 600_000 <= cap <= 1_100_000
+        assert cap / 1.116 < 1_000_000
 
     def test_zero_cap_disables_clipping_entirely(self) -> None:
         huge_history = [{"role": "user", "parts": ["X" * 1000]} for _ in range(20)]
@@ -154,10 +161,15 @@ class TestFlattenContentsToPrompt:
             assert _prompt_max_chars_from_env() == 0
         with patch.dict(os.environ, {"CLI_PROMPT_MAX_CHARS": "-5"}):
             assert _prompt_max_chars_from_env() == 0
+        # A bad or blank value falls back to the shipped default — asserted
+        # against the module constant rather than a literal, so re-calibrating
+        # the default does not have to be repeated here (it is pinned as a
+        # property in test_token_estimation_calibration.py).
+        default = cli_mod._DISCORD_PROMPT_MAX_CHARS
         with patch.dict(os.environ, {"CLI_PROMPT_MAX_CHARS": "not-a-number"}):
-            assert _prompt_max_chars_from_env() == 1_200_000
+            assert _prompt_max_chars_from_env() == default
         with patch.dict(os.environ, {"CLI_PROMPT_MAX_CHARS": ""}):
-            assert _prompt_max_chars_from_env() == 1_200_000
+            assert _prompt_max_chars_from_env() == default
 
 
 class TestChannelSessionTracking:
