@@ -29,6 +29,28 @@ class AIDebug(commands.Cog):
             return ai_cog.chat_manager
         return None
 
+    @staticmethod
+    def _thinking_display(chat_manager, thinking_enabled: bool) -> str:
+        """Render the thinking state of the ACTIVE backend, not a dead flag.
+
+        ``thinking_enabled`` is a per-channel setting the SDK path turns into an
+        API ``thinking`` block. Under ``CLAUDE_BACKEND=cli`` — the DEFAULT — it
+        drives nothing: ``claude -p`` exposes reasoning depth only through
+        ``--effort`` and has no switch to turn it off, so every turn reasons at
+        ``CLAUDE_EFFORT`` no matter what the flag says. Printing the stored flag
+        there showed "Thinking: ❌" on a bot that was in fact reasoning at
+        ``max`` — the exact silent mismatch ``!thinking`` refuses to create and
+        ``!streaming`` prints a note about. Report the truth instead.
+        """
+        if not getattr(chat_manager, "cli_mode", False):
+            return "✅" if thinking_enabled else "❌"
+        try:
+            from cogs.ai_core.api.dashboard_chat_claude_cli import _CLI_EFFORT
+
+            return f"always (effort={_CLI_EFFORT})"
+        except Exception:
+            return "always (cli)"
+
     @commands.command(name="ai_debug")
     @commands.is_owner()
     async def ai_debug(self, ctx: Context) -> None:
@@ -73,7 +95,7 @@ class AIDebug(commands.Cog):
             value=(
                 f"```\n{session_info}\n"
                 f"Tokens: ~{token_count:,}\n"
-                f"Thinking: {'✅' if thinking_enabled else '❌'}```"
+                f"Thinking: {self._thinking_display(chat_manager, thinking_enabled)}```"
             ),
             inline=True,
         )
@@ -226,7 +248,7 @@ class AIDebug(commands.Cog):
         embed = discord.Embed(title="🔍 AI Request Trace", color=discord.Color.blue())
 
         # Basic info
-        thinking = "✅" if chat_data.get("thinking_enabled") else "❌"
+        thinking = self._thinking_display(chat_manager, bool(chat_data.get("thinking_enabled")))
         # Streaming state lives in chat_manager.streaming_enabled (a separate
         # dict), NOT in the per-channel chat dict — chat_data.get() always
         # returned None, so the flag showed ❌ even when streaming was on.

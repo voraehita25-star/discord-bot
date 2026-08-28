@@ -18,20 +18,40 @@ class TestLoadCachedImageBytes:
     """Tests for load_cached_image_bytes function."""
 
     def test_load_existing_file(self, tmp_path):
-        """Test loading existing image file."""
-        from cogs.ai_core.media_processor import load_cached_image_bytes
+        """A real read of a file that lives INSIDE the project tree.
 
-        # Clear cache for test
+        ``load_cached_image_bytes`` confines reads to ``_BASE_DIR`` — a
+        deliberate path-traversal guard — so a fixture written to pytest's
+        ``tmp_path`` (under the system temp dir) is refused before any read
+        happens. This test used to do exactly that and assert success; it never
+        ran, because its class name was shadowed by a later duplicate, so the
+        stale assumption survived the hardening unnoticed.
+        """
+        from cogs.ai_core.media_processor import _BASE_DIR, load_cached_image_bytes
+
         load_cached_image_bytes.cache_clear()
 
-        # Create test file
-        test_file = tmp_path / "test_image.png"
-        img = Image.new("RGB", (10, 10), color="red")
-        img.save(test_file)
+        scratch = _BASE_DIR / "temp"
+        scratch.mkdir(parents=True, exist_ok=True)
+        test_file = scratch / "pytest_probe_content_processor.png"
+        Image.new("RGB", (10, 10), color="red").save(test_file)
+        try:
+            result = load_cached_image_bytes(str(test_file))
+            assert result is not None
+            assert len(result) > 0
+        finally:
+            test_file.unlink(missing_ok=True)
+            load_cached_image_bytes.cache_clear()
 
-        result = load_cached_image_bytes(str(test_file))
-        assert result is not None
-        assert len(result) > 0
+    def test_out_of_tree_path_is_refused(self, tmp_path):
+        """The confinement itself: an image outside the project is never read."""
+        from cogs.ai_core.media_processor import load_cached_image_bytes
+
+        load_cached_image_bytes.cache_clear()
+        outside = tmp_path / "test_image.png"
+        Image.new("RGB", (10, 10), color="red").save(outside)
+
+        assert load_cached_image_bytes(str(outside)) is None
 
     def test_load_nonexistent_file(self, tmp_path):
         """Test loading non-existent file returns None."""
@@ -362,7 +382,7 @@ class TestPrepareUserAvatar:
 # ======================================================================
 
 
-class TestLoadCachedImageBytes:
+class TestLoadCachedImageBytesModule:
     """Tests for load_cached_image_bytes function."""
 
     def test_load_cached_image_bytes_non_existent(self):
@@ -380,7 +400,7 @@ class TestLoadCachedImageBytes:
         assert callable(load_cached_image_bytes)
 
 
-class TestPilToInlineData:
+class TestPilToInlineDataModule:
     """Tests for pil_to_inline_data function."""
 
     def test_pil_to_inline_data_basic(self):
@@ -425,7 +445,7 @@ class TestPilToInlineData:
         assert "inline_data" in result
 
 
-class TestPrepareUserAvatar:
+class TestPrepareUserAvatarModule:
     """Tests for prepare_user_avatar function."""
 
     @pytest.mark.asyncio
@@ -508,7 +528,7 @@ class TestPrepareUserAvatar:
         assert result is None
 
 
-class TestTextExtensions:
+class TestTextExtensionsModule:
     """Tests for TEXT_EXTENSIONS constant."""
 
     def test_text_extensions_includes_common(self):
@@ -528,7 +548,7 @@ class TestTextExtensions:
         assert isinstance(TEXT_EXTENSIONS, tuple)
 
 
-class TestTextMimes:
+class TestTextMimesModule:
     """Tests for TEXT_MIMES constant."""
 
     def test_text_mimes_includes_common(self):
@@ -546,7 +566,7 @@ class TestTextMimes:
         assert isinstance(TEXT_MIMES, tuple)
 
 
-class TestProcessAttachments:
+class TestProcessAttachmentsModule:
     """Tests for process_attachments function."""
 
     @pytest.mark.asyncio
@@ -700,7 +720,7 @@ class TestLoadCachedImageBytesFunction:
         assert result is None
 
 
-class TestPilToInlineData:
+class TestPilToInlineDataMore:
     """Tests for pil_to_inline_data function."""
 
     def test_pil_to_inline_data_structure(self):
@@ -753,7 +773,7 @@ class TestPilToInlineData:
         assert len(decoded) > 0
 
 
-class TestImageioAvailable:
+class TestImageioAvailableMore:
     """Tests for IMAGEIO_AVAILABLE constant."""
 
     def test_imageio_available_is_bool(self):

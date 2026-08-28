@@ -252,7 +252,7 @@ class TestAllMessages:
 # ======================================================================
 
 
-class TestLanguageEnum:
+class TestLanguageEnumModule:
     """Tests for Language enum."""
 
     def test_language_thai(self):
@@ -268,7 +268,7 @@ class TestLanguageEnum:
         assert Language.ENGLISH.value == "en"
 
 
-class TestDefaultLanguage:
+class TestDefaultLanguageModule:
     """Tests for default language."""
 
     def test_default_language_is_thai(self):
@@ -278,7 +278,7 @@ class TestDefaultLanguage:
         assert DEFAULT_LANGUAGE == Language.THAI
 
 
-class TestMessages:
+class TestMessagesModule:
     """Tests for MESSAGES dictionary."""
 
     def test_messages_exists(self):
@@ -323,7 +323,7 @@ class TestMessages:
             assert "en" in translations, f"{key} missing English translation"
 
 
-class TestGetMessage:
+class TestGetMessageModule:
     """Tests for get_message function."""
 
     def test_get_message_exists(self):

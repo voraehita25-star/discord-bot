@@ -296,7 +296,7 @@ class TestAuditLogger:
         assert callable(logger.get_recent_actions)
 
 
-class TestLogAction:
+class TestLogActionModule:
     """Tests for log_action method."""
 
     @pytest.mark.asyncio
@@ -335,7 +335,7 @@ class TestLogAction:
         assert result is True
 
 
-class TestGetRecentActions:
+class TestGetRecentActionsModule:
     """Tests for get_recent_actions method."""
 
     @pytest.mark.asyncio

@@ -200,7 +200,7 @@ class TestGuardrailsIntegration:
 # ======================================================================
 
 
-class TestBuildApiConfig:
+class TestBuildApiConfigExtended:
     """Tests for build_api_config function."""
 
     def test_build_api_config_basic(self):
@@ -451,7 +451,7 @@ class TestClaudeConfigStructure:
 # ======================================================================
 
 
-class TestBuildApiConfig:
+class TestBuildApiConfigModule:
     """Tests for build_api_config function."""
 
     def test_build_api_config_basic(self):
@@ -636,7 +636,7 @@ class TestBuildApiConfigModes:
 # ======================================================================
 
 
-class TestBuildApiConfig:
+class TestBuildApiConfigNew:
     """Tests for build_api_config function."""
 
     def test_build_basic_config(self):
@@ -723,7 +723,7 @@ class TestModuleConstants:
         assert isinstance(ERROR_RECOVERY_AVAILABLE, bool)
 
 
-class TestModuleImports:
+class TestModuleImportsNew:
     """Tests for module imports."""
 
     def test_import_build_api_config(self):

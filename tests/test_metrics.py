@@ -276,7 +276,7 @@ class TestPrometheusAvailable:
 # ==================== TestBotMetricsInit ====================
 
 
-class TestBotMetricsInit:
+class TestBotMetricsInitModule:
     """Test BotMetrics initialization using global singleton."""
 
     def test_init_creates_instance(self):
@@ -849,7 +849,7 @@ class TestBotMetricsObserveAiResponseTime:
 # ==================== TestGlobalMetrics ====================
 
 
-class TestGlobalMetrics:
+class TestGlobalMetricsModule:
     """Test global metrics instance."""
 
     def test_global_metrics_exists(self):

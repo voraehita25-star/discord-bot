@@ -413,7 +413,7 @@ class TestImportanceLevel:
         assert ImportanceLevel.CRITICAL.value == 4
 
 
-class TestFactDataclass:
+class TestFactDataclassExtended:
     """Tests for Fact dataclass."""
 
     def test_fact_default_values(self):

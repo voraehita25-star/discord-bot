@@ -262,7 +262,7 @@ class TestHealthDataSingleton:
 # ======================================================================
 
 
-class TestBotHealthData:
+class TestBotHealthDataExtended:
     """Tests for BotHealthData class."""
 
     def test_health_data_creation(self):
@@ -655,11 +655,30 @@ class TestDoGETRoutes:
     """Test all do_GET route branches."""
 
     def test_health_html(self):
-        h = _make_handler("/health")
-        with patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""):
-            h.do_GET()
-        assert h._response_status == 200
-        assert "text/html" in h._response_headers.get("Content-Type", "")
+        # ``/health`` answers 200 only while ``health_data.is_healthy()`` holds,
+        # and that reads the MODULE-GLOBAL instance. This test used to assert 200
+        # without arranging it, so it passed only when some earlier test in the
+        # session happened to leave the global ready — a real order dependency
+        # (it failed on its own, and under any reordering). Arrange the state it
+        # asserts, restoring it afterwards like the sibling tests below do.
+        from utils.monitoring.health_api import health_data
+
+        old_ready = health_data.is_ready
+        old_heartbeat = health_data.last_heartbeat
+        old_latency = health_data.latency_ms
+        health_data.is_ready = True
+        health_data.last_heartbeat = datetime.now(timezone.utc)
+        health_data.latency_ms = 1.0
+        try:
+            h = _make_handler("/health")
+            with patch("utils.monitoring.health_api.HEALTH_API_TOKEN", ""):
+                h.do_GET()
+            assert h._response_status == 200
+            assert "text/html" in h._response_headers.get("Content-Type", "")
+        finally:
+            health_data.is_ready = old_ready
+            health_data.last_heartbeat = old_heartbeat
+            health_data.latency_ms = old_latency
 
     def test_health_json(self):
         h = _make_handler("/health/json")
@@ -1238,7 +1257,7 @@ class TestUpdateHealthLoop:
 # ---------------------------------------------------------------------------
 # setup_health_hooks tests
 # ---------------------------------------------------------------------------
-class TestSetupHealthHooks:
+class TestSetupHealthHooksHandlers:
     """Test setup_health_hooks."""
 
     def test_registers_listeners(self):
@@ -1512,7 +1531,7 @@ class TestDeepHealthCheckEdge:
 # ======================================================================
 
 
-class TestHealthApiConstants:
+class TestHealthApiConstantsModule:
     """Test module constants."""
 
     def test_health_api_port_default(self):
@@ -1944,7 +1963,7 @@ class TestBotHealthDataGetAiPerformanceStats:
 # ==================== TestGlobalHealthData ====================
 
 
-class TestGlobalHealthData:
+class TestGlobalHealthDataModule:
     """Test global health_data instance."""
 
     def test_health_data_exists(self):
@@ -1985,7 +2004,7 @@ class TestHealthRequestHandler:
 # ==================== TestModuleImports ====================
 
 
-class TestModuleImports:
+class TestModuleImportsModule:
     """Test module imports."""
 
     def test_import_health_api(self):

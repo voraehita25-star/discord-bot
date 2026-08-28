@@ -187,10 +187,18 @@ class TestFAISSIndex:
         assert "index.bin" in str(FAISS_INDEX_FILE)
 
     def test_faiss_id_map_file(self):
-        """Test FAISS_ID_MAP_FILE path."""
+        """Test FAISS_ID_MAP_FILE path.
+
+        JSON, not ``.npy``: the id map moved off NumPy's pickle-capable format
+        as part of the RAG load hardening (``.npy``/pickle loading now sits
+        behind ``RAG_ALLOW_LEGACY_PICKLE``, off by default). This assertion
+        still named the old extension — it never ran, because a later duplicate
+        class of the same name shadowed it.
+        """
         from cogs.ai_core.memory.rag import FAISS_ID_MAP_FILE
 
-        assert "id_map.npy" in str(FAISS_ID_MAP_FILE)
+        assert "id_map.json" in str(FAISS_ID_MAP_FILE)
+        assert not str(FAISS_ID_MAP_FILE).endswith(".npy")
 
 
 class TestCosineSimilarity:
@@ -414,7 +422,7 @@ class TestMemoryMetadataDataclass:
         assert importance <= 2.0
 
 
-class TestFAISSIndex:
+class TestFAISSIndexRagModule:
     """Tests for FAISSIndex class."""
 
     def test_faiss_index_creation(self):
@@ -864,7 +872,7 @@ class TestModuleImports:
 # ======================================================================
 
 
-class TestMemoryResultDataclass:
+class TestMemoryResultDataclassRagMore:
     """Tests for MemoryResult dataclass."""
 
     def test_memory_result_all_fields(self):
@@ -902,7 +910,7 @@ class TestMemoryResultDataclass:
         assert result.age_days == 0
 
 
-class TestMemoryMetadataDataclass:
+class TestMemoryMetadataDataclassRagMore:
     """Tests for MemoryMetadata dataclass."""
 
     def test_memory_metadata_all_defaults(self):

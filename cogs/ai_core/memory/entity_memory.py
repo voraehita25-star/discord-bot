@@ -240,7 +240,9 @@ class EntityMemoryManager:
     """
 
     def __init__(self):
-        self._initialized = False
+        # Annotated so ``initialize``'s early return is a real ``bool`` rather
+        # than an inferred ``Any`` leaking out of a ``-> bool`` signature.
+        self._initialized: bool = False
 
     async def initialize(self) -> bool:
         """Initialize the entity memory table."""

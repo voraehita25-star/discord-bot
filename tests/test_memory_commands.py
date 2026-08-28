@@ -346,7 +346,7 @@ class TestCommandAttributes:
 # ======================================================================
 
 
-class TestMemoryCommandsCog:
+class TestMemoryCommandsCogExtended:
     """Tests for MemoryCommands cog."""
 
     def test_memory_commands_init(self):
@@ -372,7 +372,7 @@ class TestMemoryCommandsCog:
         assert hasattr(cog, "view_memories")
 
 
-class TestRememberCommand:
+class TestRememberCommandExtended:
     """Tests for the remember command."""
 
     @pytest.mark.asyncio
@@ -468,7 +468,7 @@ class TestRememberCommand:
         assert mock_ctx.send.called
 
 
-class TestForgetCommand:
+class TestForgetCommandExtended:
     """Tests for the forget command."""
 
     @pytest.mark.asyncio
@@ -487,7 +487,7 @@ class TestForgetCommand:
         assert "กรุณาระบุ" in str(mock_ctx.send.call_args)
 
 
-class TestViewMemoriesCommand:
+class TestViewMemoriesCommandExtended:
     """Tests for the view_memories command."""
 
     @pytest.mark.asyncio
@@ -530,7 +530,7 @@ class TestMemoryCommandsSetup:
         mock_bot.add_cog.assert_called_once()
 
 
-class TestConsolidateCommand:
+class TestConsolidateCommandExtended:
     """Tests for consolidate command if exists."""
 
     def test_consolidate_command_callable(self):

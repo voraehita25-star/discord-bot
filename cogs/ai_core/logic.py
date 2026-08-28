@@ -846,8 +846,39 @@ class ChatManager(SessionMixin, ResponseMixin):
     async def _process_attachments(
         self, attachments: list[discord.Attachment] | None, user_name: str
     ) -> tuple[list[Image.Image], list[ProcessedVideoPart], list[str]]:
-        """Process image and text attachments. Delegates to media_processor."""
-        return await process_attachments(attachments, user_name)
+        """Process image and text attachments. Delegates to media_processor.
+
+        Image work is skipped on a backend that can't carry inline images —
+        see :meth:`accepts_inline_images`.
+        """
+        return await process_attachments(
+            attachments, user_name, include_images=self.accepts_inline_images()
+        )
+
+    def accepts_inline_images(self) -> bool:
+        """Whether the active backend can actually deliver an image to the model.
+
+        False under ``CLAUDE_BACKEND=cli`` (the DEFAULT). That path flattens the
+        turn into a single text prompt, and
+        ``discord_chat_claude_cli._flatten_contents_to_prompt`` replaces every
+        ``inline_data`` part with "[attachment omitted: …]" — so an image reaches
+        the model as nothing at all.
+
+        Everything upstream of that replacement was still being paid for on every
+        turn: the user's avatar downloaded and PIL-decoded, custom emoji images
+        fetched, a character reference image decoded (up to the 30MP cap), each
+        attachment downloaded and decoded, an animated GIF ffmpeg-encoded to MP4,
+        then all of it PNG-encoded and base64'd by ``pil_to_inline_data`` — for a
+        prompt that keeps none of it.
+
+        The waste was the smaller half of the problem. The TEXT labels that
+        introduce those images ("[System Notice: The following image is …'s
+        Discord profile picture]", "[Character Reference Image: …]",
+        "[Custom Emoji: …]") are plain strings, so they survived the flattening
+        and announced images that never arrived — the model was told to look at a
+        profile picture that wasn't there. Callers gate both on this.
+        """
+        return not self.cli_mode
 
     def _is_animated_gif(self, image_data: bytes) -> bool:
         """Check if GIF data contains animation. Delegates to media_processor."""
@@ -1695,9 +1726,19 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # scaffolding instead of what the user actually said.
                     _trace_intent = "n/a"
 
+                    # Resolved once: every image branch below is gated on it, so
+                    # a backend that drops inline images neither pays for the
+                    # pixels nor emits a text label announcing them. See
+                    # ``accepts_inline_images``.
+                    accepts_images = self.accepts_inline_images()
+
                     # 1. Prepare user avatar using helper method
-                    avatar_image = await self._prepare_user_avatar(
-                        user, message, chat_data, context_channel.id
+                    avatar_image = (
+                        await self._prepare_user_avatar(
+                            user, message, chat_data, context_channel.id
+                        )
+                        if accepts_images
+                        else None
                     )
                     if avatar_image:
                         content_parts.append(
@@ -1725,8 +1766,11 @@ class ChatManager(SessionMixin, ResponseMixin):
                     else:
                         display_message = message
 
-                    # Extract and fetch Discord custom emoji images
-                    emoji_list = extract_discord_emojis(message or "")
+                    # Extract and fetch Discord custom emoji images. The textual
+                    # ``<:name:id>`` → ``[:name:]`` rewrite below runs on every
+                    # backend; only the IMAGE fetch is gated, since the picture
+                    # would be dropped by the flattener anyway.
+                    emoji_list = extract_discord_emojis(message or "") if accepts_images else []
                     if emoji_list:
                         try:
                             emoji_images = await fetch_emoji_images(emoji_list)
@@ -1935,8 +1979,14 @@ class ChatManager(SessionMixin, ResponseMixin):
                     # stalled the event loop for ALL guilds; process_attachments
                     # already offloads the identical operation for the same
                     # reason.
-                    char_result = await asyncio.to_thread(
-                        self._load_character_image, message, guild_id
+                    # Gated on the backend carrying images: the decode is the
+                    # single most expensive image op here, and its
+                    # "[Character Reference Image: …]" label would otherwise
+                    # introduce a picture the prompt never delivers.
+                    char_result = (
+                        await asyncio.to_thread(self._load_character_image, message, guild_id)
+                        if accepts_images
+                        else None
                     )
                     if char_result:
                         char_name, char_image = char_result
@@ -2540,10 +2590,24 @@ class ChatManager(SessionMixin, ResponseMixin):
                                 # turn's model row in the DB.
                                 if isinstance(last_item, dict) and last_item.get("role") == "model":
                                     last_item["sent_message_ids"] = sent_ids
-                                    if last_msg_id:
-                                        last_item["message_id"] = last_msg_id
+                                    # ``last_msg_id`` only tracks WEBHOOK sends, so
+                                    # a turn whose {{Name}} blocks all came out
+                                    # empty (a dangling tag) — or whose webhook
+                                    # sends all failed — left it None. The row then
+                                    # kept its ids in memory and persisted NONE of
+                                    # them, so after a restart the narration
+                                    # messages that DID go out were invisible to the
+                                    # Discord delete/edit mirroring. ``sent_ids`` is
+                                    # append-ordered, so its tail is the last
+                                    # message this turn actually sent — the same
+                                    # value ``last_msg_id`` holds whenever a webhook
+                                    # succeeded, and the narration fallback when
+                                    # none did.
+                                    headline_id = last_msg_id or sent_ids[-1].get("id")
+                                    if headline_id:
+                                        last_item["message_id"] = headline_id
                                         await update_message_id(
-                                            context_channel.id, last_msg_id, sent_ids
+                                            context_channel.id, headline_id, sent_ids
                                         )
 
                         return  # Skip normal sending

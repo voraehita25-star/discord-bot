@@ -55,7 +55,7 @@ from .imports import (  # noqa: F401 - public re-exports
     set_unrestricted,
     unrestricted_all_enabled,
 )
-from .logic import MAX_CHARACTER_BLOCKS, ChatManager
+from .logic import MAX_CHARACTER_BLOCKS, ChatManager, _split_for_discord
 from .memory.rag import rag_system
 from .storage import (
     cleanup_cache as cleanup_storage_cache,
@@ -111,6 +111,12 @@ class AI(commands.Cog):
 
     # Cap for the _own_webhook_ids resolution cache (see __init__).
     _OWN_WEBHOOK_CACHE_MAX = 256
+
+    # One-shot latch for the GUILD_ID_RESTRICTED-without-CHANNEL_ID_ALLOWED
+    # warning (see _restricted_guild_blocks). Class-scoped: the condition is a
+    # process-wide config fact, not per-instance, so a cog reload shouldn't
+    # re-open the floodgate.
+    _restricted_misconfig_logged: bool = False
 
     def __init__(self, bot: Bot) -> None:
         self.bot: Bot = bot
@@ -168,6 +174,41 @@ class AI(commands.Cog):
         if isinstance(channel, discord.TextChannel):
             return channel
         return None
+
+    def _restricted_guild_blocks(self, guild_id: int | None, channel_id: int) -> bool:
+        """Whether ``GUILD_ID_RESTRICTED``'s single-channel rule forbids this channel.
+
+        ``env.example`` documents the pair as "Restricted Guild - AI only works
+        in specific channel", and ``_handle_webhook_message`` enforces exactly
+        that for proxied (Tupperbox/PluralKit) traffic. The @mention/reply
+        listener and the ``!chat``/``!ask`` command did NOT, so on that guild the
+        AI answered in every channel and the restriction only ever applied to the
+        one path nobody uses — the same dead-wiring shape ``!channel_ratelimit``
+        had. Consulted on every invocation path so the documented contract holds
+        everywhere.
+
+        Inert when ``GUILD_ID_RESTRICTED`` is unset: ``_safe_int_env`` yields 0
+        and no real guild has id 0, but the truthiness check makes that explicit
+        rather than incidental.
+        """
+        if not GUILD_ID_RESTRICTED or guild_id != GUILD_ID_RESTRICTED:
+            return False
+        if not CHANNEL_ID_ALLOWED:
+            # Configured guild, unconfigured channel: every channel is blocked,
+            # which is the fail-closed reading AND what the webhook path already
+            # does (its `channel.id == 0` comparison never matches). Say so once
+            # — a guild that silently went mute is exactly the kind of "the bot
+            # just stopped answering" report that has no other breadcrumb.
+            if not type(self)._restricted_misconfig_logged:
+                type(self)._restricted_misconfig_logged = True
+                logger.warning(
+                    "🔒 GUILD_ID_RESTRICTED=%s is set but CHANNEL_ID_ALLOWED is 0 — "
+                    "the AI will not answer in ANY channel of that guild. Set "
+                    "CHANNEL_ID_ALLOWED to the permitted channel id.",
+                    GUILD_ID_RESTRICTED,
+                )
+            return True
+        return channel_id != CHANNEL_ID_ALLOWED
 
     @staticmethod
     async def _check_custom_channel_limit(
@@ -512,6 +553,18 @@ class AI(commands.Cog):
                 # off-limits — direct users to the single command channel.
                 await ctx.send(f"❌ กรุณาใช้คำสั่งในห้อง <#{CHANNEL_ID_RP_COMMAND}> เท่านั้น")
                 return
+
+        # Restricted guild: the command is as much "AI in this channel" as an
+        # @mention is, so it obeys the same single-channel rule (which the
+        # webhook-proxy path already applied to proxied !chat). Answered rather
+        # than dropped — the user typed a command and deserves to know why.
+        if self._restricted_guild_blocks(ctx.guild.id if ctx.guild else None, ctx.channel.id):
+            await ctx.send(
+                f"❌ เซิร์ฟเวอร์นี้ใช้ AI ได้เฉพาะในห้อง <#{CHANNEL_ID_ALLOWED}> เท่านั้น"
+                if CHANNEL_ID_ALLOWED
+                else "❌ เซิร์ฟเวอร์นี้ยังไม่ได้ตั้งห้องที่อนุญาตให้ใช้ AI (CHANNEL_ID_ALLOWED)"
+            )
+            return
 
         if not message:
             if ctx.message.reference and ctx.message.reference.message_id is not None:
@@ -1236,6 +1289,13 @@ class AI(commands.Cog):
         if message.guild and message.guild.id == GUILD_ID_RP:
             return
 
+        # Restricted guild: answer only in CHANNEL_ID_ALLOWED. Enforced here
+        # too, not just on the webhook-proxy path — see _restricted_guild_blocks.
+        if self._restricted_guild_blocks(
+            message.guild.id if message.guild else None, message.channel.id
+        ):
+            return
+
         # Check if mentioned or replying to the bot. Guard against
         # bot.user being None during very-early ready / disconnect — the
         # `in` operator on None would crash and `==` would compare None
@@ -1690,9 +1750,16 @@ class AI(commands.Cog):
             max_len = self._DISCORD_MAX_MESSAGE_LEN
 
             async def _send_chunked(text: str) -> None:
-                """Send text to output_channel, chunked to Discord's 2000-char cap."""
+                """Send text to output_channel, chunked to Discord's 2000-char cap.
+
+                Splits through ``_split_for_discord``, the same Thai-combining-
+                aware splitter the live reply path uses. A raw ``text[i:i+2000]``
+                slice (what this used to do) can cut between a Thai base char and
+                its tone/vowel mark, so the next chunk opens with a stray ◌-form
+                glyph — the exact defect logic.py fixed on its own narrator send.
+                """
                 first = True
-                for i in range(0, len(text), max_len):
+                for chunk in _split_for_discord(text, max_len):
                     # Pace multi-chunk sends so a long stored message split into
                     # many 2000-char chunks doesn't fire back-to-back and trip
                     # Discord's per-channel send rate limit — matching the
@@ -1706,7 +1773,7 @@ class AI(commands.Cog):
                     # verbatim by storage, so resending it raw would ping unless
                     # we mirror the normal/narrator sends' AllowedMentions.none().
                     await output_channel.send(
-                        text[i : i + max_len],
+                        chunk,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
 
@@ -1725,12 +1792,15 @@ class AI(commands.Cog):
                     if i + 1 < len(split_parts):
                         char_msg = split_parts[i + 1].strip()
                         if char_msg:
-                            # Webhook body also has a 2000-char limit per message.
-                            for j in range(0, len(char_msg), max_len):
-                                await send_as_webhook(
-                                    self.bot, output_channel, char_name, char_msg[j : j + max_len]
-                                )
-                                await asyncio.sleep(0.5)
+                            # Hand the block over WHOLE, exactly as the live
+                            # reply path does. send_as_webhook chunks it itself
+                            # via _safe_split_message, which keeps Thai clusters
+                            # and surrogate pairs intact; the raw
+                            # ``char_msg[j:j+2000]`` pre-chunk that used to be
+                            # here cut blindly and then handed each slice to that
+                            # same splitter anyway.
+                            await send_as_webhook(self.bot, output_channel, char_name, char_msg)
+                            await asyncio.sleep(0.5)
             # Normal message (no character tags)
             else:
                 await _send_chunked(content)

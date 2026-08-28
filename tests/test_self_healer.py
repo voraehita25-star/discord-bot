@@ -801,7 +801,7 @@ class TestDiagnoseEdgeCases:
         assert result["pid_file_valid"] is False
 
 
-class TestKillProcess:
+class TestKillProcess2:
     """Additional tests for kill_process method."""
 
     def test_kill_process_success(self):
@@ -892,7 +892,7 @@ class TestConstants:
 # ======================================================================
 
 
-class TestSelfHealerInit:
+class TestSelfHealerInitExtended:
     """Tests for SelfHealer initialization."""
 
     def test_self_healer_init_basic(self):
@@ -1013,7 +1013,7 @@ class TestLogMethod:
         assert "[CRITICAL]" in healer.actions_taken[0]
 
 
-class TestFindAllBotProcesses:
+class TestFindAllBotProcessesExtended:
     """Tests for find_all_bot_processes method."""
 
     def test_find_all_bot_processes_returns_list(self):
@@ -1032,7 +1032,7 @@ class TestFindAllBotProcesses:
         assert isinstance(result, list)
 
 
-class TestFindAllDevWatchers:
+class TestFindAllDevWatchersExtended:
     """Tests for find_all_dev_watchers method."""
 
     def test_find_all_dev_watchers_returns_list(self):
@@ -1051,7 +1051,7 @@ class TestFindAllDevWatchers:
         assert isinstance(result, list)
 
 
-class TestConstants:
+class TestConstantsExtended:
     """Tests for module constants."""
 
     def test_pid_file_constant(self):
@@ -1155,7 +1155,7 @@ class TestLoggerConfiguration:
 # ======================================================================
 
 
-class TestSelfHealerInit:
+class TestSelfHealerInitModule:
     """Tests for SelfHealer initialization."""
 
     def test_selfhealer_creation(self):
@@ -1189,7 +1189,7 @@ class TestSelfHealerInit:
             assert healer.my_pid == os.getpid()
 
 
-class TestLogMethod:
+class TestLogMethodModule:
     """Tests for log method."""
 
     def test_log_info(self):
@@ -1261,7 +1261,7 @@ class TestFindProcesses:
                 assert result == []
 
 
-class TestGetPidFromFile:
+class TestGetPidFromFileModule:
     """Tests for get_pid_from_file method."""
 
     def test_get_pid_from_file_exists(self):
@@ -1315,7 +1315,7 @@ class TestGetPidFromFile:
                 assert result is None
 
 
-class TestDiagnose:
+class TestDiagnoseModule:
     """Tests for diagnose method."""
 
     def test_diagnose_returns_dict(self):
@@ -1423,7 +1423,7 @@ class TestHealingActions:
                 assert result == 0
 
 
-class TestKillProcess:
+class TestKillProcessModule:
     """Tests for kill_process method."""
 
     def test_kill_process_success(self):
@@ -1476,7 +1476,7 @@ class TestKillProcess:
                 assert result is False
 
 
-class TestAutoHeal:
+class TestAutoHealModule:
     """Tests for auto_heal method."""
 
     def test_auto_heal_no_issues(self):

@@ -299,14 +299,64 @@ class TestStripLeadingMessageIds:
 
 class TestPromptExplainsTheAnnotation:
     def test_formatting_rules_mention_edit_message_and_read_channel(self):
+        """With the tools resolved as present, the prompt says how to use the ids."""
+        from cogs.ai_core.api.discord_chat_claude_cli import _flatten_contents_to_prompt
+
+        prompt = _flatten_contents_to_prompt(
+            [{"role": "user", "parts": ["hi"]}],
+            "persona",
+            include_history=True,
+            can_edit_messages=True,
+            can_read_channel=True,
+        )
+        assert "edit_message" in prompt
+        assert "read_channel" in prompt
+        assert "(msg " in prompt
+
+    def test_annotation_is_still_explained_without_the_tools(self):
+        """The ids are always explained as metadata to ignore — that is what
+        keeps the model from mimicking the prefix into its own reply."""
         from cogs.ai_core.api.discord_chat_claude_cli import _flatten_contents_to_prompt
 
         prompt = _flatten_contents_to_prompt(
             [{"role": "user", "parts": ["hi"]}], "persona", include_history=True
         )
-        assert "edit_message" in prompt
-        assert "read_channel" in prompt
         assert "(msg " in prompt
+        assert "never reproduce" in prompt
+
+    def test_no_tool_is_promised_when_the_argv_withholds_it(self):
+        """The default (CLI_TOOL_SCOPE=minimal) turn carries no MCP tool at all,
+        so the prompt must not offer edit_message / read_channel — a promise the
+        model would act on and fail."""
+        from cogs.ai_core.api.discord_chat_claude_cli import _flatten_contents_to_prompt
+
+        prompt = _flatten_contents_to_prompt(
+            [{"role": "user", "parts": ["hi"]}], "persona", include_history=True
+        )
+        assert "edit_message" not in prompt
+        assert "read_channel" not in prompt
+
+    def test_each_tool_is_announced_independently(self):
+        """DASHBOARD_CLI_SERVER_ACTIONS can expose one without the other."""
+        from cogs.ai_core.api.discord_chat_claude_cli import _flatten_contents_to_prompt
+
+        only_edit = _flatten_contents_to_prompt(
+            [{"role": "user", "parts": ["hi"]}], "persona", can_edit_messages=True
+        )
+        assert "edit_message" in only_edit
+        assert "read_channel" not in only_edit
+
+    def test_message_id_tools_reads_the_resolved_toolset(self):
+        from cogs.ai_core.api.discord_chat_claude_cli import _message_id_tools
+
+        assert _message_id_tools(None) == (False, False)
+        assert _message_id_tools([]) == (False, False)
+        # What effective_ai_tool_names() returns at minimal scope on this path.
+        assert _message_id_tools(["WebSearch", "WebFetch"]) == (False, False)
+        assert _message_id_tools(
+            ["mcp__bottools__edit_message", "mcp__bottools__read_channel"]
+        ) == (True, True)
+        assert _message_id_tools(["mcp__bottools__remember"]) == (False, False)
 
 
 class TestResumedSessionIdRecap:
@@ -328,15 +378,28 @@ class TestResumedSessionIdRecap:
     def test_recap_survives_a_resumed_turn(self):
         from cogs.ai_core.api.discord_chat_claude_cli import _flatten_contents_to_prompt
 
-        prompt = _flatten_contents_to_prompt(self._contents(), "persona", include_history=False)
+        prompt = _flatten_contents_to_prompt(
+            self._contents(), "persona", include_history=False, can_edit_messages=True
+        )
         assert "# Conversation history" not in prompt
         assert "(msgs ซออา=11, แชวอน=12)" in prompt
         assert "ids for edit_message" in prompt
 
+    def test_no_recap_without_the_edit_tool(self):
+        """The block exists only to feed edit_message; without that tool it is
+        prompt weight that reads as an invitation to call something absent."""
+        from cogs.ai_core.api.discord_chat_claude_cli import _flatten_contents_to_prompt
+
+        prompt = _flatten_contents_to_prompt(self._contents(), "persona", include_history=False)
+        assert "# Conversation history" not in prompt
+        assert "ids for edit_message" not in prompt
+
     def test_full_history_path_is_unchanged(self):
         from cogs.ai_core.api.discord_chat_claude_cli import _flatten_contents_to_prompt
 
-        prompt = _flatten_contents_to_prompt(self._contents(), "persona", include_history=True)
+        prompt = _flatten_contents_to_prompt(
+            self._contents(), "persona", include_history=True, can_edit_messages=True
+        )
         assert "# Conversation history" in prompt
         assert "ids for edit_message" not in prompt
 
@@ -383,6 +446,7 @@ class TestResumedSessionIdRecap:
             [{"role": "model", "parts": ["plain"]}, {"role": "user", "parts": ["hi"]}],
             "persona",
             include_history=False,
+            can_edit_messages=True,
         )
         assert "ids for edit_message" not in prompt
 
@@ -396,9 +460,17 @@ class TestSdkBackendParity:
 
         system = with_prefix_note("persona")
         assert system.startswith("persona")
-        assert "edit_message" in system
-        assert "read_channel" in system
         assert "(msg " in system
+        assert "never write one into a reply" in system
+
+    def test_sdk_note_promises_no_tool(self):
+        """This path sends no ``tools`` argument at all, so naming edit_message /
+        read_channel was an unconditional lie that the model would act on."""
+        from cogs.ai_core.api.api_handler import with_prefix_note
+
+        system = with_prefix_note("persona")
+        assert "edit_message" not in system
+        assert "read_channel" not in system
 
     def test_empty_system_prompt_stays_empty(self):
         """An empty instruction means 'no persona' — appending a lone rules

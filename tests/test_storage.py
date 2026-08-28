@@ -163,10 +163,20 @@ class TestDataDirectories:
 
         assert DATA_DIR.exists()
 
-    def test_config_dir_exists(self):
-        """Test CONFIG_DIR path exists."""
-        from cogs.ai_core.storage import CONFIG_DIR
+    def test_config_dir_is_created_on_demand(self):
+        """CONFIG_DIR is created lazily, not at import.
 
+        The JSON metadata store is a fallback for when the database is
+        unavailable, so ``data/ai_config`` legitimately does not exist on a
+        DB-backed install. The old assertion (``CONFIG_DIR.exists()``) was
+        therefore wrong on a clean checkout — it just never ran, shadowed by a
+        later duplicate class of the same name. Assert the real contract:
+        ``_ensure_data_dirs`` is what brings it into being.
+        """
+        from cogs.ai_core.storage import CONFIG_DIR, _ensure_data_dirs
+
+        assert CONFIG_DIR.name == "ai_config"
+        _ensure_data_dirs()
         assert CONFIG_DIR.exists()
 
 
@@ -1083,7 +1093,7 @@ class TestJsonImplementation:
         assert '"value"' in result
 
 
-class TestCacheConstants:
+class TestCacheConstantsExtended:
     """Tests for cache constants."""
 
     def test_cache_ttl_defined(self):
@@ -1219,7 +1229,7 @@ class TestDatabaseAvailable:
         assert isinstance(DATABASE_AVAILABLE, bool)
 
 
-class TestDataDirectories:
+class TestDataDirectoriesExtended:
     """Tests for data directory paths."""
 
     def test_data_dir_defined(self):

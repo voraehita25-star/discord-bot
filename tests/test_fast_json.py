@@ -333,7 +333,7 @@ class TestOrjsonFallback:
 # ======================================================================
 
 
-class TestJsonLoads:
+class TestJsonLoadsModule:
     """Tests for json_loads function."""
 
     def test_json_loads_string(self):
@@ -377,7 +377,7 @@ class TestJsonLoads:
         assert result["emoji"] == "🎵"
 
 
-class TestJsonDumps:
+class TestJsonDumpsModule:
     """Tests for json_dumps function."""
 
     def test_json_dumps_dict(self):
@@ -417,7 +417,7 @@ class TestJsonDumps:
         assert isinstance(result, str)
 
 
-class TestJsonDumpsBytes:
+class TestJsonDumpsBytesModule:
     """Tests for json_dumps_bytes function."""
 
     def test_json_dumps_bytes_returns_bytes(self):
@@ -495,7 +495,7 @@ class TestModuleImports:
         assert is_orjson_enabled is not None
 
 
-class TestRoundTrip:
+class TestRoundTripModule:
     """Tests for round-trip JSON operations."""
 
     def test_roundtrip_simple(self):

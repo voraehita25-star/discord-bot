@@ -104,6 +104,19 @@ def _claude_retry_delay_seconds(attempt: int, *, minimum_delay: float = 1.0) -> 
 # reproduces observed patterns unless told not to. The CLI path carries the
 # equivalent under its "# Formatting rules" heading; without this the SDK path
 # was the silent downgrade (it also had no output-side strip at all).
+#
+# It deliberately does NOT tell the model the ids are actionable. This path sends
+# no ``tools`` argument at all — grep the module: nothing here ever populates one,
+# and ``_function_calls`` is the always-empty third slot ``logic.py`` drops — so
+# the earlier wording ("those ids are what the edit_message tool takes … call
+# read_channel") named two tools the request could never carry, on every single
+# turn. The result was a model that offered to correct an earlier message and
+# then had nothing to do it with. The ids stay explained as metadata to IGNORE,
+# which is the part that keeps them out of the reply text; the CLI sibling, which
+# CAN carry those tools, re-adds the actionable sentences per turn from its
+# resolved toolset (``discord_chat_claude_cli._message_id_tools``). If tool use is
+# ever wired in here, gate the sentences on the same resolved list — never on the
+# assumption that a tool exists.
 INJECTED_PREFIX_NOTE = """
 
 FORMATTING RULES (system-injected metadata — never reproduce these in a reply):
@@ -111,10 +124,9 @@ FORMATTING RULES (system-injected metadata — never reproduce these in a reply)
   tells you when the turn was sent; it is not part of anyone's intent.
 - Your own past turns may also carry '(msg 1401234567890123456)', or
   '(msgs narration=140…, Character=140…)' when the turn went out as several
-  Discord messages. Those ids are what the edit_message tool takes, so you can
-  correct an earlier message rather than only apologising for it. For anything
-  older than the visible history, read_channel reports the id of every message
-  it returns."""
+  Discord messages. Those are the Discord message ids the turn was sent as,
+  recorded for the system's own bookkeeping. Ignore them when reading the
+  conversation, and never write one into a reply."""
 
 
 def with_prefix_note(system_prompt: str) -> str:

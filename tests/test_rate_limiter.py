@@ -491,7 +491,7 @@ if __name__ == "__main__":
 # ======================================================================
 
 
-class TestRateLimitType:
+class TestRateLimitTypeExtended:
     """Tests for RateLimitType enum."""
 
     def test_user_type(self):
@@ -525,7 +525,7 @@ class TestRateLimitType:
         assert RateLimitType.USER_CHANNEL.value == "user_channel"
 
 
-class TestRateLimitConfig:
+class TestRateLimitConfigExtended:
     """Tests for RateLimitConfig dataclass."""
 
     def test_create_basic_config(self):
@@ -559,7 +559,7 @@ class TestRateLimitConfig:
         assert config.adaptive is True
 
 
-class TestRateLimitBucket:
+class TestRateLimitBucketExtended:
     """Tests for RateLimitBucket dataclass."""
 
     def test_create_bucket(self):

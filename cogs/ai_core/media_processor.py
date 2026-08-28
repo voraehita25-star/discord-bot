@@ -850,19 +850,34 @@ TEXT_MIMES = (
 
 
 async def process_attachments(
-    attachments: list[discord.Attachment] | None, user_name: str
+    attachments: list[discord.Attachment] | None,
+    user_name: str,
+    *,
+    include_images: bool = True,
 ) -> tuple[list[Image.Image], list[ProcessedVideoPart], list[str]]:
     """Process image and text attachments.
 
     Args:
         attachments: List of Discord attachments to process.
         user_name: Name of user who sent attachments (for logging).
+        include_images: When False, image/animated-GIF attachments are NOT
+            downloaded, decoded or transcoded — they are only named in a text
+            note. Pass False on a backend that cannot carry inline images (the
+            Claude-CLI Discord path flattens the prompt to text, so an image
+            part is replaced by "[attachment omitted: …]" after we have already
+            paid the download, the PIL decode, and — for animated GIFs — a full
+            ffmpeg encode). Text attachments are unaffected: those become
+            ``text_parts`` and reach every backend.
 
     Returns:
         Tuple of (image_parts, video_parts, text_parts) where:
-        - image_parts: list of PIL Images
+        - image_parts: list of PIL Images (always empty when include_images=False)
         - video_parts: dicts with 'data' and 'mime_type' keys for animated GIFs
-        - text_parts: list of formatted text file contents
+          (always empty when include_images=False)
+        - text_parts: list of formatted text file contents, plus one
+          "[Attachment not shown: …]" line per skipped image when
+          include_images=False — silence would leave the model unaware an image
+          was sent at all, which is worse than saying it cannot see it.
     """
     image_parts: list[Image.Image] = []
     video_parts: list[ProcessedVideoPart] = []
@@ -974,6 +989,24 @@ async def process_attachments(
 
         # Handle images
         if attachment.content_type and attachment.content_type.startswith("image/"):
+            if not include_images:
+                # Backend can't carry the pixels — name the file instead of
+                # downloading + decoding (+ possibly ffmpeg-encoding) it only for
+                # the prompt builder to replace the result with a placeholder.
+                # The note is explicit about the limitation so the model answers
+                # "I can't see it" instead of hallucinating a description.
+                text_parts.append(
+                    f"[Attachment not shown: {attachment.filename} "
+                    f"({attachment.content_type}) — you cannot view images in this "
+                    f"conversation. Say so plainly if the user asks about it; do not "
+                    f"guess at its contents.]"
+                )
+                logger.debug(
+                    "Skipped image '%s' from %s (backend carries no inline images)",
+                    attachment.filename,
+                    user_name,
+                )
+                continue
             try:
                 image_data = await attachment.read()
 

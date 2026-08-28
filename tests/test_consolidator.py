@@ -515,7 +515,7 @@ class TestShouldConsolidate:
         assert isinstance(result, bool)
 
 
-class TestInitialize:
+class TestInitializeExtended:
     """Tests for initialize method."""
 
     def test_initialize_without_genai(self):
@@ -529,7 +529,7 @@ class TestInitialize:
             assert result is False
 
 
-class TestMemoryConsolidatorSingleton:
+class TestMemoryConsolidatorSingletonExtended:
     """Tests for memory_consolidator singleton."""
 
     def test_singleton_is_consolidator(self):
@@ -544,7 +544,7 @@ class TestMemoryConsolidatorSingleton:
 # ======================================================================
 
 
-class TestMemoryConsolidatorInit:
+class TestMemoryConsolidatorInitMore:
     """Tests for MemoryConsolidator initialization."""
 
     def test_consolidator_init_creates_instance(self):

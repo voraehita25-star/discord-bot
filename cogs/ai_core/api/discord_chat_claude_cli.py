@@ -476,6 +476,31 @@ def reset_channel_session(channel_id: int) -> None:
 # module doesn't pull the aiohttp-dependent IPC module at import time.
 _MEMORY_TOOL_BASENAMES = frozenset({"remember", "recall_memory"})
 
+# The two tools that make the ``(msg …)`` annotations ACTIONABLE: ``edit_message``
+# takes an id, ``read_channel`` reports ids for messages older than the shown
+# history. Both are server tools, so a deployment with
+# ``DASHBOARD_CLI_SERVER_ACTIONS`` off has neither — and since ``--tools`` drops
+# every MCP tool with no way to name one back, so does EVERY deployment at the
+# default ``CLI_TOOL_SCOPE=minimal`` (see ``effective_ai_tool_names``).
+_EDIT_MESSAGE_TOOL = "edit_message"
+_READ_CHANNEL_TOOL = "read_channel"
+
+
+def _message_id_tools(ai_tool_names: list[str] | None) -> tuple[bool, bool]:
+    """``(can_edit_messages, can_read_channel)`` for THIS turn's resolved toolset.
+
+    Callers pass the SAME list they hand to ``_build_claude_argv`` — i.e. the
+    output of ``effective_ai_tool_names`` — so the prompt's claims about the
+    message-id annotations track what the argv actually enables. Without this the
+    "# Formatting rules" block promised ``edit_message`` on every turn while the
+    shipped argv exposes only WebSearch/WebFetch: the model would offer to
+    correct an earlier message and then have no tool to do it with, which is the
+    exact confident-call-to-a-missing-tool failure ``_discord_tools_note`` and
+    ``effective_ai_tool_names`` exist to prevent.
+    """
+    basenames = {name.rsplit("__", 1)[-1] for name in (ai_tool_names or [])}
+    return _EDIT_MESSAGE_TOOL in basenames, _READ_CHANNEL_TOOL in basenames
+
 
 def _discord_tools_note(ai_tool_names: list[str] | None) -> str:
     """The ``# Available tools`` block for THIS turn's resolved Discord toolset.
@@ -559,6 +584,8 @@ def _flatten_contents_to_prompt(
     include_history: bool = True,
     tools_note: str = "",
     persona_in_system_prompt: bool = False,
+    can_edit_messages: bool = False,
+    can_read_channel: bool = False,
 ) -> str:
     """Build the single prompt string fed to ``claude -p`` via stdin.
 
@@ -603,6 +630,15 @@ def _flatten_contents_to_prompt(
     practice, so the override wording silently discards the persona file the
     argv just installed. Callers must derive it from the same resolved path they
     hand to :func:`_build_claude_argv`, never re-resolve it here.
+
+    ``can_edit_messages`` / ``can_read_channel`` say whether THIS turn's argv
+    really carries those tools — see :func:`_message_id_tools`, which callers
+    must derive from the same resolved tool list they pass to
+    :func:`_build_claude_argv`. They gate every sentence that tells the model to
+    ACT on a ``(msg …)`` annotation, and the resumed-session id recap (whose
+    only purpose is feeding ``edit_message``). Both default to False so a caller
+    that forgets to resolve them fails closed — silence about a tool is
+    recoverable, a promise of one that isn't there is not.
     """
     parts: list[str] = []
 
@@ -653,17 +689,32 @@ def _flatten_contents_to_prompt(
         "part of the user's intent. Do NOT include such timestamp "
         "prefixes in your own response. Just answer normally."
     )
-    parts.append(
+    # What to SAY about the ``(msg …)`` annotation depends on whether this turn
+    # can act on the ids. The "never reproduce one" rule holds either way — it is
+    # what stops the model mimicking the prefix into its own reply — but the
+    # edit_message / read_channel sentences are claims about the toolset and only
+    # go out when the argv really carries those tools.
+    id_note = (
         "Your own past turns may additionally carry a message-id annotation — "
         "'(msg 1401234567890123456)' for a turn sent as one Discord message, or "
         "'(msgs narration=140…, Character=140…)' when the turn went out as "
-        "several (one per {{Name}} block, or split across chunks). These ids are "
-        "what the edit_message tool takes, so you can correct an earlier message "
-        "instead of only apologising for it. For messages older than the shown "
-        "history, call read_channel — it reports the id of every message it "
-        "returns. Like timestamps, these annotations are system-injected: never "
-        "reproduce one in your own reply."
+        "several (one per {{Name}} block, or split across chunks). "
     )
+    if can_edit_messages:
+        id_note += (
+            "These ids are what the edit_message tool takes, so you can correct an "
+            "earlier message instead of only apologising for it. "
+        )
+    if can_read_channel:
+        id_note += (
+            "For messages older than the shown history, call read_channel — it "
+            "reports the id of every message it returns. "
+        )
+    id_note += (
+        "Like timestamps, these annotations are system-injected: never reproduce "
+        "one in your own reply."
+    )
+    parts.append(id_note)
     parts.append("")
 
     # contents is the bot's internal Gemini-shaped history: a list of
@@ -703,14 +754,16 @@ def _flatten_contents_to_prompt(
             if joined:
                 history_parts.append(f"{speaker}: {joined}")
         history_parts.append("")
-    elif history:
+    elif history and can_edit_messages:
         # Resumed session: the full recap is deliberately not re-sent (see the
         # docstring), which would also withhold every ``(msg …)`` annotation —
         # leaving the model unable to correct its own recent messages without a
         # read_channel round trip on the default backend. Re-send just the ids
         # of the last few assistant turns: bounded, id-only, and short enough
         # that repeating it per turn cannot grow the session context the way a
-        # full recap would.
+        # full recap would. Skipped without ``edit_message``: the block's ONLY
+        # purpose is feeding that tool, so without it the ids are prompt weight
+        # that reads as an invitation to call something that isn't there.
         recap = _recent_message_id_lines(history)
         if recap:
             history_parts.append("# Your recent messages (ids for edit_message)")
@@ -1192,6 +1245,9 @@ async def call_claude_cli_streaming(
         # Declare the resolved toolset in the prompt — the argv below enables
         # web + custom tools that the persona (Gemini-era) doesn't know about.
         tools_note = _discord_tools_note(ai_tools)
+        # Same list, so the prompt's claims about the ``(msg …)`` annotations
+        # can't outrun the argv either (see _message_id_tools).
+        can_edit_messages, can_read_channel = _message_id_tools(ai_tools)
 
         # Once per turn, NOT per attempt: the loop below rebuilds the prompt on
         # the stale-session retry and must not advance the refresh counter twice.
@@ -1238,6 +1294,10 @@ async def call_claude_cli_streaming(
                 persona_in_system_prompt=(
                     system_prompt_file is not None and _persona_depth_replaces()
                 ),
+                # Resolved from the SAME tool list the argv below is built with,
+                # so the body never offers a message-id tool the argv withholds.
+                can_edit_messages=can_edit_messages,
+                can_read_channel=can_read_channel,
             )
             if (
                 session_id is None
@@ -1266,8 +1326,10 @@ async def call_claude_cli_streaming(
                 # run server-side at Anthropic.
                 enable_web=_CLI_WEB_TOOLS_ENABLED,
                 ai_tool_names=ai_tools,
-                # Discord path pins Opus 5's 1M-context variant and the
-                # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the
+                # Discord path pins its OWN model + persona, deliberately
+                # apart from the dashboard's: _DISCORD_CLI_MODEL (Opus 4.7's
+                # 1M-context variant, not the global CLAUDE_MODEL) and the
+                # repo-root CLAUDE2.md (fallback: CLAUDE.md) — see the
                 # module-level constants for the rationale.
                 model=_DISCORD_CLI_MODEL,
                 system_prompt_file=system_prompt_file,
@@ -1635,6 +1697,9 @@ async def call_claude_cli(
         # Same toolset declaration as the streaming sibling — the argv below
         # enables the identical web + custom tools.
         tools_note = _discord_tools_note(ai_tools)
+        # …and the same message-id capability resolution, so this path can't
+        # promise edit_message where the streaming sibling stays silent.
+        can_edit_messages, can_read_channel = _message_id_tools(ai_tools)
 
         # Once per turn, not per attempt — see the streaming sibling.
         lore_due = _lore_due_this_turn(channel_id, session_id)
@@ -1674,6 +1739,10 @@ async def call_claude_cli(
                 persona_in_system_prompt=(
                     system_prompt_file is not None and _persona_depth_replaces()
                 ),
+                # Resolved from the SAME tool list the argv below is built with,
+                # so the body never offers a message-id tool the argv withholds.
+                can_edit_messages=can_edit_messages,
+                can_read_channel=can_read_channel,
             )
             if (
                 session_id is None
@@ -1710,8 +1779,10 @@ async def call_claude_cli(
                 # run server-side at Anthropic.
                 enable_web=_CLI_WEB_TOOLS_ENABLED,
                 ai_tool_names=ai_tools,
-                # Discord path pins Opus 5's 1M-context variant and the
-                # repo-root CLAUDE2.md persona (fallback: CLAUDE.md) — see the
+                # Discord path pins its OWN model + persona, deliberately
+                # apart from the dashboard's: _DISCORD_CLI_MODEL (Opus 4.7's
+                # 1M-context variant, not the global CLAUDE_MODEL) and the
+                # repo-root CLAUDE2.md (fallback: CLAUDE.md) — see the
                 # module-level constants for the rationale.
                 model=_DISCORD_CLI_MODEL,
                 system_prompt_file=system_prompt_file,

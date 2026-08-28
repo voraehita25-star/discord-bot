@@ -382,7 +382,7 @@ class TestModuleImports:
 # ======================================================================
 
 
-class TestCmdCreateVoice:
+class TestCmdCreateVoiceExtended:
     """Tests for cmd_create_voice function."""
 
     @pytest.mark.asyncio
@@ -493,7 +493,7 @@ class TestCmdCreateVoice:
         assert "ไม่มีสิทธิ์" in str(mock_origin.send.call_args)
 
 
-class TestCmdCreateCategory:
+class TestCmdCreateCategoryExtended:
     """Tests for cmd_create_category function."""
 
     @pytest.mark.asyncio
@@ -660,7 +660,7 @@ class TestCmdDeleteChannel:
         assert "ไม่มีสิทธิ์" in str(mock_origin.send.call_args)
 
 
-class TestCmdCreateRole:
+class TestCmdCreateRoleExtended:
     """Tests for cmd_create_role function."""
 
     @pytest.mark.asyncio

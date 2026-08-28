@@ -22,12 +22,22 @@ class TestLoadCachedImageBytes:
             pytest.skip("media_processor not available")
             return
 
+        from cogs.ai_core.media_processor import _BASE_DIR
+
         # Clear cache before test
         load_cached_image_bytes.cache_clear()
 
-        with patch("pathlib.Path.exists", return_value=True):
+        # Two things this test got wrong while it was shadowed by a duplicate
+        # class name (so it never ran): the cache validates against
+        # ``st_mtime_ns``, not ``exists``, and the path must be inside
+        # ``_BASE_DIR`` or the traversal guard refuses it before any read.
+        # Matches TestLoadCachedImageBytesMediaProcessorNew, which had already
+        # been updated for both.
+        fake_stat = MagicMock(st_mtime_ns=42)
+        in_tree = str(_BASE_DIR / "assets" / "image.png")
+        with patch("pathlib.Path.stat", return_value=fake_stat):
             with patch("pathlib.Path.read_bytes", return_value=b"fake_image_data"):
-                result = load_cached_image_bytes("/fake/path/image.png")
+                result = load_cached_image_bytes(in_tree)
 
         assert result == b"fake_image_data"
 
@@ -544,7 +554,7 @@ class TestModuleConstants:
 # ======================================================================
 
 
-class TestLoadCachedImageBytes:
+class TestLoadCachedImageBytesMediaProcessorModule:
     """Tests for load_cached_image_bytes function."""
 
     def test_load_cached_image_bytes_non_existent(self):
@@ -562,7 +572,7 @@ class TestLoadCachedImageBytes:
         assert callable(load_cached_image_bytes)
 
 
-class TestPilToInlineData:
+class TestPilToInlineDataMediaProcessorModule:
     """Tests for pil_to_inline_data function."""
 
     def test_pil_to_inline_data_basic(self):
@@ -605,7 +615,7 @@ class TestPilToInlineData:
         assert "inline_data" in result
 
 
-class TestIsAnimatedGif:
+class TestIsAnimatedGifMediaProcessorModule:
     """Tests for is_animated_gif function."""
 
     def test_is_animated_gif_static(self):
@@ -737,7 +747,7 @@ class TestStaticGifDetection:
 # ======================================================================
 
 
-class TestLoadCachedImageBytes:
+class TestLoadCachedImageBytesMediaProcessorNew:
     """Tests for load_cached_image_bytes function."""
 
     def test_load_existing_file(self):
@@ -791,7 +801,7 @@ class TestLoadCachedImageBytes:
                 assert result is None
 
 
-class TestPilToInlineData:
+class TestPilToInlineDataMediaProcessorNew:
     """Tests for pil_to_inline_data function."""
 
     def test_convert_image_to_inline_data(self):
@@ -819,7 +829,7 @@ class TestPilToInlineData:
         assert "inline_data" in result
 
 
-class TestIsAnimatedGif:
+class TestIsAnimatedGifMediaProcessorNew:
     """Tests for is_animated_gif function."""
 
     def test_static_image(self):
@@ -859,7 +869,7 @@ class TestIsAnimatedGif:
         assert result is False
 
 
-class TestConvertGifToVideo:
+class TestConvertGifToVideoMediaProcessorNew:
     """Tests for convert_gif_to_video function."""
 
     def test_convert_without_imageio(self):
@@ -894,7 +904,7 @@ class TestConvertGifToVideo:
         assert result is None
 
 
-class TestLoadCharacterImage:
+class TestLoadCharacterImageMediaProcessorNew:
     """Tests for load_character_image function."""
 
     def test_no_guild_id(self):
@@ -914,7 +924,7 @@ class TestLoadCharacterImage:
         assert result is None
 
 
-class TestAvatarKeywords:
+class TestAvatarKeywordsMediaProcessorNew:
     """Tests for AVATAR_KEYWORDS constant."""
 
     def test_avatar_keywords_exists(self):
@@ -932,7 +942,7 @@ class TestAvatarKeywords:
         assert "face" in AVATAR_KEYWORDS
 
 
-class TestModuleConstants:
+class TestModuleConstantsMediaProcessorNew:
     """Tests for module constants."""
 
     def test_imageio_available_exists(self):
@@ -942,7 +952,7 @@ class TestModuleConstants:
         assert isinstance(IMAGEIO_AVAILABLE, bool)
 
 
-class TestModuleImports:
+class TestModuleImportsMediaProcessorNew:
     """Tests for module imports."""
 
     def test_import_load_cached_image_bytes(self):

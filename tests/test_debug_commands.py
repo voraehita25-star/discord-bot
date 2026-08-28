@@ -256,7 +256,7 @@ class TestModuleImports:
 # ======================================================================
 
 
-class TestAIDebugCog:
+class TestAIDebugCogExtended:
     """Tests for AIDebug cog initialization."""
 
     def test_ai_debug_cog_init(self):
@@ -291,7 +291,7 @@ class TestAIDebugCog:
         assert hasattr(cog, "ai_tokens_cmd")
 
 
-class TestGetChatManager:
+class TestGetChatManagerExtended:
     """Tests for _get_chat_manager helper method."""
 
     def test_get_chat_manager_returns_chat_manager(self):
@@ -348,7 +348,7 @@ class TestGetChatManager:
         assert result is None
 
 
-class TestAIDebugCommand:
+class TestAIDebugCommandExtended:
     """Tests for ai_debug command."""
 
     @pytest.fixture
@@ -406,7 +406,7 @@ class TestAIDebugCommand:
         mock_ctx.send.assert_called_once()
 
 
-class TestAIPerfCommand:
+class TestAIPerfCommandExtended:
     """Tests for ai_perf command."""
 
     async def test_ai_perf_no_chat_manager(self):
@@ -606,7 +606,7 @@ class TestAITokensCommand:
         mock_ctx.send = AsyncMock()
 
 
-class TestSetupFunction:
+class TestSetupFunctionExtended:
     """Tests for setup function."""
 
     async def test_setup_function_exists(self):
@@ -941,3 +941,58 @@ class TestAITokensCommandFull:
             await cog.ai_tokens_cmd.callback(cog, ctx)
 
         ctx.send.assert_called_once_with("❌ Token tracker not available")
+
+
+class TestThinkingDisplayMatchesTheBackend:
+    """Regression: the debug panels rendered a per-channel ``thinking_enabled``
+    flag that is INERT on the default ``CLAUDE_BACKEND=cli``. ``claude -p`` has
+    no way to switch reasoning off — every turn reasons at ``CLAUDE_EFFORT`` —
+    so a channel carrying a persisted ``thinking off`` printed "Thinking: ❌" on
+    a bot that was in fact reasoning at ``max``. ``!thinking`` and ``!streaming``
+    already refuse to produce that mismatch; the panels did not.
+    """
+
+    @staticmethod
+    def _cog():
+        from cogs.ai_core.commands.debug_commands import AIDebug
+
+        return AIDebug(MagicMock(spec=commands.Bot))
+
+    def test_sdk_backend_still_shows_the_flag(self):
+        cog = self._cog()
+        cm = MagicMock(cli_mode=False)
+        assert cog._thinking_display(cm, True) == "✅"
+        assert cog._thinking_display(cm, False) == "❌"
+
+    def test_cli_backend_reports_always_on_with_the_effort(self):
+        from cogs.ai_core.api.dashboard_chat_claude_cli import _CLI_EFFORT
+
+        cog = self._cog()
+        cm = MagicMock(cli_mode=True)
+        # The stored flag is irrelevant on this backend — both render the truth.
+        for stored in (True, False):
+            shown = cog._thinking_display(cm, stored)
+            assert shown.startswith("always")
+            assert _CLI_EFFORT in shown
+
+    def test_missing_chat_manager_attribute_is_treated_as_sdk(self):
+        """A bare mock / partially built manager must not crash the panel."""
+        cog = self._cog()
+        assert cog._thinking_display(None, True) == "✅"
+
+    async def test_ai_trace_panel_uses_it(self):
+        cog = self._cog()
+        ctx = MagicMock()
+        ctx.channel.id = 5
+        ctx.send = AsyncMock()
+        cm = MagicMock(cli_mode=True)
+        cm.chats = {5: {"history": [], "thinking_enabled": False}}
+        cm.is_streaming_enabled = MagicMock(return_value=False)
+        cog._get_chat_manager = MagicMock(return_value=cm)
+
+        await cog.ai_trace.callback(cog, ctx)
+
+        embed = ctx.send.call_args.kwargs["embed"]
+        session = next(f for f in embed.fields if "Session Info" in f.name)
+        assert "Thinking: always" in session.value
+        assert "Thinking: ❌" not in session.value

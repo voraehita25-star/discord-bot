@@ -1165,7 +1165,7 @@ class TestReplaceHistoryUpsert:
 # ======================================================================
 
 
-class TestDatabaseSingleton:
+class TestDatabaseSingletonModule:
     """Tests for Database singleton pattern."""
 
     def test_database_singleton(self):
@@ -1224,7 +1224,7 @@ class TestDatabaseAsync:
             assert conn is not None
 
 
-class TestDatabaseConstants:
+class TestDatabaseConstantsModule:
     """Tests for database constants."""
 
     def test_db_dir_exists(self):
@@ -1343,7 +1343,7 @@ class TestRAGMethods:
         assert hasattr(db, "get_all_rag_memories")
 
 
-class TestUserStatsMethods:
+class TestUserStatsMethodsModule:
     """Tests for user statistics methods."""
 
     def test_increment_user_stat_structure(self):
@@ -1363,7 +1363,7 @@ class TestUserStatsMethods:
         assert hasattr(db, "get_user_stats")
 
 
-class TestGuildSettingsMethods:
+class TestGuildSettingsMethodsModule:
     """Tests for guild settings methods."""
 
     def test_get_guild_settings_structure(self):
