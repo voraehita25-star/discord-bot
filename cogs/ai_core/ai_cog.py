@@ -211,6 +211,35 @@ class AI(commands.Cog):
         return channel_id != CHANNEL_ID_ALLOWED
 
     @staticmethod
+    def _forget_character_states(channel_id: int) -> None:
+        """Drop the RP state tracker's snapshot for a channel being wiped.
+
+        ``state_tracker`` holds the "[สถานะปัจจุบันของตัวละคร]" block — every
+        character's current location / activity / emotion / last action — and it
+        is derived ENTIRELY from the messages of the conversation in question.
+        ``process_chat`` injects it into every RP-guild prompt, labelled as
+        CURRENT.
+
+        Nothing cleared it. So the turn right after ``!reset_ai`` still carried
+        each character's pre-wipe emotional state and last action, presented as
+        current, while the owner had just been told
+        "🧹 ล้างความจำ AI ในห้องนี้เรียบร้อยแล้ว" — the most vivid slice of the
+        conversation surviving the wipe that claimed to remove it. Same for a
+        deleted channel (also a leak: the states outlive the channel) and for
+        ``!move_memory``'s source, whose history the command deletes outright.
+        ``clear_channel`` existed for exactly this and had no caller in the tree.
+
+        Best-effort: the store is in-memory, and a failure here must not abort a
+        wipe that has already deleted rows.
+        """
+        try:
+            from .memory.state_tracker import state_tracker
+
+            state_tracker.clear_channel(channel_id)
+        except Exception:
+            logger.exception("Failed to clear character states for channel %s", channel_id)
+
+    @staticmethod
     async def _check_custom_channel_limit(
         message: discord.Message, *, send_message: bool = True
     ) -> bool:
@@ -701,6 +730,9 @@ class AI(commands.Cog):
             # private ``_message_queue`` state — keeps the encapsulation
             # boundary stable across MessageQueue refactors.
             self.chat_manager._message_queue.clear_channel(channel_id)
+            # The RP character-state snapshot is derived from the history we
+            # just deleted — see _forget_character_states.
+            self._forget_character_states(channel_id)
 
             # In CLI mode, also forget the Claude --resume session_id so the
             # next message starts a fresh subprocess context. Without this,
@@ -751,6 +783,9 @@ class AI(commands.Cog):
         # private ``_message_queue`` state — see ``reset_ai`` for the
         # rationale.
         self.chat_manager._message_queue.clear_channel(channel.id)
+        # Channel deletion is a stronger forget than !reset_ai, so it performs
+        # at least the same teardown — see _forget_character_states.
+        self._forget_character_states(channel.id)
 
         # In CLI mode, also forget the Claude --resume session so the deleted
         # channel's dangling _CHANNEL_SESSIONS entry is dropped and its
@@ -1924,6 +1959,10 @@ class AI(commands.Cog):
 
                 # Clear source from memory too
                 self.chat_manager.chats.pop(source_id, None)
+                # …including its RP character-state snapshot, which was derived
+                # from the source history this command just deleted (see
+                # _forget_character_states).
+                self._forget_character_states(source_id)
 
                 # In CLI mode (default), forget BOTH channels' Claude --resume
                 # sessions: the target so it picks up the moved history, and the

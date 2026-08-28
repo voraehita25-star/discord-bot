@@ -1953,6 +1953,44 @@ class ChatManager(SessionMixin, ResponseMixin):
                             # abort the whole turn via the outer broad handler.
                             logger.exception("RAG search failed")
 
+                    # --- Explicit user facts (!remember / the remember tool) ---
+                    # These live in ``long_term_memory`` (SQLite ``user_facts``),
+                    # a DIFFERENT store from ``rag_system`` above. Nothing on the
+                    # Discord reply path read it, so ``!remember`` answered
+                    # "✅ จำแล้ว! … ข้อมูลนี้จะถูกจำอย่างถาวร" and then the AI never
+                    # saw the fact: the only other readers are the ``recall_memory``
+                    # MCP tool (withheld at the default CLI_TOOL_SCOPE=minimal) and
+                    # ``!memories``, which just lists them back to the user. On the
+                    # live DB that is 2 stored facts against 0 RAG rows and no FAISS
+                    # index on disk at all — i.e. the ONLY populated long-term store
+                    # was the unreachable one.
+                    #
+                    # Retrieved unconditionally, not behind ``has_user_text``: these
+                    # are profile facts about the speaker, not a query-similarity
+                    # lookup, so they are just as relevant on an attachment-only or
+                    # continue-the-conversation turn. Rendered into the same
+                    # ``[Long-term Memory]`` heading so the prompt shape is unchanged.
+                    try:
+                        from .memory.long_term_memory import long_term_memory
+
+                        user_facts = await long_term_memory.get_user_facts(user.id)
+                        fact_lines = [
+                            f.content.strip()
+                            for f in (user_facts or [])
+                            if getattr(f, "content", "").strip()
+                        ][:RAG_TOP_K]
+                        if fact_lines:
+                            rendered = "\n".join(f"- {c}" for c in fact_lines)
+                            if rag_context:
+                                rag_context += "\n" + rendered
+                            else:
+                                rag_context = "\n\n[Long-term Memory]\n" + rendered
+                            _trace_rag_results += len(fact_lines)
+                    except Exception:
+                        # Same contract as the RAG block above: a memory backend
+                        # failure degrades to "no facts", never aborts the turn.
+                        logger.exception("Long-term fact retrieval failed")
+
                     # --- Entity Memory: Retrieve verified character/location facts ---
                     entity_context = ""
                     if has_user_text:

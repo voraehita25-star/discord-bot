@@ -115,8 +115,20 @@ class CharacterStateTracker:
     Features:
     - Real-time state tracking per character per channel
     - Auto-extract state from AI responses
-    - State persistence between sessions
     - Memory bounds to prevent unbounded growth
+
+    NOT persisted. ``to_dict`` / ``from_dict`` exist and work, but nothing in the
+    tree calls them, so every restart starts each channel with no states and the
+    RP prompt's "[สถานะปัจจุบันของตัวละคร]" block is empty until the model's next
+    reply repopulates it. The line that used to sit here ("State persistence
+    between sessions") described an intent, not the build. Wiring it up is a
+    real option — the serialisation half is already done — but it needs a
+    decision about where the blob lives and how it interacts with ``!reset_ai``,
+    so it is left explicit rather than implied.
+
+    Conversely, the states ARE cleared when the conversation they describe is
+    discarded: ``ai_cog._forget_character_states`` calls ``clear_channel`` from
+    ``!reset_ai``, channel deletion, and ``!move_memory``'s source.
     """
 
     # Max limits to prevent memory growth
