@@ -261,7 +261,9 @@ async def async_main():
     # mypy skips its body and would flag the ignore as unused-ignore.)
     for _stream in (sys.stdout, sys.stderr):
         try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")
+            _reconfig = getattr(_stream, "reconfigure", None)
+            if _reconfig is not None:
+                _reconfig(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
             pass
     parser = argparse.ArgumentParser(description="Migrate JSON files to SQLite database")
@@ -476,9 +478,11 @@ async def _run_migration(args) -> None:
         if db_path.exists():
             async with aiosqlite.connect(str(db_path)) as conn:
                 cur = await conn.execute("SELECT COUNT(*) FROM ai_history")
-                history_count = (await cur.fetchone())[0]
+                hist_row = await cur.fetchone()
+                history_count = hist_row[0] if hist_row else 0
                 cur = await conn.execute("SELECT COUNT(*) FROM ai_metadata")
-                metadata_count_db = (await cur.fetchone())[0]
+                meta_row = await cur.fetchone()
+                metadata_count_db = meta_row[0] if meta_row else 0
                 db_size_mb = db_path.stat().st_size / (1024 * 1024)
             print("  📊 Database Statistics:")
             print(f"     • AI History: {history_count} records")

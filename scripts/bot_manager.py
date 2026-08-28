@@ -16,6 +16,7 @@ import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import psutil
 
@@ -546,7 +547,7 @@ def detect_launcher(proc):
 
 def get_bot_status():
     """Get detailed bot status - finds ALL running instances"""
-    status = {
+    status: dict[str, Any] = {
         "running": False,
         "pid": None,
         "all_pids": [],

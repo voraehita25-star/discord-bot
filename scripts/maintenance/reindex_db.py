@@ -163,7 +163,10 @@ async def reindex_ai_history():
         # Get current row count
         cursor = await conn.execute("SELECT COUNT(*) as count FROM ai_history")
         row = await cursor.fetchone()
-        total_rows = row["count"]
+        if not row:
+            print("[WARN] Could not retrieve row count")
+            return
+        total_rows = int(row["count"])
         print(f"[INFO] Total rows to re-index: {total_rows}")
 
         if total_rows == 0:
@@ -173,7 +176,8 @@ async def reindex_ai_history():
         # Get current ID range
         cursor = await conn.execute("SELECT MIN(id) as min_id, MAX(id) as max_id FROM ai_history")
         row = await cursor.fetchone()
-        print(f"[INFO] Current ID range: {row['min_id']} - {row['max_id']}")
+        if row:
+            print(f"[INFO] Current ID range: {row['min_id']} - {row['max_id']}")
 
         # Introspect live schema so this script stays in sync with database.py
         # even after new columns are added. Hardcoding the schema historically
@@ -271,7 +275,11 @@ async def reindex_ai_history():
             # Step 3: Verify row count matches
             cursor = await conn.execute("SELECT COUNT(*) as count FROM ai_history_new")
             row = await cursor.fetchone()
-            new_rows = row["count"]
+            if not row:
+                print("[ERROR] Could not verify new row count!")
+                await conn.execute("ROLLBACK")
+                return
+            new_rows = int(row["count"])
 
             if new_rows != total_rows:
                 print(f"[ERROR] Row count mismatch! Original: {total_rows}, New: {new_rows}")
@@ -345,7 +353,7 @@ async def reindex_ai_history():
             # schema change could slip past it. foreign_key_check returns
             # one row per broken FK; non-empty result = abort the migration.
             cursor = await conn.execute("PRAGMA foreign_key_check")
-            broken = await cursor.fetchall()
+            broken = list(await cursor.fetchall())
             if broken:
                 print(
                     f"[ERROR] foreign_key_check found {len(broken)} broken row(s) "
@@ -418,7 +426,8 @@ async def reindex_ai_history():
                 "SELECT MIN(id) as min_id, MAX(id) as max_id FROM ai_history"
             )
             row = await cursor.fetchone()
-            print(f"[OK] New ID range: {row['min_id']} - {row['max_id']}")
+            if row:
+                print(f"[OK] New ID range: {row['min_id']} - {row['max_id']}")
         except Exception as e:
             print(f"  [WARN] Could not read new ID range: {e}")
 

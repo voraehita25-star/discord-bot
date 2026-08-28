@@ -42,6 +42,7 @@ import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DASH = ROOT / "native_dashboard"
@@ -231,7 +232,7 @@ _INT_STATS = {
 }
 
 
-def render(stat: str, value: object) -> str:
+def render(stat: str, value: Any) -> str:
     if stat in _INT_STATS:
         return f"{int(value):,}"
     return str(value)

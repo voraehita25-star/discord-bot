@@ -245,7 +245,7 @@ class EntityMemoryManager:
     async def initialize(self) -> bool:
         """Initialize the entity memory table."""
         if self._initialized or not db_manager:
-            return self._initialized  # type: ignore[no-any-return]
+            return self._initialized
 
         try:
             # DDL must route through the single-writer connection — matching

@@ -184,7 +184,7 @@ def check_sdk() -> bool:
             max_tokens=20,
             messages=[{"role": "user", "content": "Reply with exactly: SDK_OK_99"}],
         )
-        text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+        text = "".join(b.text for b in resp.content if isinstance(b, anthropic.types.TextBlock))
         ok = "SDK_OK_99" in text
         print(f"[sdk] reply={text!r} -> {'PASS' if ok else 'FAIL'}")
         return ok

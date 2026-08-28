@@ -96,7 +96,7 @@ except ImportError:
 # match approximately via cosine but re-embedding improves quality over time.
 EMBEDDING_MODEL = "gemini-embedding-2"
 EMBEDDING_DIM = 768
-_EMBED_CONFIG = {"output_dimensionality": EMBEDDING_DIM}
+_EMBED_CONFIG: Any = {"output_dimensionality": EMBEDDING_DIM}
 
 # Time decay settings
 TIME_DECAY_HALF_LIFE_DAYS = 30  # Memories lose half importance after 30 days
@@ -854,7 +854,8 @@ class MemorySystem:
 
     async def generate_embedding(self, text: str) -> np.ndarray | None:
         """Generate vector embedding for text using Gemini API."""
-        if not self.client:
+        client = self.client
+        if not client:
             return None
         # Skip empty / whitespace-only payloads — they always yield a useless
         # near-zero vector but still cost an API call against the embedding
@@ -863,7 +864,7 @@ class MemorySystem:
             return None
 
         try:
-            result = await self.client.aio.models.embed_content(
+            result = await client.aio.models.embed_content(
                 model=EMBEDDING_MODEL, contents=text, config=_EMBED_CONFIG
             )
 
@@ -904,7 +905,8 @@ class MemorySystem:
         via a semaphore so a caller passing batch_size=1000 can't fan out
         1000 simultaneous API calls and trigger 429s / IP bans.
         """
-        if not self.client or not texts:
+        client = self.client
+        if not client or not texts:
             return [None] * len(texts)
 
         results: list[np.ndarray | None] = []
@@ -915,7 +917,7 @@ class MemorySystem:
 
         async def _embed_one(text: str):
             async with sem:
-                return await self.client.aio.models.embed_content(
+                return await client.aio.models.embed_content(
                     model=EMBEDDING_MODEL,
                     contents=text,
                     config=_EMBED_CONFIG,

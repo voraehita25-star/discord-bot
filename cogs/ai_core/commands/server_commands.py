@@ -1486,7 +1486,7 @@ async def send_long_message(channel, header, lines):
     # accumulator below only splits BETWEEN lines, so one ~2000-char history
     # line (cmd_read_channel renders each message as one line) previously
     # produced a >2000-char send that 400s at Discord.
-    safe_lines = []
+    safe_lines: list[str] = []
     for raw_line in (_escape_for_code_block(line) for line in lines):
         if len(raw_line) > 1800:
             safe_lines.extend(raw_line[i : i + 1800] for i in range(0, len(raw_line), 1800))

@@ -1177,7 +1177,7 @@ class Music(commands.Cog):
                             # playback start and the after-callback, the captured
                             # reference is stale and ``is_connected()`` returns
                             # False even though a fresh VC is fully playable.
-                            live_vc = ctx.guild.voice_client if ctx.guild else None
+                            live_vc: Any = ctx.guild.voice_client if ctx.guild else None
                             if not live_vc or not live_vc.is_connected():
                                 # Still drop the file when loop was turned off
                                 # mid-track, exactly as the queue branch's
@@ -1370,7 +1370,7 @@ class Music(commands.Cog):
                             # Use the live voice_client (see after_playing_loop
                             # comment) so a !leave+!join cycle between play
                             # start and this callback doesn't freeze the queue.
-                            live_vc = ctx.guild.voice_client if ctx.guild else None
+                            live_vc: Any = ctx.guild.voice_client if ctx.guild else None
                             if not live_vc or not live_vc.is_connected():
                                 # Cleanup file even if disconnected
                                 if player_filename and not self._gs(guild_id).loop:
@@ -1857,11 +1857,11 @@ class Music(commands.Cog):
             # Preserve current volume across fix/reconnect
             player.volume = self._gs(guild_id).volume
 
+            # Update start time to now - elapsed
+            track_info["start_time"] = time.time() - elapsed
+
             # Restore current_track (cleanup may have removed it during disconnect)
             self._gs(guild_id).current_track = track_info
-
-            # Update start time to now - elapsed
-            self._gs(guild_id).current_track["start_time"] = time.time() - elapsed
 
             # Hold a reference for the immediate ``.play()`` call below; the
             # callback itself looks up the LIVE VC each time it fires so a

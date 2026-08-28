@@ -59,12 +59,14 @@ except ImportError:
         try:
             import ctypes
 
-            _k = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            _h = _k.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-            _mode = ctypes.c_uint()
-            if _k.GetConsoleMode(_h, ctypes.byref(_mode)):
-                # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
-                _k.SetConsoleMode(_h, _mode.value | 0x0004)
+            _windll = getattr(ctypes, "windll", None)
+            if _windll is not None:
+                _k = _windll.kernel32
+                _h = _k.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+                _mode = ctypes.c_uint()
+                if _k.GetConsoleMode(_h, ctypes.byref(_mode)):
+                    # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+                    _k.SetConsoleMode(_h, _mode.value | 0x0004)
         except Exception:
             pass
 

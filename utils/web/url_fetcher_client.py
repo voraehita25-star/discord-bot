@@ -509,7 +509,7 @@ class URLFetcherClient:
                 service_response["error_count"] = service_response.get("error_count", 0) + len(
                     blocked_results
                 )
-            return service_response  # type: ignore[no-any-return]
+            return service_response
         except Exception as e:
             # The Go batch call failed (likely the service died mid-interval).
             # Invalidate the cached availability and reset the check time so the

@@ -75,12 +75,14 @@ def _supports_color(no_color: bool) -> bool:
         try:
             import ctypes
 
-            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            # -11 = STD_OUTPUT_HANDLE; 0x0004 = ENABLE_VIRTUAL_TERMINAL_PROCESSING
-            handle = kernel32.GetStdHandle(-11)
-            mode = ctypes.c_uint32()
-            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-                kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+            windll = getattr(ctypes, "windll", None)
+            if windll is not None:
+                kernel32 = windll.kernel32
+                # -11 = STD_OUTPUT_HANDLE; 0x0004 = ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                handle = kernel32.GetStdHandle(-11)
+                mode = ctypes.c_uint32()
+                if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                    kernel32.SetConsoleMode(handle, mode.value | 0x0004)
         except Exception:
             return False
     return True

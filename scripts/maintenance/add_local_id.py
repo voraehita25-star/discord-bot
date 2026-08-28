@@ -69,7 +69,7 @@ async def add_local_id_column():
                     "SELECT id FROM ai_history WHERE channel_id = ? ORDER BY id ASC",
                     (channel_id,),
                 )
-                rows = await cursor.fetchall()
+                rows = list(await cursor.fetchall())
 
                 # Update local_id with sequential values. executemany, not a
                 # per-row execute: aiosqlite marshals every call across to its
