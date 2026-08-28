@@ -60,11 +60,29 @@ _BACKEND_ENV = "MEMORY_EXTRACTION_BACKEND"
 _MODEL_ENV = "MEMORY_EXTRACTION_MODEL"
 _DEFAULT_CLI_MODEL = "claude-haiku-4-5-20251001"
 
-# Reasoning depth for the CLI path. Extraction is not a reasoning task and the
-# output budget is small; a deep trace would eat it (the same failure the SDK
-# path guards with ``thinking_off_kwargs``). ``low`` is the shallowest rung
-# ``_build_claude_argv`` accepts.
-_CLI_EXTRACTION_EFFORT = "low"
+# NOTE on reasoning depth: this path passes NO ``effort`` override, so the CLI
+# runs extraction at the operator's ``CLAUDE_EFFORT`` like every other turn.
+#
+# It briefly pinned ``low``, on the reasoning that a deep trace would eat the
+# output budget — the failure ``thinking_off_kwargs`` guards on the SDK path.
+# That reasoning does not transfer: the CLI exposes no ``--max-tokens`` at all
+# (see this package's CLI module docstring), so there is no shared budget for a
+# trace to consume. Measured head-to-head instead, 3 runs each on the same
+# extraction, ``low`` vs this deployment's ``max``:
+#
+#   input tokens   693 vs 693        (identical, as expected)
+#   output tokens  1,056 vs 1,187 mean — ranges 862-1,352 vs 777-1,520
+#   wall clock     8.3-20.8s vs 7.7-14.7s
+#
+# Both dimensions overlap completely; the 1.12x is inside run-to-run noise, and
+# all six runs parsed. So the override bought nothing measurable — while
+# quietly exempting part of the system from ``CLAUDE_EFFORT``. The repo's rule
+# is that reasoning depth is an OPERATOR setting (see CLAUDE.md), and
+# ``_build_claude_argv``'s docstring names exactly one sanctioned exception: the
+# ``[reasoning_extraction]`` safeguard retry. An unmeasurable optimisation does
+# not earn a second one. If extraction ever proves expensive at a realistic
+# conversation size — these runs were 6 messages, the consolidator feeds up to
+# 50 — measure that case and add the knob then.
 
 # These run in the background, off the turn loop, and each one is a process.
 # Cap how many can be in flight at once so a burst of channels crossing their
@@ -183,9 +201,8 @@ async def _complete_via_cli(prompt: str, *, timeout: float) -> str:
     """Spawn one ``claude -p`` for the prompt and return the visible text.
 
     Deliberately the narrowest possible invocation: no ``--resume`` (each
-    extraction is independent), no web, no MCP tools, no image Read, shallow
-    effort, and a replacement system prompt that states only the output
-    contract. The transcript the run leaves behind is unlinked afterwards —
+    extraction is independent), no web, no MCP tools, no image Read, and a
+    replacement system prompt that states only the output contract. The transcript the run leaves behind is unlinked afterwards —
     without that, every consolidation would orphan a ``.jsonl`` the way the
     Discord path's forked sessions used to.
     """
@@ -209,7 +226,7 @@ async def _complete_via_cli(prompt: str, *, timeout: float) -> str:
         enable_web=False,
         ai_tool_names=None,
         model=_cli_model(),
-        effort=_CLI_EXTRACTION_EFFORT,
+        # No effort override — see the note above the model constants.
         system_prompt_file=_ensure_system_prompt_file(_EXTRACTION_SYSTEM_PROMPT),
         replace_system_prompt=True,
     )

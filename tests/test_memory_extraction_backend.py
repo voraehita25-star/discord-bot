@@ -200,8 +200,30 @@ class TestCliPath:
         assert not any(a.startswith("mcp__") for a in argv)
         # Web tools would let an extraction browse on untrusted conversation text.
         assert "WebSearch" not in argv and "WebFetch" not in argv
-        assert "--effort" in argv and argv[argv.index("--effort") + 1] == "low"
         assert captured["prompt"] == "the prompt"
+
+    @pytest.mark.asyncio
+    async def test_it_does_not_override_the_operators_reasoning_depth(self, monkeypatch):
+        """Reasoning depth is an operator setting; ``_build_claude_argv``'s
+        docstring sanctions exactly one exception (the safeguard retry).
+
+        This path pinned ``--effort low`` for a while on the theory that a deep
+        trace would eat the output budget — but the CLI exposes no --max-tokens,
+        so there is no budget to eat, and a measured head-to-head (3 runs each,
+        low vs max) found identical input tokens, overlapping output-token
+        ranges and overlapping wall clock. The override bought nothing and
+        exempted part of the system from CLAUDE_EFFORT, so it is gone.
+        """
+        from cogs.ai_core.api.dashboard_chat_claude_cli import _CLI_EFFORT
+        from cogs.ai_core.memory.extraction_backend import complete_text
+
+        captured: dict = {}
+        self._patch_cli(monkeypatch, chunks=["ok"], captured=captured)
+
+        await complete_text(prompt="p", max_tokens=100)
+
+        argv = captured["argv"]
+        assert argv[argv.index("--effort") + 1] == _CLI_EFFORT
 
     @pytest.mark.asyncio
     async def test_the_transcript_is_unlinked(self, monkeypatch):
