@@ -16,6 +16,7 @@ from cogs.ai_core.api.dashboard_common import (
     sanitize_profile_field,
     stop_was_requested,
     strip_leading_timestamp,
+    warn_assistant_not_persisted,
 )
 
 
@@ -331,3 +332,41 @@ class TestStopMarker:
     @pytest.mark.asyncio
     async def test_returns_false_outside_a_stopped_task(self):
         assert stop_was_requested() is False
+
+
+class TestWarnAssistantNotPersisted:
+    """All three dashboard backends log-and-continue when the assistant-row save
+    raises, so the turn finished looking successful: the answer streamed,
+    ``stream_end`` reported success, and the frontend rendered a bubble with
+    ``assistant_message_id: null`` — no working Edit/Delete/Pin, and gone on the
+    next reload with nothing having said so. Both failure modes are observed in
+    this deployment's logs (a locked/missing SQLite file, and a foreign-key
+    violation against a conversation row that no longer exists)."""
+
+    @pytest.mark.asyncio
+    async def test_warns_when_no_row_id_was_obtained(self):
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        await warn_assistant_not_persisted(ws, "conv1", 0)
+        ws.send_json.assert_awaited_once()
+        frame = ws.send_json.await_args.args[0]
+        assert frame["type"] == "warning"
+        assert frame["conversation_id"] == "conv1"
+        assert "could not be saved" in frame["message"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("msg_id", [1, 42])
+    async def test_stays_silent_when_the_row_was_saved(self, msg_id):
+        """Two backends wrap the title update and the CLI-session wipe in the
+        SAME try — a failure there must not claim the message was lost."""
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+        await warn_assistant_not_persisted(ws, "conv1", msg_id)
+        ws.send_json.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_dead_socket_does_not_raise(self):
+        """A warning about a failure must never become a failure of its own."""
+        ws = MagicMock()
+        ws.send_json = AsyncMock(side_effect=ConnectionResetError("gone"))
+        await warn_assistant_not_persisted(ws, "conv1", None)

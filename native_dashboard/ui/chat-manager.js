@@ -242,6 +242,12 @@ export class ChatManager {
         return stored && allowed.has(stored) ? stored : 'gemini';
     })();
     availableProviders = ['gemini']; // Available providers from server
+    // Whether `availableProviders` is the server's answer or still the
+    // placeholder above. Only the server's answer may VETO a conversation's
+    // stored provider (see conversation_loaded) — vetoing on the placeholder
+    // would reject a perfectly valid `claude` row just because the handshake
+    // had not landed yet.
+    providersFromServer = false;
     thinkingEnabled = localStorage.getItem('dashboard_thinking') === 'true'; // Persist thinking preference
     isEditStreaming = false; // True when AI edit streaming is in progress
     editTargetMessageId = null; // DB ID of message being AI-edited
@@ -433,6 +439,7 @@ export class ChatManager {
                 // Update available AI providers from server
                 if (data.available_providers) {
                     this.availableProviders = data.available_providers;
+                    this.providersFromServer = true;
                     // Use saved preference if valid, otherwise fall back to server default
                     const saved = localStorage.getItem('dashboard_ai_provider');
                     if (saved && this.availableProviders.includes(saved)) {
@@ -571,7 +578,29 @@ export class ChatManager {
                     this.setInputEnabled(true);
                 }
                 this.currentConversation = incoming;
-                this.aiProvider = this.currentConversation.ai_provider || this.aiProvider;
+                // Adopt the conversation's stored provider ONLY when the server
+                // still offers it. A row written while a provider was configured
+                // outlives that configuration — flip CLAUDE_BACKEND to `cli` and
+                // the server's VALID_AI_PROVIDERS narrows to {claude}, but every
+                // conversation created before still says `gemini`. Adopting it
+                // unconditionally (what this did) put `ai_provider: "gemini"` in
+                // the next `message` frame, which the server rejects outright
+                // with INVALID_PROVIDER — no reply, and the user's turn is not
+                // even persisted. The conversation was then unusable until the
+                // provider dropdown was changed by hand. Falling back to the
+                // current (server-reconciled) provider answers the turn instead.
+                // Only the server's own answer may veto (providersFromServer):
+                // before the handshake lands, `availableProviders` is still the
+                // ['gemini'] placeholder, and vetoing on that would reject a
+                // perfectly valid `claude` row on no evidence.
+                {
+                    const convProvider = this.currentConversation.ai_provider;
+                    if (convProvider &&
+                        (!this.providersFromServer ||
+                            this.availableProviders.includes(convProvider))) {
+                        this.aiProvider = convProvider;
+                    }
+                }
                 this.messages = data.messages || [];
                 // Reset virtualization window when switching conversations.
                 this.visibleMessageCount = VIRT_WINDOW_SIZE;

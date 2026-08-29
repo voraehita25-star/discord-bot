@@ -303,6 +303,7 @@ from .dashboard_common import (
     normalize_timestamp_to_bangkok,
     stop_was_requested,
     strip_leading_timestamp,
+    warn_assistant_not_persisted,
 )
 from .dashboard_config import (
     CLAUDE_CONTEXT_WINDOW,
@@ -1322,6 +1323,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
 
             except Exception as e:
                 logger.warning("Failed to save assistant message: %s", e)
+                # Only when the SAVE itself failed — this try also covers the
+                # title update and the CLI-session wipe, and a failure there
+                # leaves the message safely stored.
+                await warn_assistant_not_persisted(ws, conversation_id, assistant_msg_id)
 
         # Report context-window OCCUPANCY, matching the CLI backend: Anthropic
         # bills three flavors of input (fresh, cache-creation, cache-read) and

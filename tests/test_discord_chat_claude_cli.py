@@ -2679,3 +2679,111 @@ class TestServerLoreStripAmbiguity:
             assert len(cli_mod._TURNS_SINCE_LORE) == 0
         finally:
             cli_mod._TURNS_SINCE_LORE.clear()
+
+
+class TestMalformedContentsDoNotKillTheTurn:
+    """``contents`` reaches the flattener in the PRE-TRY region of both entry
+    points, so anything it raises escapes ``call_claude_cli*`` entirely — the
+    "💭 กำลังคิด..." placeholder is orphaned in the channel and ``process_chat``
+    aborts before saving the user's own message.
+
+    The item-level ``isinstance(item, dict)`` guard already existed; the two
+    levels below it did not, so ``{"parts": None}``, ``{"parts": 5}`` and
+    ``{"inline_data": "notadict"}`` each still raised (TypeError /
+    AttributeError). Malformed pieces must be SKIPPED — a dropped fragment costs
+    one line of context, an exception costs the whole turn.
+    """
+
+    MALFORMED = [
+        {"role": "model", "parts": None},
+        {"role": "model", "parts": 5},
+        {"role": "model", "parts": [{"inline_data": "notadict"}]},
+        {"role": "model", "parts": [None, 7, {"text": None}]},
+    ]
+
+    @pytest.mark.parametrize("bad", MALFORMED)
+    def test_flattener_skips_instead_of_raising(self, bad: dict[str, Any]) -> None:
+        contents = [bad, {"role": "user", "parts": ["real question"]}]
+        prompt = _flatten_contents_to_prompt(contents, "SYS")
+        assert "real question" in prompt
+
+    def test_string_parts_is_normalised_not_dropped(self) -> None:
+        """``storage.load_history`` already coerces a bare-string ``parts`` to a
+        one-element list on the JSON path; match it rather than losing the text."""
+        contents = [
+            {"role": "user", "parts": "typed as a bare string"},
+            {"role": "user", "parts": ["current"]},
+        ]
+        prompt = _flatten_contents_to_prompt(contents, "SYS")
+        assert "User: typed as a bare string" in prompt
+
+    def test_non_dict_inline_data_degrades_to_generic_placeholder(self) -> None:
+        contents = [{"role": "user", "parts": [{"inline_data": "notadict"}]}]
+        prompt = _flatten_contents_to_prompt(contents, "")
+        assert "[attachment omitted: media]" in prompt
+
+    @pytest.mark.parametrize("bad", MALFORMED)
+    def test_streaming_turn_survives_and_deletes_the_placeholder(self, bad: dict[str, Any]) -> None:
+        send_channel, placeholder = _mk_send_channel()
+        contents = [bad, {"role": "user", "parts": ["real question"]}]
+        with (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="claude",
+            ),
+            patch.object(cli_mod, "_build_claude_argv", return_value=["claude"]),
+            patch.object(cli_mod, "_run_claude_subprocess", side_effect=_capture_subprocess([])),
+        ):
+            text, _, _ = asyncio.run(
+                call_claude_cli_streaming(
+                    contents, {"system_instruction": "SYS"}, send_channel, channel_id=4242
+                )
+            )
+        assert text == "ok"
+        placeholder.delete.assert_awaited()
+
+    def test_prompt_build_failure_is_classified_not_escaped(self) -> None:
+        """A raise from the construction block (``_build_claude_argv`` writes the
+        MCP config to disk — OSError on a full/locked volume) must land on the
+        turn's own error path: placeholder deleted, user told, empty return so
+        ``process_chat`` still stores the user's message."""
+        send_channel, placeholder = _mk_send_channel()
+        with (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="claude",
+            ),
+            patch.object(cli_mod, "_build_claude_argv", side_effect=OSError("disk full")),
+        ):
+            text, indicator, calls = asyncio.run(
+                call_claude_cli_streaming(
+                    [{"role": "user", "parts": ["hi"]}],
+                    {"system_instruction": "SYS"},
+                    send_channel,
+                    channel_id=4243,
+                )
+            )
+        assert (text, indicator, calls) == ("", "", [])
+        placeholder.delete.assert_awaited()
+        notices = [c.args[0] for c in send_channel.send.await_args_list if c.args]
+        assert any("Claude CLI" in str(n) for n in notices[1:])
+
+    def test_non_streaming_prompt_build_failure_does_not_escape(self) -> None:
+        with (
+            patch.object(cli_mod, "is_cli_backend_ready", return_value=(True, "")),
+            patch(
+                "cogs.ai_core.api.dashboard_chat_claude_cli._resolve_claude_executable",
+                return_value="claude",
+            ),
+            patch.object(cli_mod, "_build_claude_argv", side_effect=OSError("disk full")),
+        ):
+            text, _, _ = asyncio.run(
+                call_claude_cli(
+                    [{"role": "user", "parts": ["hi"]}],
+                    {"system_instruction": "SYS"},
+                    channel_id=4244,
+                )
+            )
+        assert "Claude CLI" in text

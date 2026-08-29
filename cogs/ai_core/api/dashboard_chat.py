@@ -31,6 +31,7 @@ from .dashboard_common import (
     sanitize_profile_field as _sanitize_profile_field,  # noqa: F401 - contract re-export for tests
     stop_was_requested,
     strip_leading_timestamp,
+    warn_assistant_not_persisted,
 )
 from .dashboard_config import (
     DASHBOARD_ROLE_PRESETS,
@@ -960,6 +961,10 @@ NOTE: User messages (both historical and the current one) may be prefixed with t
 
             except Exception as e:
                 logger.warning("Failed to save assistant message: %s", e)
+                # Only when the SAVE itself failed — this try also covers the
+                # title update and the CLI-session wipe, and a failure there
+                # leaves the message safely stored.
+                await warn_assistant_not_persisted(ws, conversation_id, assistant_msg_id)
 
         await ws.send_json(
             {

@@ -455,10 +455,20 @@ def _split_for_discord(text: str, limit: int = 2000) -> list[str]:
         # may we consume it. A hard mid-content cut must NOT strip leading
         # newlines, or intentional blank lines straddling the boundary
         # (ASCII art / code) are dropped.
-        split_on_newline = split_at != -1 and split_at >= limit // 2
+        #
+        # ``>= 1`` (rather than ``!= -1``) and ``<= 0`` (rather than ``== -1``)
+        # keep this loop's forward progress unconditional. A boundary at index 0
+        # yields an EMPTY chunk with ``remaining`` unchanged — an infinite loop
+        # on the space/hard-cut path, and an empty Discord send on the newline
+        # path. Neither is reachable at the 2000-char cap every caller passes
+        # (``limit // 2`` is 1000, so index 0 is already rejected as "too
+        # early"), and for any ``limit >= 2`` these two conditions are exactly
+        # equivalent to the originals — so this is a termination guarantee, not
+        # a behaviour change.
+        split_on_newline = split_at >= 1 and split_at >= limit // 2
         if not split_on_newline:
             split_at = remaining.rfind(" ", 0, limit)
-        if split_at == -1 or split_at < limit // 2:
+        if split_at <= 0 or split_at < limit // 2:
             split_at = limit
         # Newline/space split points can never land on a combining mark, so
         # only the hard-split case needs the rewind.

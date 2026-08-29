@@ -555,10 +555,17 @@ def _recent_message_id_lines(history: list[dict[str, Any]]) -> list[str]:
             break
         if not isinstance(item, dict) or item.get("role") != "model":
             continue
+        # Same pre-try region as _text_segments_from_parts, so the same shape
+        # tolerance applies: a non-list ``parts`` must be skipped, not iterated.
+        item_parts = item.get("parts")
+        if isinstance(item_parts, str):
+            item_parts = [item_parts]
+        elif not isinstance(item_parts, list):
+            continue
         first_text = next(
             (
                 part if isinstance(part, str) else part.get("text")
-                for part in item.get("parts", [])
+                for part in item_parts
                 if isinstance(part, str) or (isinstance(part, dict) and part.get("text"))
             ),
             None,
@@ -576,6 +583,45 @@ def _recent_message_id_lines(history: list[dict[str, Any]]) -> list[str]:
         lines.append(f"{annotation} {snippet}".rstrip())
     lines.reverse()
     return lines
+
+
+def _text_segments_from_parts(item: dict[str, Any]) -> list[str]:
+    """The text (and media placeholders) of one ``contents`` item, shape-tolerantly.
+
+    ``contents`` is contractually ``list[dict]`` whose ``parts`` is a list, but
+    this runs in the pre-try region of both entry points: anything raised here
+    escapes ``call_claude_cli*`` entirely, which orphans the "💭 กำลังคิด..."
+    placeholder in the channel and loses the turn. The item-level ``isinstance``
+    guard already existed; the two levels BELOW it did not, so
+    ``{"parts": None}``, ``{"parts": 5}`` and ``{"inline_data": "x"}`` each still
+    raised (TypeError / AttributeError, verified by probe).
+
+    Malformed pieces are SKIPPED rather than raised on — a dropped fragment costs
+    one line of context, an exception costs the whole turn. A bare-string
+    ``parts`` is normalised to a one-element list, matching what
+    ``storage.load_history`` already does on the JSON path.
+    """
+    parts = item.get("parts")
+    if isinstance(parts, str):
+        parts = [parts]
+    elif not isinstance(parts, list):
+        return []
+    segments: list[str] = []
+    for part in parts:
+        if isinstance(part, str):
+            segments.append(part)
+        elif isinstance(part, dict):
+            if isinstance(part.get("text"), str):
+                segments.append(part["text"])
+            elif "inline_data" in part:
+                # Inline media is dropped — see module docstring. Leave a
+                # placeholder so the model knows a non-text element existed at
+                # this position rather than silently editing the conversation
+                # flow. A non-dict payload degrades to the generic label.
+                inline = part.get("inline_data")
+                mime = inline.get("mime_type", "media") if isinstance(inline, dict) else "media"
+                segments.append(f"[attachment omitted: {mime}]")
+    return segments
 
 
 def _flatten_contents_to_prompt(
@@ -736,20 +782,7 @@ def _flatten_contents_to_prompt(
                 continue
             role = item.get("role", "user")
             speaker = "Assistant" if role == "model" else "User"
-            text_segments: list[str] = []
-            for part in item.get("parts", []):
-                if isinstance(part, str):
-                    text_segments.append(part)
-                elif isinstance(part, dict):
-                    if isinstance(part.get("text"), str):
-                        text_segments.append(part["text"])
-                    elif "inline_data" in part:
-                        # Inline media is dropped — see module docstring.
-                        # Leave a placeholder so the model knows a non-text
-                        # element existed at this position rather than
-                        # silently editing the conversation flow.
-                        mime = (part.get("inline_data") or {}).get("mime_type", "media")
-                        text_segments.append(f"[attachment omitted: {mime}]")
+            text_segments = _text_segments_from_parts(item)
             joined = "\n".join(s for s in text_segments if s).strip()
             if joined:
                 history_parts.append(f"{speaker}: {joined}")
@@ -773,17 +806,7 @@ def _flatten_contents_to_prompt(
     tail_parts: list[str] = []
     if isinstance(current, dict):
         speaker = "User"
-        text_segments = []
-        for part in current.get("parts", []):
-            if isinstance(part, str):
-                text_segments.append(part)
-            elif isinstance(part, dict):
-                if isinstance(part.get("text"), str):
-                    text_segments.append(part["text"])
-                elif "inline_data" in part:
-                    mime = (part.get("inline_data") or {}).get("mime_type", "media")
-                    text_segments.append(f"[attachment omitted: {mime}]")
-        current_text = "\n".join(s for s in text_segments if s).strip()
+        current_text = "\n".join(s for s in _text_segments_from_parts(current) if s).strip()
         if current_text:
             tail_parts.append("# Current user message")
             tail_parts.append(f"{speaker}: {current_text}")
@@ -1262,90 +1285,99 @@ async def call_claude_cli_streaming(
         # dashboard handler's behaviour. The stale-session case is when
         # Claude on the server side has GC'd the session log under us.
         for attempt in (1, 2):
-            # Built per attempt: a resumed session already holds every prior
-            # turn server-side, so it gets the delta form (no history recap);
-            # a fresh session — including the attempt-2 stale retry, which
-            # clears session_id — gets the full flattened history. The lore
-            # block follows the same rule on a slower clock (_lore_due_this_turn).
-            send_lore = lore_due or session_id is None
-            # Resolved ONCE per attempt and handed to BOTH the prompt body and
-            # the argv below. The file is re-resolved every turn (it can be
-            # edited or removed while the bot runs), so two independent calls
-            # could disagree mid-turn — and a body that opens with the wrong
-            # identity directive silently discards the persona the argv just
-            # installed, which is the exact failure this pairing prevents.
-            system_prompt_file = _resolve_discord_system_prompt_file(channel_id)
-            prompt = _flatten_contents_to_prompt(
-                contents,
-                # Stripped lazily: on a lore-carrying turn (every fresh session,
-                # and every turn at the CLI_LORE_REFRESH_TURNS=1 rollback) the
-                # stripped copy would be built and thrown away — two scans of a
-                # ~55 KB string against a ~50 KB needle, for nothing.
-                system_instruction
-                if send_lore
-                else _without_server_lore(system_instruction, server_lore),
-                include_history=session_id is None,
-                tools_note=tools_note,
-                # True whenever the argv installs the persona file AS the system
-                # prompt (--system-prompt-file). Then identity is the file's and
-                # system_instruction is demoted to context/format rules; at
-                # append depth (CLI_PERSONA_DEPTH=append) or with no file at all
-                # the body keeps its own identity directive.
-                persona_in_system_prompt=(
-                    system_prompt_file is not None and _persona_depth_replaces()
-                ),
-                # Resolved from the SAME tool list the argv below is built with,
-                # so the body never offers a message-id tool the argv withholds.
-                can_edit_messages=can_edit_messages,
-                can_read_channel=can_read_channel,
-            )
-            if (
-                session_id is None
-                and _DISCORD_PROMPT_MAX_CHARS
-                and len(prompt) > _DISCORD_PROMPT_MAX_CHARS
-            ):
-                # Fresh-session prompt would blow the model window. Stop and
-                # ask the user (summarize / pause) — never truncate silently.
-                overlimit_chars = len(prompt)
-                break
-            argv = _build_claude_argv(
-                claude_exe,
-                session_id=session_id,
-                allow_read_for_images=False,
-                allow_edit_tools=False,
-                # Reasoning depth is pinned by `_CLI_EFFORT` (CLAUDE_EFFORT,
-                # default xhigh) — the CLI has no thinking switch, so there is
-                # no per-turn thinking flag. Subscription mode redacts the
-                # reasoning content (only start/stop markers reach us — see
-                # on_thinking), but the effort is real. `effort_override` is
-                # None except on the safeguard retry below, which steps one
-                # rung down; it is never a caller-supplied value.
-                effort=effort_override,
-                # Give the Discord AI web access (WebSearch + WebFetch). There's
-                # no Read tool on this path, so no local-file exfil risk; both
-                # run server-side at Anthropic.
-                enable_web=_CLI_WEB_TOOLS_ENABLED,
-                ai_tool_names=ai_tools,
-                # Discord path pins its OWN model + persona, deliberately
-                # apart from the dashboard's: _DISCORD_CLI_MODEL (Opus 4.7's
-                # 1M-context variant, not the global CLAUDE_MODEL) and the
-                # repo-root CLAUDE2.md (fallback: CLAUDE.md) — see the
-                # module-level constants for the rationale.
-                model=_DISCORD_CLI_MODEL,
-                system_prompt_file=system_prompt_file,
-                # The override REPLACES Claude Code's built-in system prompt
-                # rather than trailing it (see _system_prompt_flag). Appending
-                # left the built-in identity in front, and it won: the model
-                # introduced itself as a coding assistant no matter what the
-                # override said. Safe here because everything this path needs
-                # besides identity — the guild's world data, the tools
-                # declaration, the timestamp convention — travels in the prompt
-                # body, not in the system prompt being replaced. Identity is the
-                # replaced prompt's alone, and the body says so: at this depth it
-                # opens with _IDENTITY_DEFERRAL instead of _IDENTITY_OVERRIDE.
-                replace_system_prompt=True,
-            )
+            # Everything below runs INSIDE the try. The construction was
+            # previously above it, so a raise from _flatten_contents_to_prompt,
+            # _without_server_lore or _build_claude_argv (which writes the MCP
+            # config to disk — OSError on a full/locked volume) escaped
+            # call_claude_cli_streaming entirely: the '💭 กำลังคิด...' placeholder
+            # was orphaned in the channel and process_chat aborted before saving
+            # the user's own message. Inside, the same failure lands on the
+            # generic handler below — placeholder cleaned up, session dropped,
+            # the user told, and the turn still returns so the message is stored.
             try:
+                # Built per attempt: a resumed session already holds every prior
+                # turn server-side, so it gets the delta form (no history recap);
+                # a fresh session — including the attempt-2 stale retry, which
+                # clears session_id — gets the full flattened history. The lore
+                # block follows the same rule on a slower clock (_lore_due_this_turn).
+                send_lore = lore_due or session_id is None
+                # Resolved ONCE per attempt and handed to BOTH the prompt body and
+                # the argv below. The file is re-resolved every turn (it can be
+                # edited or removed while the bot runs), so two independent calls
+                # could disagree mid-turn — and a body that opens with the wrong
+                # identity directive silently discards the persona the argv just
+                # installed, which is the exact failure this pairing prevents.
+                system_prompt_file = _resolve_discord_system_prompt_file(channel_id)
+                prompt = _flatten_contents_to_prompt(
+                    contents,
+                    # Stripped lazily: on a lore-carrying turn (every fresh session,
+                    # and every turn at the CLI_LORE_REFRESH_TURNS=1 rollback) the
+                    # stripped copy would be built and thrown away — two scans of a
+                    # ~55 KB string against a ~50 KB needle, for nothing.
+                    system_instruction
+                    if send_lore
+                    else _without_server_lore(system_instruction, server_lore),
+                    include_history=session_id is None,
+                    tools_note=tools_note,
+                    # True whenever the argv installs the persona file AS the system
+                    # prompt (--system-prompt-file). Then identity is the file's and
+                    # system_instruction is demoted to context/format rules; at
+                    # append depth (CLI_PERSONA_DEPTH=append) or with no file at all
+                    # the body keeps its own identity directive.
+                    persona_in_system_prompt=(
+                        system_prompt_file is not None and _persona_depth_replaces()
+                    ),
+                    # Resolved from the SAME tool list the argv below is built with,
+                    # so the body never offers a message-id tool the argv withholds.
+                    can_edit_messages=can_edit_messages,
+                    can_read_channel=can_read_channel,
+                )
+                if (
+                    session_id is None
+                    and _DISCORD_PROMPT_MAX_CHARS
+                    and len(prompt) > _DISCORD_PROMPT_MAX_CHARS
+                ):
+                    # Fresh-session prompt would blow the model window. Stop and
+                    # ask the user (summarize / pause) — never truncate silently.
+                    overlimit_chars = len(prompt)
+                    break
+                argv = _build_claude_argv(
+                    claude_exe,
+                    session_id=session_id,
+                    allow_read_for_images=False,
+                    allow_edit_tools=False,
+                    # Reasoning depth is pinned by `_CLI_EFFORT` (CLAUDE_EFFORT,
+                    # default xhigh) — the CLI has no thinking switch, so there is
+                    # no per-turn thinking flag. Subscription mode redacts the
+                    # reasoning content (only start/stop markers reach us — see
+                    # on_thinking), but the effort is real. `effort_override` is
+                    # None except on the safeguard retry below, which steps one
+                    # rung down; it is never a caller-supplied value.
+                    effort=effort_override,
+                    # Give the Discord AI web access (WebSearch + WebFetch). There's
+                    # no Read tool on this path, so no local-file exfil risk; both
+                    # run server-side at Anthropic.
+                    enable_web=_CLI_WEB_TOOLS_ENABLED,
+                    ai_tool_names=ai_tools,
+                    # Discord path pins its OWN model + persona, deliberately
+                    # apart from the dashboard's: _DISCORD_CLI_MODEL (Opus 4.7's
+                    # 1M-context variant, not the global CLAUDE_MODEL) and the
+                    # repo-root CLAUDE2.md (fallback: CLAUDE.md) — see the
+                    # module-level constants for the rationale.
+                    model=_DISCORD_CLI_MODEL,
+                    system_prompt_file=system_prompt_file,
+                    # The override REPLACES Claude Code's built-in system prompt
+                    # rather than trailing it (see _system_prompt_flag). Appending
+                    # left the built-in identity in front, and it won: the model
+                    # introduced itself as a coding assistant no matter what the
+                    # override said. Safe here because everything this path needs
+                    # besides identity — the guild's world data, the tools
+                    # declaration, the timestamp convention — travels in the prompt
+                    # body, not in the system prompt being replaced. Identity is the
+                    # replaced prompt's alone, and the body says so: at this depth it
+                    # opens with _IDENTITY_DEFERRAL instead of _IDENTITY_OVERRIDE.
+                    replace_system_prompt=True,
+                )
                 runner = asyncio.create_task(
                     _run_claude_subprocess(
                         argv,
@@ -1708,97 +1740,104 @@ async def call_claude_cli(
         effort_override: str | None = None
 
         for attempt in (1, 2):
-            # Same delta-on-resume rule as the streaming sibling: resumed
-            # sessions skip the history recap; fresh sessions (incl. the
-            # attempt-2 stale retry) re-send the full flattened history, and
-            # the lore block follows on its own slower clock.
-            send_lore = lore_due or session_id is None
-            # Resolved ONCE per attempt and handed to BOTH the prompt body and
-            # the argv below. The file is re-resolved every turn (it can be
-            # edited or removed while the bot runs), so two independent calls
-            # could disagree mid-turn — and a body that opens with the wrong
-            # identity directive silently discards the persona the argv just
-            # installed, which is the exact failure this pairing prevents.
-            system_prompt_file = _resolve_discord_system_prompt_file(channel_id)
-            prompt = _flatten_contents_to_prompt(
-                contents,
-                # Stripped lazily: on a lore-carrying turn (every fresh session,
-                # and every turn at the CLI_LORE_REFRESH_TURNS=1 rollback) the
-                # stripped copy would be built and thrown away — two scans of a
-                # ~55 KB string against a ~50 KB needle, for nothing.
-                system_instruction
-                if send_lore
-                else _without_server_lore(system_instruction, server_lore),
-                include_history=session_id is None,
-                tools_note=tools_note,
-                # True whenever the argv installs the persona file AS the system
-                # prompt (--system-prompt-file). Then identity is the file's and
-                # system_instruction is demoted to context/format rules; at
-                # append depth (CLI_PERSONA_DEPTH=append) or with no file at all
-                # the body keeps its own identity directive.
-                persona_in_system_prompt=(
-                    system_prompt_file is not None and _persona_depth_replaces()
-                ),
-                # Resolved from the SAME tool list the argv below is built with,
-                # so the body never offers a message-id tool the argv withholds.
-                can_edit_messages=can_edit_messages,
-                can_read_channel=can_read_channel,
-            )
-            if (
-                session_id is None
-                and _DISCORD_PROMPT_MAX_CHARS
-                and len(prompt) > _DISCORD_PROMPT_MAX_CHARS
-            ):
-                # Over the context ceiling. This path has no channel object
-                # to post the interactive summarize/pause choice to — log
-                # and skip the turn; the streaming path (the default for
-                # real channels) owns the user-facing flow.
-                logger.warning(
-                    "Prompt over context ceiling (%d > %d chars) for channel %s "
-                    "(non-stream) — turn skipped",
-                    len(prompt),
-                    _DISCORD_PROMPT_MAX_CHARS,
-                    channel_id,
-                )
-                return "", "", []
-            argv = _build_claude_argv(
-                claude_exe,
-                session_id=session_id,
-                allow_read_for_images=False,
-                allow_edit_tools=False,
-                # Reasoning depth is pinned by `_CLI_EFFORT` (CLAUDE_EFFORT,
-                # default xhigh) — the CLI has no thinking switch, so there is
-                # no per-turn thinking flag. Subscription mode redacts the
-                # reasoning content (only start/stop markers reach us — see
-                # on_thinking), but the effort is real. `effort_override` is
-                # None except on the safeguard retry below, which steps one
-                # rung down; it is never a caller-supplied value.
-                effort=effort_override,
-                # Give the Discord AI web access (WebSearch + WebFetch). There's
-                # no Read tool on this path, so no local-file exfil risk; both
-                # run server-side at Anthropic.
-                enable_web=_CLI_WEB_TOOLS_ENABLED,
-                ai_tool_names=ai_tools,
-                # Discord path pins its OWN model + persona, deliberately
-                # apart from the dashboard's: _DISCORD_CLI_MODEL (Opus 4.7's
-                # 1M-context variant, not the global CLAUDE_MODEL) and the
-                # repo-root CLAUDE2.md (fallback: CLAUDE.md) — see the
-                # module-level constants for the rationale.
-                model=_DISCORD_CLI_MODEL,
-                system_prompt_file=system_prompt_file,
-                # The override REPLACES Claude Code's built-in system prompt
-                # rather than trailing it (see _system_prompt_flag). Appending
-                # left the built-in identity in front, and it won: the model
-                # introduced itself as a coding assistant no matter what the
-                # override said. Safe here because everything this path needs
-                # besides identity — the guild's world data, the tools
-                # declaration, the timestamp convention — travels in the prompt
-                # body, not in the system prompt being replaced. Identity is the
-                # replaced prompt's alone, and the body says so: at this depth it
-                # opens with _IDENTITY_DEFERRAL instead of _IDENTITY_OVERRIDE.
-                replace_system_prompt=True,
-            )
+            # Same reason as the streaming sibling: the construction sat ABOVE
+            # the try, so a raise from _flatten_contents_to_prompt,
+            # _without_server_lore or _build_claude_argv (which writes the MCP
+            # config to disk — OSError on a full/locked volume) escaped this
+            # function entirely, and process_chat aborted before saving the
+            # user's own message. Inside, it lands on the generic handler below
+            # and the turn still returns.
             try:
+                # Same delta-on-resume rule as the streaming sibling: resumed
+                # sessions skip the history recap; fresh sessions (incl. the
+                # attempt-2 stale retry) re-send the full flattened history, and
+                # the lore block follows on its own slower clock.
+                send_lore = lore_due or session_id is None
+                # Resolved ONCE per attempt and handed to BOTH the prompt body and
+                # the argv below. The file is re-resolved every turn (it can be
+                # edited or removed while the bot runs), so two independent calls
+                # could disagree mid-turn — and a body that opens with the wrong
+                # identity directive silently discards the persona the argv just
+                # installed, which is the exact failure this pairing prevents.
+                system_prompt_file = _resolve_discord_system_prompt_file(channel_id)
+                prompt = _flatten_contents_to_prompt(
+                    contents,
+                    # Stripped lazily: on a lore-carrying turn (every fresh session,
+                    # and every turn at the CLI_LORE_REFRESH_TURNS=1 rollback) the
+                    # stripped copy would be built and thrown away — two scans of a
+                    # ~55 KB string against a ~50 KB needle, for nothing.
+                    system_instruction
+                    if send_lore
+                    else _without_server_lore(system_instruction, server_lore),
+                    include_history=session_id is None,
+                    tools_note=tools_note,
+                    # True whenever the argv installs the persona file AS the system
+                    # prompt (--system-prompt-file). Then identity is the file's and
+                    # system_instruction is demoted to context/format rules; at
+                    # append depth (CLI_PERSONA_DEPTH=append) or with no file at all
+                    # the body keeps its own identity directive.
+                    persona_in_system_prompt=(
+                        system_prompt_file is not None and _persona_depth_replaces()
+                    ),
+                    # Resolved from the SAME tool list the argv below is built with,
+                    # so the body never offers a message-id tool the argv withholds.
+                    can_edit_messages=can_edit_messages,
+                    can_read_channel=can_read_channel,
+                )
+                if (
+                    session_id is None
+                    and _DISCORD_PROMPT_MAX_CHARS
+                    and len(prompt) > _DISCORD_PROMPT_MAX_CHARS
+                ):
+                    # Over the context ceiling. This path has no channel object
+                    # to post the interactive summarize/pause choice to — log
+                    # and skip the turn; the streaming path (the default for
+                    # real channels) owns the user-facing flow.
+                    logger.warning(
+                        "Prompt over context ceiling (%d > %d chars) for channel %s "
+                        "(non-stream) — turn skipped",
+                        len(prompt),
+                        _DISCORD_PROMPT_MAX_CHARS,
+                        channel_id,
+                    )
+                    return "", "", []
+                argv = _build_claude_argv(
+                    claude_exe,
+                    session_id=session_id,
+                    allow_read_for_images=False,
+                    allow_edit_tools=False,
+                    # Reasoning depth is pinned by `_CLI_EFFORT` (CLAUDE_EFFORT,
+                    # default xhigh) — the CLI has no thinking switch, so there is
+                    # no per-turn thinking flag. Subscription mode redacts the
+                    # reasoning content (only start/stop markers reach us — see
+                    # on_thinking), but the effort is real. `effort_override` is
+                    # None except on the safeguard retry below, which steps one
+                    # rung down; it is never a caller-supplied value.
+                    effort=effort_override,
+                    # Give the Discord AI web access (WebSearch + WebFetch). There's
+                    # no Read tool on this path, so no local-file exfil risk; both
+                    # run server-side at Anthropic.
+                    enable_web=_CLI_WEB_TOOLS_ENABLED,
+                    ai_tool_names=ai_tools,
+                    # Discord path pins its OWN model + persona, deliberately
+                    # apart from the dashboard's: _DISCORD_CLI_MODEL (Opus 4.7's
+                    # 1M-context variant, not the global CLAUDE_MODEL) and the
+                    # repo-root CLAUDE2.md (fallback: CLAUDE.md) — see the
+                    # module-level constants for the rationale.
+                    model=_DISCORD_CLI_MODEL,
+                    system_prompt_file=system_prompt_file,
+                    # The override REPLACES Claude Code's built-in system prompt
+                    # rather than trailing it (see _system_prompt_flag). Appending
+                    # left the built-in identity in front, and it won: the model
+                    # introduced itself as a coding assistant no matter what the
+                    # override said. Safe here because everything this path needs
+                    # besides identity — the guild's world data, the tools
+                    # declaration, the timestamp convention — travels in the prompt
+                    # body, not in the system prompt being replaced. Identity is the
+                    # replaced prompt's alone, and the body says so: at this depth it
+                    # opens with _IDENTITY_DEFERRAL instead of _IDENTITY_OVERRIDE.
+                    replace_system_prompt=True,
+                )
                 runner = asyncio.create_task(
                     _run_claude_subprocess(
                         argv,

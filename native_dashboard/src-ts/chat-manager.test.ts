@@ -249,6 +249,70 @@ describe('handleMessage — conversation_loaded', () => {
         expect(document.getElementById('chat-container')!.classList.contains('hidden')).toBe(false);
     });
 
+    it('adopts the conversation provider only when the server still offers it', () => {
+        // A conversation row written while `gemini` was configured outlives that
+        // configuration: flipping CLAUDE_BACKEND to `cli` narrows the server's
+        // VALID_AI_PROVIDERS to {claude}, but the row still says `gemini`.
+        // Adopting it would put ai_provider:"gemini" in the next `message`
+        // frame, which the server rejects with INVALID_PROVIDER — no reply, and
+        // the user's turn is not even persisted.
+        const cm = mountDomAndChat();
+        cm.handleMessage({
+            type: 'connected',
+            available_providers: ['claude'],
+            default_provider: 'claude',
+        });
+        expect(cm.aiProvider).toBe('claude');
+        cm.handleMessage({
+            type: 'conversation_loaded',
+            conversation: {
+                id: 'legacy', title: 'Old', role_preset: 'general',
+                thinking_enabled: false, is_starred: false,
+                created_at: '2026-04-01', ai_provider: 'gemini',
+            },
+            messages: [],
+        });
+        // aiProvider is what every outgoing `message` frame carries verbatim,
+        // so asserting it here is asserting the frame.
+        expect(cm.aiProvider, 'must not adopt a provider the server withdrew').toBe('claude');
+    });
+
+    it('adopts the conversation provider when the handshake has not landed yet', () => {
+        // Before `connected`, availableProviders is still the ['gemini']
+        // placeholder — vetoing on that would reject a valid `claude` row on
+        // no evidence at all.
+        const cm = mountDomAndChat();
+        cm.handleMessage({
+            type: 'conversation_loaded',
+            conversation: {
+                id: 'early', title: 'E', role_preset: 'general',
+                thinking_enabled: false, is_starred: false,
+                created_at: '2026-04-01', ai_provider: 'claude',
+            },
+            messages: [],
+        });
+        expect(cm.aiProvider).toBe('claude');
+    });
+
+    it('still adopts the conversation provider when the server offers it', () => {
+        const cm = mountDomAndChat();
+        cm.handleMessage({
+            type: 'connected',
+            available_providers: ['gemini', 'claude'],
+            default_provider: 'claude',
+        });
+        cm.handleMessage({
+            type: 'conversation_loaded',
+            conversation: {
+                id: 'g1', title: 'G', role_preset: 'general',
+                thinking_enabled: false, is_starred: false,
+                created_at: '2026-04-01', ai_provider: 'gemini',
+            },
+            messages: [],
+        });
+        expect(cm.aiProvider).toBe('gemini');
+    });
+
     it('drops a late load frame for a DIFFERENT conversation created just after', () => {
         // Race: user clicks conversation A (loadConversation → pendingLoad='A'),
         // then creates B. conversation_created must re-point the stale-load guard

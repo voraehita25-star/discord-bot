@@ -76,6 +76,7 @@ from .dashboard_common import (
     stop_was_requested,
     strip_claude_internal_tags,
     strip_leading_timestamp,
+    warn_assistant_not_persisted as _warn_assistant_not_persisted,
 )
 from .dashboard_config import (
     CLAUDE_CONTEXT_WINDOW,
@@ -4215,6 +4216,7 @@ async def handle_chat_message_claude_cli(
                     )
         except Exception:
             logger.exception("Failed to save assistant message (CLI backend)")
+            await _warn_assistant_not_persisted(ws, conversation_id, assistant_msg_id)
 
     # Token usage: prefer the CLI's actual numbers, fall back to a 4-char
     # estimate only if the result event was missing (defensive — the official

@@ -502,3 +502,45 @@ class TestStreamingTimestampStripMatchesBatch:
         # After a reset the next attempt starts clean — no deferred lstrip
         # leaking into the retry's first chunk.
         assert stripper.feed(" retry body") == " retry body"
+
+
+# --------------------------------------------------------------------------- #
+# Splitter termination: a boundary at index 0 produced no forward progress.    #
+# --------------------------------------------------------------------------- #
+class TestSplitterAlwaysTerminates:
+    """``_split_for_discord`` looped forever when a split point landed on index 0.
+
+    ``limit // 2`` is the "boundary is too early, take a hard cut instead" floor.
+    At ``limit <= 1`` that floor is 0, so a space at index 0 passed the check,
+    ``remaining[:0]`` appended an EMPTY chunk, and ``remaining[0:]`` left the
+    input untouched — an unbreakable loop. Every shipped caller passes 2000, so
+    this was latent rather than live; the guard makes forward progress
+    unconditional. For ``limit >= 2`` the conditions are exactly equivalent to
+    the originals, so the 2000-char behaviour is unchanged.
+    """
+
+    @pytest.mark.parametrize("limit", [1, 2, 3, 4, 7])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            " leading space then words",
+            "\nleading newline",
+            "a b c d e f g h" * 20,
+            "\u0e01\u0e49" * 50,  # Thai base+mark clusters
+            "\n\n\n\n",
+            "     ",
+        ],
+    )
+    def test_terminates_and_preserves_content(self, limit, text):
+        chunks = _split_for_discord(text, limit)
+        assert all(len(c) <= limit for c in chunks)
+        assert all(c for c in chunks), "an empty chunk is an empty Discord send"
+        # Newlines are the only thing a split may consume (as the delimiter).
+        assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
+
+    def test_default_limit_behaviour_is_unchanged(self):
+        text = ("word " * 900).strip() + "\n" + "tail " * 900
+        assert _split_for_discord(text) == _split_for_discord(text, 2000)
+        chunks = _split_for_discord(text)
+        assert all(len(c) <= 2000 for c in chunks)
+        assert "".join(chunks).replace("\n", "") == text.replace("\n", "")

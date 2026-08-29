@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1252,3 +1253,95 @@ class TestHandlerStopButton:
         ends = ws.find("stream_end")
         assert len(ends) == 1
         assert ends[0]["cancelled"] is False
+
+
+class TestAssistantSaveFailureIsSurfaced:
+    """A failing assistant-row save used to be invisible to the user.
+
+    ``save_dashboard_message`` raising (a locked/missing SQLite file, or a
+    foreign-key violation against a conversation row that no longer exists —
+    both observed in this deployment's logs) is caught and logged, and the turn
+    then finishes normally: the answer streamed, ``stream_end`` reported success
+    with ``assistant_message_id: null``, and the frontend rendered a bubble with
+    no working Edit/Delete/Pin that vanished on the next reload. Same rule as
+    the attachment-drop and ``{{Name}}``-cap paths: drop if you must, but say so.
+    """
+
+    @pytest.mark.asyncio
+    async def test_warns_when_the_assistant_row_cannot_be_saved(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        db = _mock_db()
+
+        async def _save(conversation_id, role, content, **kwargs):
+            if role == "assistant":
+                raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
+            return 7
+
+        db.save_dashboard_message = AsyncMock(side_effect=_save)
+
+        async def fake_subprocess(
+            argv,
+            stdin_payload,
+            *,
+            on_text_delta,
+            on_thinking_delta,
+            on_thinking_block_start=None,
+            on_thinking_block_stop=None,
+            timeout,
+            proc=None,
+            extra_env=None,
+        ):
+            await on_text_delta("an answer")
+            return "sess-1", {"input_tokens": 1, "output_tokens": 1}
+
+        with _handler_patches(db, fake_subprocess):
+            await cli_mod.handle_chat_message_claude_cli(
+                ws,
+                {"conversation_id": "c-save-fail", "content": "hi", "history": []},
+                None,
+            )
+
+        warnings = [w for w in ws.find("warning") if "could not be saved" in w["message"]]
+        assert warnings, f"no persistence warning in {[m.get('type') for m in ws.sent]}"
+        assert warnings[0]["conversation_id"] == "c-save-fail"
+        # The turn still completes normally — the answer is on screen, only the
+        # durability claim changes.
+        ends = ws.find("stream_end")
+        assert ends and ends[0]["full_response"] == "an answer"
+        assert ends[0]["assistant_message_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_no_warning_on_the_happy_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli_mod, "_SYSTEM_PROMPT_DIR", tmp_path / "sp")
+        monkeypatch.setattr(cli_mod, "_EMPTY_MCP_CONFIG_FILE", tmp_path / "empty_mcp.json")
+        monkeypatch.delenv("DASHBOARD_CLI_ALLOW_WRITE", raising=False)
+        ws = _FakeWS()
+        db = _mock_db()
+
+        async def fake_subprocess(
+            argv,
+            stdin_payload,
+            *,
+            on_text_delta,
+            on_thinking_delta,
+            on_thinking_block_start=None,
+            on_thinking_block_stop=None,
+            timeout,
+            proc=None,
+            extra_env=None,
+        ):
+            await on_text_delta("an answer")
+            return "sess-1", {"input_tokens": 1, "output_tokens": 1}
+
+        with _handler_patches(db, fake_subprocess):
+            await cli_mod.handle_chat_message_claude_cli(
+                ws,
+                {"conversation_id": "c-ok", "content": "hi", "history": []},
+                None,
+            )
+
+        assert not [w for w in ws.find("warning") if "could not be saved" in w["message"]]
+        assert ws.find("stream_end")[0]["assistant_message_id"] == 99

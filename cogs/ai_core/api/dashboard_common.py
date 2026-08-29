@@ -7,6 +7,7 @@ Centralizes duplicated logic: sanitization, DB helpers, profile/memory context.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re as _re
 import time
@@ -193,6 +194,42 @@ def stop_was_requested() -> bool:
     _STOP_REQUESTED.discard(task)
     task.uncancel()
     return True
+
+
+async def warn_assistant_not_persisted(
+    ws: Any, conversation_id: str | None, assistant_msg_id: int | None
+) -> None:
+    """Tell the user when the reply on screen never reached the database.
+
+    All three dashboard backends log-and-continue when
+    ``save_dashboard_message`` raises (a locked/missing SQLite file and a
+    foreign-key violation on a conversation row that no longer exists are both
+    observed in this deployment's logs). The turn then finished normally: the
+    answer streamed, ``stream_end`` reported success, and the frontend rendered
+    the bubble — with ``assistant_message_id: null``, so it carried no working
+    Edit/Delete/Pin and vanished on the next reload with nothing having said so.
+
+    This is the same rule the attachment-drop and ``{{Name}}``-cap paths already
+    follow: drop if you must, but say so. Gated on ``assistant_msg_id`` because
+    the surrounding ``try`` in two of the backends also covers the title update
+    and the CLI-session wipe — a failure THERE leaves the message safely stored
+    and must not claim otherwise. Never raises: a warning about a failure is not
+    worth failing a turn over.
+    """
+    if assistant_msg_id:
+        return
+    with contextlib.suppress(Exception):
+        await ws.send_json(
+            {
+                "type": "warning",
+                "message": (
+                    "This reply could not be saved to the database — it will "
+                    "disappear when you reload this conversation. Check the "
+                    "server logs."
+                ),
+                "conversation_id": conversation_id,
+            }
+        )
 
 
 async def finalize_stopped_turn(
