@@ -6,7 +6,9 @@ Shared fixtures for all test modules.
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
+import shutil
 import sys
 import tempfile
 from collections.abc import Generator
@@ -18,6 +20,30 @@ import pytest
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ==================== Live-database isolation ====================
+# ``utils.database.database`` computes DB_FILE at import time and ``Database()``
+# is a singleton that pins that path, so the redirect has to be in place BEFORE
+# any project module is imported — here, at conftest import, not in a fixture.
+# Without it every test that exercises the real singleton (schema init,
+# ai_metadata, copy_history, save_history …) writes into the operator's live
+# ``data/bot_database.db``: that is where the "I like pizza very much" fact and
+# the 12345 / 920030 / 444444444 / 987654321 channels came from. ``setdefault``
+# keeps a deliberate operator override in force. Not covered: the music queue
+# sidecars (CWD-relative ``data/queue_*.json``) and the ``claude_cli_*.json``
+# files (repo-anchored) — those tests isolate themselves with tmp_path.
+try:
+    _TEST_DB_DIR = Path(tempfile.mkdtemp(prefix="botdb-test-"))
+except OSError:
+    # TEMP with unusable ACLs (seen under the pre-commit hook) — fall back to a
+    # gitignored spot inside the repo rather than to the live data/ directory.
+    _TEST_DB_DIR = PROJECT_ROOT / ".pytest_cache" / f"db-{os.getpid()}"
+    _TEST_DB_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("BOT_DATABASE_DIR", str(_TEST_DB_DIR))
+if os.environ["BOT_DATABASE_DIR"] != str(_TEST_DB_DIR):
+    # An operator override won; the directory just created would never be used.
+    shutil.rmtree(_TEST_DB_DIR, ignore_errors=True)
 
 
 # ==================== Async Support ====================
@@ -102,11 +128,18 @@ def _disable_memory_extraction_backend(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True, scope="session")
 def _cleanup_db_pool_on_exit():
-    """Close the Database connection pool at session end.
+    """Create the isolated DB directory up front, close the pool at session end,
+    then remove the directory.
 
-    Without this, pooled aiosqlite connections keep the event loop alive
-    after all tests finish, causing pytest to hang indefinitely on Windows.
+    The create step makes ``DB_DIR`` / ``EXPORT_DIR`` exist before the constants
+    tests look for them (the bot itself creates them lazily on the first
+    ``init_schema``). Without the close, pooled aiosqlite connections keep the
+    event loop alive after all tests finish, causing pytest to hang indefinitely
+    on Windows — and hold the files open, which is why the removal comes last.
     """
+    from utils.database.database import _ensure_db_dirs
+
+    _ensure_db_dirs()
     yield
     try:
         from utils.database.database import Database
@@ -114,6 +147,12 @@ def _cleanup_db_pool_on_exit():
         Database().close_pool_sync()
     except Exception:
         pass
+    if os.environ.get("BOT_DATABASE_DIR") == str(_TEST_DB_DIR):
+        # Windows refuses to delete a file something still has open; collect
+        # any unreferenced aiosqlite handles first. Best-effort — a leftover
+        # directory in TEMP is a few hundred KB, not a correctness problem.
+        gc.collect()
+        shutil.rmtree(_TEST_DB_DIR, ignore_errors=True)
 
 
 # ==================== Database Fixtures ====================

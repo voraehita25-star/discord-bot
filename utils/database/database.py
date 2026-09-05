@@ -41,8 +41,15 @@ def _env_float(name: str, default: float) -> float:
 # Can be overridden via environment variable
 DB_CONNECTION_TIMEOUT = _env_float("DB_CONNECTION_TIMEOUT", 30.0)
 
-# Database file path
-DB_DIR = Path("data")
+# Database file path. ``BOT_DATABASE_DIR`` relocates the directory that holds the
+# SQLite file plus its ``db_export/`` and ``backups/`` subfolders; unset means the
+# repo-relative ``data/`` the bot has always used. The test suite sets it to a
+# per-run temp dir (tests/conftest.py, before any project import) because
+# ``Database()`` is a singleton that pins ``DB_FILE`` at import time — so any
+# test exercising the real singleton wrote fixture rows into the operator's
+# live database: ``ai_metadata`` carried channels 12345 / 920030 / 444444444 /
+# 987654321 and ``user_facts`` held "I like pizza very much".
+DB_DIR = Path(os.environ.get("BOT_DATABASE_DIR", "").strip() or "data")
 DB_FILE = DB_DIR / "bot_database.db"
 EXPORT_DIR = DB_DIR / "db_export"
 DEFAULT_ANALYTICS_MODEL = "claude-opus-5"

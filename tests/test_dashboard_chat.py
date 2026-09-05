@@ -779,6 +779,7 @@ class TestErrorBranches:
             pytest.skip("roleplay_data not available — unrestricted preset depends on it")
 
         from cogs.ai_core.api.dashboard_chat import handle_chat_message
+        from cogs.ai_core.api.dashboard_common import invalidate_user_context_cache
 
         client = MagicMock()
         captured = {}
@@ -789,23 +790,32 @@ class TestErrorBranches:
 
         client.aio.models.generate_content_stream = capture_stream
 
+        # The creator gate lives in dashboard_common.build_user_context, which
+        # reads the profile through ITS OWN get_db — not dashboard_chat._get_db.
+        # With only the latter mocked, this test passed solely because the
+        # operator's live data/bot_database.db profile says is_creator=1; on the
+        # isolated test database (conftest's BOT_DATABASE_DIR) the gate answered
+        # "not creator" and the framing never went out. Mock both, and drop any
+        # cached context for "c1" so the mocked profile is actually consulted.
+        db_instance = MagicMock()
+        db_instance.get_dashboard_user_profile = AsyncMock(
+            return_value={"is_creator": 1, "display_name": "TestUser"}
+        )
+        db_instance.get_document_memories = AsyncMock(return_value=[])
+        db_instance.save_dashboard_message = AsyncMock(return_value=1)
+        db_instance.update_dashboard_conversation = AsyncMock(return_value=True)
+        invalidate_user_context_cache()
+
         with (
             patch("cogs.ai_core.api.dashboard_chat.DB_AVAILABLE", True),
-            patch("cogs.ai_core.api.dashboard_chat._get_db") as mock_db,
+            patch("cogs.ai_core.api.dashboard_chat._get_db", return_value=db_instance),
+            patch("cogs.ai_core.api.dashboard_common.get_db", return_value=db_instance),
             patch.dict(os.environ, {"DASHBOARD_ALLOW_UNRESTRICTED": "1"}),
             patch(
                 "cogs.ai_core.api.dashboard_chat.GEMINI_UNRESTRICTED_FRAMING",
                 "GEMINI_SENTINEL_FRAMING",
             ),
         ):
-            db_instance = MagicMock()
-            mock_db.return_value = db_instance
-            # Provide is_creator so unrestricted_mode is allowed
-            db_instance.get_dashboard_user_profile = AsyncMock(
-                return_value={"is_creator": 1, "display_name": "TestUser"}
-            )
-            db_instance.save_dashboard_message = AsyncMock(return_value=1)
-            db_instance.update_dashboard_conversation = AsyncMock(return_value=True)
             await handle_chat_message(
                 ws,
                 {"content": "test", "conversation_id": "c1", "unrestricted_mode": True},

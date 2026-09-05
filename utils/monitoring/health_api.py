@@ -1012,8 +1012,12 @@ class HealthRequestHandler(BaseHTTPRequestHandler):
                     }
                     checks["healthy"] = False
             else:
-                # Fallback to file existence check if bot loop isn't ready
-                db_path = Path("data") / "bot_database.db"
+                # Fallback to file existence check if bot loop isn't ready.
+                # Same constant the manager pins its path from, so a
+                # BOT_DATABASE_DIR relocation can't make this probe report
+                # the live file as missing.
+                from utils.database.database import DB_FILE as db_path
+
                 if db_path.exists():
                     checks["checks"]["database"] = {"status": "ok", "type": "sqlite+aiosqlite"}
                 else:

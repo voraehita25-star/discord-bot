@@ -69,3 +69,49 @@ class TestRoleplayDataExample:
         assert isinstance(SERVER_LORE, dict)
         assert isinstance(SERVER_AVATARS, dict)
         assert isinstance(SERVER_CHARACTER_NAMES, dict)
+
+
+class TestRoleplayDataExampleDerivedMaps:
+    """``SERVER_CHARACTER_NAMES`` and ``SERVER_AVATARS`` are both derived from
+    ``SERVER_CHARACTERS``, so every string that can become a ``{{Tag}}`` also
+    resolves to a webhook avatar. The hand-written avatar map this replaced
+    covered 8 of 17 keys on a real server: a ``{{nickname}}`` tag produced a
+    webhook with no avatar."""
+
+    def test_maps_share_keys_when_guild_configured(self, monkeypatch):
+        import importlib
+        import os
+
+        from cogs.ai_core.data import roleplay_data_example as rde
+
+        original = os.environ.get("GUILD_ID_RP")
+        monkeypatch.setenv("GUILD_ID_RP", "424242")
+        try:
+            mod = importlib.reload(rde)
+            names = mod.SERVER_CHARACTER_NAMES[424242]
+            avatars = mod.SERVER_AVATARS[424242]
+            assert set(names) == set(avatars)
+            assert {"Example Character", "ตัวละครตัวอย่าง", "Example", "Ex"} <= set(names)
+            assert names["Ex"] == "assets/RP/example.png"
+            assert avatars["Ex"] == "assets/RP/AVATARS/example.png"
+            assert mod.SERVER_LORE[424242] == mod.WORLD_LORE
+        finally:
+            # Re-execute under the ORIGINAL env so module state matches it again
+            # (monkeypatch restores the env only after this runs).
+            if original is None:
+                monkeypatch.delenv("GUILD_ID_RP", raising=False)
+            else:
+                monkeypatch.setenv("GUILD_ID_RP", original)
+            importlib.reload(rde)
+
+    def test_explicit_avatar_wins_over_derived_path(self):
+        from cogs.ai_core.data.roleplay_data_example import _avatar_path, _character_keys
+
+        derived = {"name": "A", "image": "assets/RP/sub/A.png"}
+        assert _avatar_path(derived) == "assets/RP/AVATARS/A.png"
+        explicit = {"name": "A", "image": "assets/RP/A.png", "avatar": "assets/RP/AVATARS/a.png"}
+        assert _avatar_path(explicit) == "assets/RP/AVATARS/a.png"
+        # Empty / missing entries never become keys (an empty key would corrupt
+        # the tag regex — see character_tags._compile_guild_pattern).
+        assert _character_keys({"name": "A", "name_th": "", "nicknames": ["a1", ""]}) == ["A", "a1"]
+        assert _character_keys({"name": "B"}) == ["B"]

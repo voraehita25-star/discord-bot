@@ -10,6 +10,7 @@ To use:
 """
 
 import os
+from typing import Any
 
 # Roleplay prompt - instructions for roleplay mode
 ROLEPLAY_PROMPT = """
@@ -92,9 +93,13 @@ Characters you might meet:
 Customize this with your own world-building!
 """
 
-# Character definitions for webhooks
-# Format: list of dicts with name, image path, and nicknames
-SERVER_CHARACTERS = [
+# Character definitions for webhooks.
+# Format: list of dicts with name, image path, Thai name and nicknames. Every one
+# of those strings becomes a {{Tag}} trigger AND a webhook-avatar key (see the
+# derived maps below). "avatar" is optional: the webhook avatar defaults to the
+# reference image's file name under assets/RP/AVATARS/ (keep it under 200 KB —
+# Discord rejects larger webhook avatars).
+SERVER_CHARACTERS: list[dict[str, Any]] = [
     {
         "name": "Example Character",
         "image": "assets/RP/example.png",  # Create this image
@@ -105,6 +110,7 @@ SERVER_CHARACTERS = [
     # {
     #     "name": "Another Character",
     #     "image": "assets/RP/another.png",
+    #     "avatar": "assets/RP/AVATARS/another-small.png",  # optional override
     #     "name_th": "อีกตัวละคร",
     #     "nicknames": ["Another"],
     # },
@@ -120,26 +126,48 @@ SERVER_LORE: dict[int, str] = {}
 if _GUILD_ID_RP:
     SERVER_LORE[_GUILD_ID_RP] = WORLD_LORE
 
-# Webhook avatar paths (smaller images for Discord webhook avatars)
-# Format: guild_id -> {character_name: avatar_path}
-SERVER_AVATARS: dict[int, dict[str, str]] = {}
-if _GUILD_ID_RP:
-    SERVER_AVATARS[_GUILD_ID_RP] = {
-        "Example Character": "assets/RP/AVATARS/example.png",
-        # Add mappings for each character name and nickname
-    }
+
+def _character_keys(char: dict[str, Any]) -> list[str]:
+    """Every string a response may use for ``char``: name, Thai name, nicknames.
+
+    ONE definition feeds both maps below, so a name that becomes a ``{{Tag}}``
+    (SERVER_CHARACTER_NAMES) always also resolves to a webhook avatar
+    (SERVER_AVATARS). A hand-written avatar map drifts: on a real server it
+    covered 8 of the 17 tag keys, so a ``{{nickname}}`` tag went out avatar-less.
+    """
+    nicknames = char.get("nicknames") or []
+    return [str(k) for k in (char.get("name"), char.get("name_th"), *nicknames) if k]
+
+
+def _avatar_path(char: dict[str, Any]) -> str:
+    """Webhook avatar for ``char``: its explicit ``avatar`` entry, else the
+    reference image's file name under ``assets/RP/AVATARS/``."""
+    explicit = char.get("avatar")
+    if explicit:
+        return str(explicit)
+    return "assets/RP/AVATARS/" + os.path.basename(str(char["image"]))
+
 
 # Per-guild character image map.
 # Format: guild_id -> {character_name: image_path_relative_to_project_root}
 # Used by cogs.ai_core.media_processor.load_character_image to find a
-# character image when {{Name}} appears in the AI response. Keys are matched
-# case-insensitively against the message text; values must be paths under the
-# project directory (path traversal is blocked).
+# character image when {{Name}} appears in the AI response, and by
+# cogs.ai_core.character_tags to turn a bare name line into a {{Name}} tag.
+# Keys are matched case-insensitively against the message text; values must be
+# paths under the project directory (path traversal is blocked).
 SERVER_CHARACTER_NAMES: dict[int, dict[str, str]] = {}
+# Webhook avatar paths (smaller images for Discord webhook avatars).
+# Format: guild_id -> {character_name: avatar_path} — same keys as above.
+SERVER_AVATARS: dict[int, dict[str, str]] = {}
 if _GUILD_ID_RP:
-    SERVER_CHARACTER_NAMES[_GUILD_ID_RP] = {
-        "Example Character": "assets/RP/example.png",
-    }
+    SERVER_CHARACTER_NAMES[_GUILD_ID_RP] = {}
+    SERVER_AVATARS[_GUILD_ID_RP] = {}
+    for _char in SERVER_CHARACTERS:
+        _image = str(_char["image"])
+        _avatar = _avatar_path(_char)
+        for _key in _character_keys(_char):
+            SERVER_CHARACTER_NAMES[_GUILD_ID_RP][_key] = _image
+            SERVER_AVATARS[_GUILD_ID_RP][_key] = _avatar
 
 # Backward compatibility aliases
 ROLEPLAY_ASSISTANT_INSTRUCTION = ROLEPLAY_PROMPT
